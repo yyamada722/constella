@@ -1,0 +1,189 @@
+/* Typol editor + preview styles — scoped under .typol-root so they only apply
+   inside the TypolMarkdown component (won't leak to the rest of Constella).
+   Adapted from D:/Projects/Typol/src/style.css (editor + preview sections only). */
+
+.typol-root {
+  /* Tokens — minimal palette compatible with Constella's slate-based theme. */
+  --tp-text: rgb(30 41 59);
+  --tp-text-mute: rgb(71 85 105);
+  --tp-text-soft: rgb(148 163 184);
+  --tp-bg-soft: rgb(248 250 252);
+  --tp-border: rgb(226 232 240);
+  --tp-border-soft: rgb(241 245 249);
+  --tp-accent: rgb(245 158 11);
+  --tp-link: rgb(99 102 241);
+  --tp-code-bg: rgb(248 250 252);
+  --tp-code-border: rgb(226 232 240);
+  --tp-danger: rgb(225 29 72);
+  --tp-radius: 8px;
+  --tp-radius-sm: 4px;
+  --tp-font-prose: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  --tp-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Hiragino Kaku Gothic ProN", monospace;
+  --tp-font-heading: var(--tp-font-prose);
+}
+
+/* ===== Editor (textarea) ===== */
+.typol-root.typol-editor {
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--tp-text);
+  font-family: var(--tp-font-mono);
+  /* Caller can override via --tp-edit-size (e.g. for NotesPage font-size adjuster). */
+  font-size: var(--tp-edit-size, 14px);
+  line-height: 1.7;
+  tab-size: 2;
+  caret-color: var(--tp-accent);
+}
+.typol-root.typol-editor::placeholder { color: var(--tp-text-soft); }
+
+/* ===== Preview (rendered HTML) ===== */
+.typol-root.typol-preview {
+  font-family: var(--tp-font-prose);
+  font-size: var(--tp-preview-size, 15px);
+  line-height: 1.75;
+  color: var(--tp-text);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+.typol-root.typol-preview h1,
+.typol-root.typol-preview h2,
+.typol-root.typol-preview h3,
+.typol-root.typol-preview h4,
+.typol-root.typol-preview h5,
+.typol-root.typol-preview h6 {
+  margin: 1.4em 0 0.5em;
+  line-height: 1.3;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-family: var(--tp-font-heading);
+}
+.typol-root.typol-preview h1 { font-size: 1.8em; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.25em; margin-top: 0.3em; }
+.typol-root.typol-preview h2 { font-size: 1.4em; border-bottom: 1px solid var(--tp-border-soft); padding-bottom: 0.2em; }
+.typol-root.typol-preview h3 { font-size: 1.15em; }
+.typol-root.typol-preview h4 { font-size: 1em; }
+.typol-root.typol-preview p { margin: 0.7em 0; }
+.typol-root.typol-preview a { color: var(--tp-link); text-decoration: none; border-bottom: 1px solid color-mix(in oklab, var(--tp-link) 30%, transparent); }
+.typol-root.typol-preview a:hover { border-bottom-color: var(--tp-link); }
+.typol-root.typol-preview strong { font-weight: 700; color: var(--tp-text); }
+.typol-root.typol-preview em { font-style: italic; }
+.typol-root.typol-preview del { color: var(--tp-text-mute); }
+.typol-root.typol-preview hr { border: none; border-top: 1px solid var(--tp-border); margin: 1.5em 0; }
+.typol-root.typol-preview blockquote {
+  border-left: 3px solid var(--tp-accent);
+  background: var(--tp-bg-soft);
+  padding: 0.6em 1em;
+  margin: 0.8em 0;
+  color: var(--tp-text-mute);
+  border-radius: 0 var(--tp-radius-sm) var(--tp-radius-sm) 0;
+}
+.typol-root.typol-preview blockquote > :first-child { margin-top: 0; }
+.typol-root.typol-preview blockquote > :last-child { margin-bottom: 0; }
+.typol-root.typol-preview ul, .typol-root.typol-preview ol { padding-left: 1.5em; margin: 0.6em 0; }
+.typol-root.typol-preview li { margin: 0.2em 0; }
+.typol-root.typol-preview li > p { margin: 0.25em 0; }
+.typol-root.typol-preview ul.contains-task-list { list-style: none; padding-left: 0.4em; }
+.typol-root.typol-preview ul.contains-task-list li { display: flex; align-items: flex-start; gap: 0.4em; }
+.typol-root.typol-preview input[type="checkbox"] {
+  margin-top: 0.45em;
+  accent-color: var(--tp-accent);
+  cursor: default;
+}
+.typol-root.typol-preview code {
+  font-family: var(--tp-font-mono);
+  font-size: 0.88em;
+  background: var(--tp-code-bg);
+  border: 1px solid var(--tp-code-border);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.typol-root.typol-preview pre {
+  background: var(--tp-code-bg);
+  border: 1px solid var(--tp-code-border);
+  border-radius: var(--tp-radius);
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  margin: 0.8em 0;
+  line-height: 1.55;
+}
+.typol-root.typol-preview pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.88em;
+}
+.typol-root.typol-preview table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  width: 100%;
+  font-size: 0.95em;
+}
+.typol-root.typol-preview th, .typol-root.typol-preview td {
+  border: 1px solid var(--tp-border);
+  padding: 0.45em 0.75em;
+  text-align: left;
+}
+.typol-root.typol-preview th { background: var(--tp-bg-soft); font-weight: 600; }
+.typol-root.typol-preview tr:nth-child(even) td { background: color-mix(in oklab, var(--tp-bg-soft) 50%, transparent); }
+.typol-root.typol-preview img { max-width: 100%; border-radius: var(--tp-radius-sm); }
+.typol-root.typol-preview .math-block { overflow-x: auto; margin: 0.8em 0; padding: 0.3em 0; text-align: center; }
+.typol-root.typol-preview .mermaid-block {
+  margin: 1em 0;
+  text-align: center;
+  overflow-x: auto;
+  background: var(--tp-bg-soft);
+  border: 1px solid var(--tp-border-soft);
+  border-radius: var(--tp-radius);
+  padding: 0.8em;
+  min-height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.typol-root.typol-preview .mermaid-block:empty::before {
+  content: "Mermaid を読み込み中…";
+  color: var(--tp-text-soft);
+  font-size: 12px;
+}
+.typol-root.typol-preview .mermaid-block svg { max-width: 100%; height: auto; }
+.typol-root.typol-preview .mermaid-error {
+  color: var(--tp-danger);
+  background: color-mix(in oklab, var(--tp-danger) 8%, var(--tp-bg-soft));
+  border: 1px solid color-mix(in oklab, var(--tp-danger) 30%, var(--tp-border));
+  padding: 0.5em 0.9em;
+  border-radius: var(--tp-radius-sm);
+  font-size: 0.85em;
+  font-family: var(--tp-font-mono);
+  text-align: left;
+  white-space: pre-wrap;
+  width: 100%;
+}
+.typol-root.typol-preview .footnotes {
+  font-size: 0.9em;
+  color: var(--tp-text-mute);
+  border-top: 1px solid var(--tp-border);
+  margin-top: 1.5em;
+  padding-top: 0.8em;
+}
+.typol-root.typol-preview .wiki-link {
+  color: var(--tp-link);
+  border-bottom: 1px dotted color-mix(in oklab, var(--tp-link) 40%, transparent);
+  cursor: pointer;
+}
+
+/* ===== Dark mode overrides — activated when <html class="dark"> ===== */
+html.dark .typol-root {
+  --tp-text: rgb(226 232 240);
+  --tp-text-mute: rgb(148 163 184);
+  --tp-text-soft: rgb(100 116 139);
+  --tp-bg-soft: rgb(15 23 42);
+  --tp-border: rgb(51 65 85);
+  --tp-border-soft: rgb(30 41 59);
+  --tp-accent: rgb(252 211 77);
+  --tp-link: rgb(165 180 252);
+  --tp-code-bg: rgb(15 23 42);
+  --tp-code-border: rgb(51 65 85);
+  --tp-danger: rgb(244 63 94);
+}

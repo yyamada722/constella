@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'IBM Plex Sans JP', 'Noto Sans JP', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  overflow: hidden;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* While the Canvas pen/eraser tool is active, make every card body — most
+   importantly the Electron <webview> embeds — click-through so the drawing
+   overlay above them captures the stroke. A <webview> composites in its own
+   native layer and will swallow pointer events that a DOM overlay should get,
+   even when the overlay has a higher z-index, so z-index alone isn't enough. */
+.canvas-drawing,
+.canvas-drawing * {
+  pointer-events: none !important;
+  /* Also suppress native text selection — a pen drag would otherwise highlight
+     the text inside note/task cards instead of drawing. */
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* Kanban status pill: shrinking bar that counts down the settle window before a
+   status change commits and the card relocates columns. Re-keyed each click. */
+@keyframes statusCommitShrink { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.status-commit-bar { transform-origin: left; animation: statusCommitShrink linear forwards; }
+
+/* Rendered Markdown inside cards / text areas (.md-content) */
+.md-content { overflow-wrap: anywhere; word-break: break-word; }
+.md-content > :first-child { margin-top: 0; }
+.md-content > :last-child { margin-bottom: 0; }
+.md-content h1 { font-size: 1.4em; font-weight: 700; line-height: 1.25; margin: 0.5em 0 0.3em; }
+.md-content h2 { font-size: 1.2em; font-weight: 700; line-height: 1.25; margin: 0.5em 0 0.3em; }
+.md-content h3 { font-size: 1.05em; font-weight: 600; margin: 0.45em 0 0.2em; }
+.md-content h4, .md-content h5, .md-content h6 { font-weight: 600; margin: 0.4em 0 0.2em; }
+.md-content p { margin: 0.35em 0; }
+.md-content ul { list-style: disc; padding-left: 1.3em; margin: 0.35em 0; }
+.md-content ol { list-style: decimal; padding-left: 1.4em; margin: 0.35em 0; }
+.md-content li { margin: 0.12em 0; }
+.md-content ul.contains-task-list { list-style: none; padding-left: 0.2em; }
+.md-content li.task-list-item { display: flex; align-items: flex-start; gap: 0.4em; }
+.md-content input[type="checkbox"] { margin-top: 0.28em; }
+.md-content code { background: rgba(100,116,139,0.16); padding: 0.08em 0.32em; border-radius: 4px; font-size: 0.88em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.md-content pre { background: rgba(100,116,139,0.12); padding: 0.6em 0.8em; border-radius: 6px; overflow-x: auto; margin: 0.45em 0; }
+.md-content pre code { background: none; padding: 0; font-size: 0.85em; }
+.md-content blockquote { border-left: 3px solid rgba(100,116,139,0.4); padding-left: 0.8em; color: #64748b; margin: 0.45em 0; }
+.md-content a { color: #4f46e5; text-decoration: underline; }
+.md-content hr { border: none; border-top: 1px solid rgba(100,116,139,0.3); margin: 0.7em 0; }
+.md-content strong { font-weight: 700; }
+.md-content em { font-style: italic; }
+.md-content del { text-decoration: line-through; color: #94a3b8; }
+.md-content table { border-collapse: collapse; margin: 0.45em 0; font-size: 0.95em; }
+.md-content th, .md-content td { border: 1px solid rgba(100,116,139,0.3); padding: 0.22em 0.55em; text-align: left; }
+.md-content th { background: rgba(100,116,139,0.08); font-weight: 600; }
+.md-content img { max-width: 100%; border-radius: 4px; }

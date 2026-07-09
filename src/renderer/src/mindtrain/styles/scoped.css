@@ -1,0 +1,60 @@
+/* mindtrain theme, scoped to .mt-root so it does not leak into the rest of
+   Constella (which is Tailwind-based). Ported from mindtrain's global.css —
+   :root vars → scoped to .mt-root, body rules → applied to .mt-root, and the
+   html/body/#root sizing reset is dropped (Constella owns the page layout). */
+.mt-root {
+  --paper: #eceff3;
+  --paper-light: #f5f7fa;
+  --paper-deep: #dde1e7;
+  --paper-soft: #f0f2f5;
+  --ink: #1a1d22;
+  --ink-soft: #383c43;
+  --muted: #6d737d;
+  --muted-soft: #a3a8b1;
+  --border: #d2d6dd;
+  --border-soft: #e0e3e8;
+  --accent: #2d72d9;
+  --selection: #e84c5a;
+  --danger: #dc3545;
+  --shadow-card: 0 1px 0 rgba(26, 29, 34, 0.04),
+    0 8px 24px rgba(26, 29, 34, 0.06);
+
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', 'Hiragino Sans', 'Yu Gothic UI', 'Meiryo', sans-serif;
+  font-size: 14px;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--paper);
+}
+
+.mt-root button {
+  font-family: inherit;
+}
+
+.mt-root input,
+.mt-root textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+.mt-root ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.mt-root ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.mt-root ::-webkit-scrollbar-thumb {
+  background: var(--paper-deep);
+  border-radius: 5px;
+  border: 2px solid var(--paper);
+}
+.mt-root ::-webkit-scrollbar-thumb:hover {
+  background: var(--border);
+}

@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+release/
+
+# Env / secrets
+.env
+*.local
+
+# Logs
+*.log
+
+# Claude Code local state (keep launch.json, ignore transient lock)
+.claude/scheduled_tasks.lock
+
+# Scratch / debug artifacts
+debug-capture.png
+test_dompurify.js
+
+# OS
+.DS_Store
+Thumbs.db

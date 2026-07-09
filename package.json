@@ -1,0 +1,85 @@
+{
+  "name": "constella",
+  "version": "0.4.0",
+  "description": "Constella — 情報整理デスクトップアプリ",
+  "author": "Constella",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "dev:preview": "vite --config vite.renderer.config.ts",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder",
+    "dist:dir": "electron-vite build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "@fontsource/ibm-plex-sans-jp": "^5.2.8",
+    "@fontsource/noto-sans-jp": "^5.2.9",
+    "dompurify": "^3.4.11",
+    "highlight.js": "^11.11.1",
+    "html-to-image": "^1.11.13",
+    "katex": "^0.17.0",
+    "lucide-react": "^0.441.0",
+    "marked": "^18.0.5",
+    "marked-highlight": "^2.2.4",
+    "mermaid": "^11.16.0",
+    "nanoid": "^5.1.15",
+    "pdfjs-dist": "^4.7.76",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.1.0",
+    "react-router-dom": "^6.26.2",
+    "remark-gfm": "^4.0.1",
+    "sql.js": "^1.14.1",
+    "utif": "^3.1.0",
+    "wavesurfer.js": "^7.12.8",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@types/katex": "^0.16.8",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "electron": "^31.4.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^2.3.0",
+    "postcss": "^8.4.41",
+    "puppeteer-core": "^25.3.0",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.5.4"
+  },
+  "build": {
+    "appId": "com.constella.app",
+    "productName": "Constella",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Constella"
+    },
+    "portable": {
+      "artifactName": "Constella-${version}-portable.exe"
+    }
+  }
+}

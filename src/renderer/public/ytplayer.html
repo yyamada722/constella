@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- A real http(s) Referer is required by YouTube; this page is served from a real
+     origin (vite localhost in the browser, the local 127.0.0.1 server in Electron). -->
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>player</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; font-family: system-ui, -apple-system, sans-serif; }
+  #player, #player iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; }
+  /* Our own minimal control bar (YouTube's chrome is disabled via controls=0). */
+  #bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 2;
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.65));
+    color: #fff; font-size: 12px; transition: opacity .15s;
+  }
+  /* Hidden while capturing a frame so the screenshot is clean. */
+  body.capturing #bar { opacity: 0 !important; pointer-events: none; }
+  #pp { cursor: pointer; background: none; border: 0; color: #fff; font-size: 15px; line-height: 1; padding: 2px 5px; border-radius: 4px; }
+  #pp:hover { background: rgba(255,255,255,0.15); }
+  #seek { flex: 1; height: 4px; accent-color: #f00; cursor: pointer; }
+  #t { font-variant-numeric: tabular-nums; white-space: nowrap; opacity: .9; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #888; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="player"></div>
+<div id="bar" style="display:none">
+  <button id="pp" title="再生 / 一時停止" aria-label="再生 / 一時停止">&#9654;</button>
+  <input id="seek" type="range" min="0" max="100" value="0" step="0.1" aria-label="シーク">
+  <span id="t">0:00 / 0:00</span>
+</div>
+<div id="msg">読み込み中…</div>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var id = (q.get('id') || '').replace(/[^\w-]/g, '');
+  var start = Math.max(0, Math.floor(+q.get('start') || 0));
+  var player = null, ready = false, dragging = false;
+  var bar = document.getElementById('bar');
+  var pp = document.getElementById('pp');
+  var seek = document.getElementById('seek');
+  var tEl = document.getElementById('t');
+  var msg = document.getElementById('msg');
+
+  function fmt(s) { s = Math.max(0, s || 0); var m = Math.floor(s / 60), x = Math.floor(s % 60); return m + ':' + (x < 10 ? '0' : '') + x; }
+
+  // Called by the host (Electron) just before/after capturePage to hide our bar.
+  window.__setCapturing = function (on) { document.body.classList.toggle('capturing', !!on); };
+
+  // Clean-frame capture. YouTube's controls (center button + title + branding) auto-hide
+  // after a few seconds of uninterrupted playback. So if the video is already PLAYING we
+  // capture the current frame immediately (it's already chrome-less); if it's PAUSED we
+  // briefly play (muted, since muted autoplay needs no gesture), wait for the controls to
+  // clear, capture, then restore the paused state.
+  var HIDE_MS = 3300;
+  var _wasPlaying = false, _wasMuted = false, _playStart = 0;
+  window.__captureFrame = function () {
+    if (!ready) return false;
+    _wasPlaying = player.getPlayerState() === 1;
+    _wasMuted = player.isMuted ? player.isMuted() : false;
+    document.body.classList.add('capturing'); // hide our own control bar
+    if (_wasPlaying) {
+      _playStart = 0; // already playing → controls already hidden → ready now
+    } else {
+      try { player.mute(); } catch (e) {}
+      player.playVideo();
+      _playStart = Date.now();
+    }
+    return true;
+  };
+  // Ready once the controls have auto-hidden (instant if it was already playing).
+  window.__captureReady = function () {
+    return !ready || (Date.now() - _playStart) > HIDE_MS;
+  };
+  window.__endCapture = function () {
+    document.body.classList.remove('capturing');
+    // Only revert what we changed (don't disturb a video the user was watching).
+    if (player && !_wasPlaying) {
+      player.pauseVideo();
+      if (!_wasMuted && player.unMute) player.unMute();
+    }
+  };
+
+  if (!/^[\w-]{11}$/.test(id)) { msg.textContent = '動画を読み込めません'; return; }
+
+  window.onYouTubeIframeAPIReady = function () {
+    player = new YT.Player('player', {
+      videoId: id,
+      playerVars: { controls: 0, rel: 0, modestbranding: 1, iv_load_policy: 3, playsinline: 1, disablekb: 1, fs: 0, start: start },
+      events: {
+        onReady: function () {
+          ready = true;
+          msg.style.display = 'none';
+          bar.style.display = 'flex';
+          var d = player.getDuration && player.getDuration();
+          if (d) seek.max = d;
+          tick();
+        },
+        onStateChange: function (e) { pp.innerHTML = (e.data === 1) ? '&#10074;&#10074;' : '&#9654;'; }
+      }
+    });
+  };
+
+  pp.onclick = function () {
+    if (!ready) return;
+    if (player.getPlayerState() === 1) player.pauseVideo(); else player.playVideo();
+  };
+  seek.addEventListener('input', function () {
+    dragging = true;
+    tEl.textContent = fmt(+seek.value) + ' / ' + fmt(ready && player.getDuration ? player.getDuration() : 0);
+  });
+  seek.addEventListener('change', function () {
+    if (ready) player.seekTo(+seek.value, true);
+    dragging = false;
+  });
+
+  function tick() {
+    if (ready && !dragging) {
+      var c = player.getCurrentTime ? player.getCurrentTime() : 0;
+      var d = player.getDuration ? player.getDuration() : 0;
+      if (d && Number(seek.max) !== d) seek.max = d;
+      seek.value = c;
+      tEl.textContent = fmt(c) + ' / ' + fmt(d);
+    }
+    setTimeout(tick, 250);
+  }
+
+  var s = document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  s.onerror = function () { msg.textContent = '読み込みに失敗しました'; };
+  document.head.appendChild(s);
+})();
+</script>
+</body>
+</html>
