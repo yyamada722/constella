@@ -8,6 +8,7 @@
 import { useMemo, useState } from 'react'
 import { useApp } from '../store'
 import { generateId } from '../utils'
+import { isoToday, isoToDate } from '../utils/date'
 import { MarkdownText } from '../components/MarkdownText'
 import type { Note, Task, ResearchItem } from '../types'
 import {
@@ -25,11 +26,24 @@ const TABS: { id: Tab; label: string; icon: typeof Home }[] = [
   { id: 'search', label: '検索', icon: SearchIcon },
 ]
 
-const today = () => new Date().toISOString().slice(0, 10)
+// Date-only task fields (startDate/endDate) are LOCAL calendar dates — parse and
+// compare them with the shared local-date helpers, never via toISOString/new Date
+// (both interpret in UTC and go off-by-one outside it). A start-only task counts
+// as a 1-day item due on its startDate, same as the desktop agenda.
+const taskDue = (t: Task): string | undefined => t.endDate ?? t.startDate
 
+// Full timestamps (updatedAt etc.) → local M/D.
 function fmtDate(iso?: string): string {
   if (!iso) return ''
   const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+// Date-only YYYY-MM-DD strings → local M/D (no UTC drift).
+function fmtDay(iso?: string): string {
+  if (!iso) return ''
+  const d = isoToDate(iso)
   if (isNaN(d.getTime())) return iso
   return `${d.getMonth() + 1}/${d.getDate()}`
 }
@@ -55,7 +69,13 @@ function Header() {
       </button>
       <div className="flex-1" />
       <button
-        onClick={async () => { if (busy) return; setBusy(true); try { await syncNow() } finally { setBusy(false) } }}
+        onClick={async () => {
+          if (busy) return
+          setBusy(true)
+          try { await syncNow() }
+          catch (e) { console.error('sync failed', e); alert('同期に失敗しました。接続を確認してください。') }
+          finally { setBusy(false) }
+        }}
         title="最新データを取得"
         className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
       >
@@ -181,7 +201,8 @@ const STATUS_ICON = { 'todo': Circle, 'in-progress': CircleDot, 'done': CheckCir
 function TaskRow({ projectId, task }: { projectId: string; task: Task }) {
   const { dispatch } = useApp()
   const Icon = STATUS_ICON[task.status]
-  const overdue = task.status !== 'done' && task.endDate && task.endDate < today()
+  const due = taskDue(task)
+  const overdue = task.status !== 'done' && due && due < isoToday()
   const toggle = () => {
     const done = task.status !== 'done'
     dispatch({
@@ -198,7 +219,7 @@ function TaskRow({ projectId, task }: { projectId: string; task: Task }) {
         <div className={`text-sm ${task.status === 'done' ? 'line-through text-slate-400' : 'text-slate-800 dark:text-slate-100'}`}>{task.title}</div>
         <div className="flex items-center gap-2 mt-0.5">
           {task.priority && <span className={`text-[10px] font-bold ${task.priority === 1 ? 'text-rose-500' : task.priority === 2 ? 'text-amber-500' : 'text-slate-400'}`}>P{task.priority}</span>}
-          {task.endDate && <span className={`text-[10px] ${overdue ? 'text-rose-500 font-semibold' : 'text-slate-400'}`}>〜{fmtDate(task.endDate)}</span>}
+          {due && <span className={`text-[10px] ${overdue ? 'text-rose-500 font-semibold' : 'text-slate-400'}`}>〜{fmtDay(due)}</span>}
         </div>
       </div>
     </div>
@@ -342,7 +363,7 @@ function SearchTab({ openNote, goTab }: { openNote: (id: string, edit: boolean) 
     }
     const research = state.research.filter(r => !r.archivedAt && r.masterProjectId === active && (hit(r.title) || hit(r.description) || hit(r.url))).slice(0, 20)
     return { notes, tasks: tasks.slice(0, 20), research }
-  }, [query, state, active]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [query, state.notes, state.projects, state.research, active]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="sticky top-0 p-3 bg-white dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 z-10">
@@ -390,18 +411,19 @@ function SearchTab({ openNote, goTab }: { openNote: (id: string, edit: boolean) 
 function HomeTab({ openNote, goTab }: { openNote: (id: string, edit: boolean) => void; goTab: (t: Tab) => void }) {
   const { state } = useApp()
   const active = state.activeMasterProjectId
-  const t = today()
+  const t = isoToday()
   const { due, doing } = useMemo(() => {
     const due: { projectName: string; task: Task; projectId: string }[] = []
     const doing: { projectName: string; task: Task; projectId: string }[] = []
     for (const p of state.projects.filter(p => p.masterProjectId === active)) {
       for (const task of p.tasks) {
         if (task.status === 'done') continue
-        if (task.endDate && task.endDate <= t) due.push({ projectName: p.name, task, projectId: p.id })
+        const deadline = taskDue(task)
+        if (deadline && deadline <= t) due.push({ projectName: p.name, task, projectId: p.id })
         else if (task.status === 'in-progress') doing.push({ projectName: p.name, task, projectId: p.id })
       }
     }
-    due.sort((a, b) => (a.task.endDate ?? '').localeCompare(b.task.endDate ?? ''))
+    due.sort((a, b) => (taskDue(a.task) ?? '').localeCompare(taskDue(b.task) ?? ''))
     return { due, doing }
   }, [state.projects, active, t])
   const recentNotes = useMemo(() =>
@@ -449,7 +471,8 @@ function HomeTab({ openNote, goTab }: { openNote: (id: string, edit: boolean) =>
 // Home-screen task row: checkbox toggles done, body jumps to the tasks tab.
 function TaskRowLite({ projectId, projectName, task, onGo }: { projectId: string; projectName: string; task: Task; onGo: () => void }) {
   const { dispatch } = useApp()
-  const overdue = task.endDate && task.endDate < today()
+  const due = taskDue(task)
+  const overdue = due && due < isoToday()
   const toggle = () => dispatch({
     type: 'UPDATE_TASK',
     payload: { projectId, task: { ...task, status: 'done', completedAt: new Date().toISOString() } },
@@ -461,7 +484,7 @@ function TaskRowLite({ projectId, projectName, task, onGo }: { projectId: string
         <div className="text-sm text-slate-800 dark:text-slate-100 truncate">{task.title}</div>
         <div className="flex items-center gap-2 text-[10px] text-slate-400">
           <span className="truncate">{projectName}</span>
-          {task.endDate && <span className={overdue ? 'text-rose-500 font-semibold' : ''}>〜{fmtDate(task.endDate)}</span>}
+          {due && <span className={overdue ? 'text-rose-500 font-semibold' : ''}>〜{fmtDay(due)}</span>}
         </div>
       </button>
     </div>

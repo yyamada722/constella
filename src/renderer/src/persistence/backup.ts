@@ -1,5 +1,5 @@
 import type { AppState } from '../store'
-import { saveState, loadKv, saveKv, freezeWrites } from './db'
+import { loadKv, freezeWrites, thawWrites, restoreState, restoreKv } from './db'
 import { exportAllMedia, importMedia } from './media'
 
 // App marker in backup files. 'maind_set' is the legacy value kept for importing
@@ -34,12 +34,23 @@ export async function exportBackup(state: AppState): Promise<void> {
 export async function importBackup(file: File): Promise<void> {
   const backup = JSON.parse(await file.text()) as Partial<Backup>
   if (!backup.app || !BACKUP_MARKERS.includes(backup.app) || !backup.state) throw new Error('Constella のバックアップファイルではありません')
-  if (backup.media) await importMedia(backup.media)
-  await saveState(backup.state)
-  // Restore (or clear) the 路線図 store blob so it matches the backup.
-  await saveKv('mindtrain', backup.mindtrain ?? null)
-  // The caller reloads immediately after this resolves. Freeze all further
-  // writes so the reload's pagehide/visibilitychange flush handlers can't
-  // persist the stale pre-import in-memory state back over what we just wrote.
+  // Freeze normal writes BEFORE touching storage: the store's debounced autosave
+  // (or a pagehide/blur flush) firing mid-restore would queue the STALE pre-import
+  // state after our own write in saveChain and overwrite the restore. Our writes
+  // below go through restoreState/restoreKv, which bypass the freeze. The caller
+  // reloads right after this resolves, so the freeze also covers the reload's
+  // flush handlers; the fresh page starts with writes enabled again.
   freezeWrites()
+  try {
+    if (backup.media) await importMedia(backup.media)
+    await restoreState(backup.state)
+    // Restore (or clear) the 路線図 store blob so it matches the backup.
+    await restoreKv('mindtrain', backup.mindtrain ?? null)
+  } catch (e) {
+    // Failed import → no reload happens. Resume normal persistence: the state
+    // restore is transactional (all-or-nothing), so letting the pre-import
+    // in-memory state persist again effectively rolls the attempt back.
+    thawWrites()
+    throw e
+  }
 }

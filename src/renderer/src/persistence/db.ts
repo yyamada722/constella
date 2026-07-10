@@ -451,21 +451,36 @@ export async function loadState(): Promise<AppState | null> {
 // edit if the older write happened to flush last).
 let saveChain: Promise<void> = Promise.resolve()
 
-// Once an import has committed the restored data and the caller is about to
-// reload, all further writes must be frozen. Otherwise the reload fires the
-// renderer's `pagehide`/`visibilitychange` flush handlers, which would persist
-// the STALE pre-import in-memory state (the sample seed, or the mindtrain
-// default "プラン 1") right back over the freshly-imported database — silently
-// wiping the restore. The flag lives only in the dying JS context; the reloaded
-// page starts a fresh module with writes enabled again.
+// While a backup import is restoring (and afterwards, until the page reloads),
+// all NORMAL writes must be frozen. Two failure modes otherwise overwrite the
+// freshly-restored database with the STALE pre-import in-memory state (the
+// sample seed, or the mindtrain default "プラン 1"):
+//  - the store's debounced 400ms autosave firing DURING the restore, which would
+//    queue after the restore's own write in saveChain and win, and
+//  - the reload's `pagehide`/`visibilitychange` flush handlers firing AFTER it.
+// So the importer freezes writes BEFORE it starts and performs its own writes
+// through restoreState/restoreKv (which bypass the freeze but share saveChain).
+// The flag lives only in the dying JS context; the reloaded page starts a fresh
+// module with writes enabled again. thawWrites exists for the import's failure
+// path, where no reload happens and normal persistence must resume.
 let writesFrozen = false
 export function freezeWrites(): void { writesFrozen = true }
+export function thawWrites(): void { writesFrozen = false }
+
+function enqueueSaveState(state: AppState): Promise<void> {
+  saveChain = saveChain.catch(() => {}).then(() => doSaveState(state))
+  return saveChain
+}
 
 /** Replace the entire database contents with the given state (atomic), then persist the bytes. */
 export function saveState(state: AppState): Promise<void> {
   if (writesFrozen) return Promise.resolve()
-  saveChain = saveChain.catch(() => {}).then(() => doSaveState(state))
-  return saveChain
+  return enqueueSaveState(state)
+}
+
+/** Import-only variant of saveState: writes even while writes are frozen. */
+export function restoreState(state: AppState): Promise<void> {
+  return enqueueSaveState(state)
 }
 
 async function doSaveState(state: AppState): Promise<void> {
@@ -611,9 +626,7 @@ export async function loadKv(key: string): Promise<string | null> {
   } finally { stmt.free() }
 }
 
-/** Write (or, with null, delete) a string blob. Serialized via saveChain + persisted. */
-export function saveKv(key: string, value: string | null): Promise<void> {
-  if (writesFrozen) return Promise.resolve()
+function enqueueSaveKv(key: string, value: string | null): Promise<void> {
   saveChain = saveChain.catch(() => {}).then(async () => {
     const db = await getDb()
     if (value == null) db.run('DELETE FROM app_kv WHERE key=?', [key])
@@ -621,6 +634,17 @@ export function saveKv(key: string, value: string | null): Promise<void> {
     await saveBytes(db.export())
   })
   return saveChain
+}
+
+/** Write (or, with null, delete) a string blob. Serialized via saveChain + persisted. */
+export function saveKv(key: string, value: string | null): Promise<void> {
+  if (writesFrozen) return Promise.resolve()
+  return enqueueSaveKv(key, value)
+}
+
+/** Import-only variant of saveKv: writes even while writes are frozen. */
+export function restoreKv(key: string, value: string | null): Promise<void> {
+  return enqueueSaveKv(key, value)
 }
 
 // A cheap version token of the persisted DB, to detect when another device (iPad

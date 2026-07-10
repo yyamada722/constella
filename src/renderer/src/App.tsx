@@ -228,6 +228,13 @@ function useMobileShell(): boolean {
     const params = new URLSearchParams(window.location.search)
     if (params.has('desktop')) return false
     if (params.has('mobile')) return true
+    // Touch devices are judged by their SMALLER dimension, so rotating a phone
+    // to landscape (innerWidth jumps past 768) doesn't flip it to the desktop
+    // UI mid-use. An iPad (short side ≥768) still gets the desktop UI. Desktop
+    // browsers (fine pointer) keep the plain width check.
+    if (window.matchMedia('(pointer: coarse)').matches) {
+      return Math.min(window.innerWidth, window.innerHeight) < 768
+    }
     return window.innerWidth < 768
   }
   const [mobile, setMobile] = useState(decide)

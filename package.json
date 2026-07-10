@@ -66,6 +66,7 @@
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
+      "notarize": false,
       "target": [
         {
           "target": "dmg",
