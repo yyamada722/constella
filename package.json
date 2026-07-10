@@ -1,6 +1,6 @@
 {
   "name": "constella",
-  "version": "0.4.0",
+  "version": "0.4.3",
   "description": "Constella — 情報整理デスクトップアプリ",
   "author": "Constella",
   "main": "./out/main/index.js",
@@ -63,6 +63,24 @@
       "out/**/*",
       "package.json"
     ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": "arm64"
+        },
+        {
+          "target": "zip",
+          "arch": "arm64"
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
     "win": {
       "icon": "build/icon.ico",
       "target": [

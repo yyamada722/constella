@@ -384,21 +384,34 @@ export function Canvas() {
     return bestId;
   };
 
-  const onWheel = (e: React.WheelEvent) => {
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-    const newZoom = Math.min(4, Math.max(0.2, vp.zoom * factor));
-    const worldX = (sx - vp.x) / vp.zoom;
-    const worldY = (sy - vp.y) / vp.zoom;
-    setVp({
-      x: sx - worldX * newZoom,
-      y: sy - worldY * newZoom,
-      zoom: newZoom,
-    });
-  };
+  // Pinch (trackpad, arrives as a ctrlKey wheel) and Cmd/Ctrl+wheel zoom at the
+  // cursor; a plain wheel — including a two-finger trackpad swipe — pans the map.
+  // Attached as a NON-passive native listener so preventDefault both stops the
+  // page from scrolling and, importantly, blocks the horizontal two-finger swipe
+  // from triggering browser back/forward navigation.
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      if (e.ctrlKey || e.metaKey) {
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        setVp((v) => {
+          const newZoom = Math.min(4, Math.max(0.2, v.zoom * factor));
+          const worldX = (sx - v.x) / v.zoom;
+          const worldY = (sy - v.y) / v.zoom;
+          return { x: sx - worldX * newZoom, y: sy - worldY * newZoom, zoom: newZoom };
+        });
+      } else {
+        setVp((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
+      }
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, []);
 
   const clearStaleDrag = () => {
     if (drag) {
@@ -1331,7 +1344,6 @@ export function Canvas() {
       <svg
         ref={svgRef}
         className={styles.svg}
-        onWheel={onWheel}
         onDoubleClick={onDoubleClickSvg}
         onPointerDown={onPointerDown}
         onPointerCancel={(e) => {

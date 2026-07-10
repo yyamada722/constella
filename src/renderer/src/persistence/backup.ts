@@ -1,5 +1,5 @@
 import type { AppState } from '../store'
-import { saveState, loadKv, saveKv } from './db'
+import { saveState, loadKv, saveKv, freezeWrites } from './db'
 import { exportAllMedia, importMedia } from './media'
 
 // App marker in backup files. 'maind_set' is the legacy value kept for importing
@@ -38,4 +38,8 @@ export async function importBackup(file: File): Promise<void> {
   await saveState(backup.state)
   // Restore (or clear) the 路線図 store blob so it matches the backup.
   await saveKv('mindtrain', backup.mindtrain ?? null)
+  // The caller reloads immediately after this resolves. Freeze all further
+  // writes so the reload's pagehide/visibilitychange flush handlers can't
+  // persist the stale pre-import in-memory state back over what we just wrote.
+  freezeWrites()
 }

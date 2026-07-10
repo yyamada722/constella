@@ -546,7 +546,9 @@ export default function FlowPage() {
     return () => { window.removeEventListener('click', close); window.removeEventListener('wheel', close); window.removeEventListener('blur', close) }
   }, [ctxMenu, monthPicker])
 
-  // Plain wheel = zoom, anchored at the cursor — same as the Canvas view.
+  // Pinch (trackpad, arrives as ctrlKey wheel) and Cmd/Ctrl+wheel zoom anchored at
+  // the cursor; a plain wheel — including a two-finger trackpad swipe — pans the
+  // surface, so the MacBook trackpad can move the flow instead of only zooming.
   // Attached as a NON-passive native listener so preventDefault stops the page
   // from scrolling (React's onWheel is passive and can't preventDefault).
   useEffect(() => {
@@ -555,12 +557,16 @@ export default function FlowPage() {
     const handler = (e: WheelEvent) => {
       e.preventDefault()
       const rect = el.getBoundingClientRect()
-      const factor = e.deltaY > 0 ? 0.92 : 1.08
-      setViewport(v => {
-        const zoom = Math.max(0.2, Math.min(3, v.zoom * factor))
-        const mx = e.clientX - rect.left, my = e.clientY - rect.top
-        return { zoom, x: mx - ((mx - v.x) / v.zoom) * zoom, y: my - ((my - v.y) / v.zoom) * zoom }
-      })
+      if (e.ctrlKey || e.metaKey) {
+        const factor = e.deltaY > 0 ? 0.92 : 1.08
+        setViewport(v => {
+          const zoom = Math.max(0.2, Math.min(3, v.zoom * factor))
+          const mx = e.clientX - rect.left, my = e.clientY - rect.top
+          return { zoom, x: mx - ((mx - v.x) / v.zoom) * zoom, y: my - ((my - v.y) / v.zoom) * zoom }
+        })
+      } else {
+        setViewport(v => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }))
+      }
     }
     el.addEventListener('wheel', handler, { passive: false })
     return () => el.removeEventListener('wheel', handler)

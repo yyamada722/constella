@@ -451,8 +451,19 @@ export async function loadState(): Promise<AppState | null> {
 // edit if the older write happened to flush last).
 let saveChain: Promise<void> = Promise.resolve()
 
+// Once an import has committed the restored data and the caller is about to
+// reload, all further writes must be frozen. Otherwise the reload fires the
+// renderer's `pagehide`/`visibilitychange` flush handlers, which would persist
+// the STALE pre-import in-memory state (the sample seed, or the mindtrain
+// default "プラン 1") right back over the freshly-imported database — silently
+// wiping the restore. The flag lives only in the dying JS context; the reloaded
+// page starts a fresh module with writes enabled again.
+let writesFrozen = false
+export function freezeWrites(): void { writesFrozen = true }
+
 /** Replace the entire database contents with the given state (atomic), then persist the bytes. */
 export function saveState(state: AppState): Promise<void> {
+  if (writesFrozen) return Promise.resolve()
   saveChain = saveChain.catch(() => {}).then(() => doSaveState(state))
   return saveChain
 }
@@ -602,6 +613,7 @@ export async function loadKv(key: string): Promise<string | null> {
 
 /** Write (or, with null, delete) a string blob. Serialized via saveChain + persisted. */
 export function saveKv(key: string, value: string | null): Promise<void> {
+  if (writesFrozen) return Promise.resolve()
   saveChain = saveChain.catch(() => {}).then(async () => {
     const db = await getDb()
     if (value == null) db.run('DELETE FROM app_kv WHERE key=?', [key])

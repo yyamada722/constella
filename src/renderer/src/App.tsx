@@ -6,7 +6,8 @@ import { WikiLinkProvider } from './components/WikiLink'
 import AIChatPanel from './components/AIChatPanel'
 import { ConfirmHost } from './components/ConfirmDialog'
 import { useApp } from './store'
-import { isRemote } from './persistence/runtime'
+import { isRemote, isElectron } from './persistence/runtime'
+import MobileApp from './mobile/MobileApp'
 import { useStore as useMindtrainStore } from './mindtrain/store/useStore'
 import NotesPage from './pages/NotesPage'
 import ProjectsPage from './pages/ProjectsPage'
@@ -217,8 +218,41 @@ function CheatSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   )
 }
 
+// Phone-sized non-Electron clients (a phone browser on the LAN server, or the vite
+// preview) get the mobile capture-&-reference shell instead of the desktop layout.
+// ?mobile=1 / ?desktop=1 override the width heuristic. The desktop Electron app
+// never switches — its window can be narrow without losing the full UI.
+function useMobileShell(): boolean {
+  const decide = () => {
+    if (isElectron) return false
+    const params = new URLSearchParams(window.location.search)
+    if (params.has('desktop')) return false
+    if (params.has('mobile')) return true
+    return window.innerWidth < 768
+  }
+  const [mobile, setMobile] = useState(decide)
+  useEffect(() => {
+    if (isElectron) return
+    const onResize = () => setMobile(decide())
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+  return mobile
+}
+
 export default function App() {
   const [cheatOpen, setCheatOpen] = useState(false)
+  const mobileShell = useMobileShell()
+  if (mobileShell) {
+    return (
+      <ThemeProvider>
+        <WikiLinkProvider>
+          <ConfirmHost />
+          <MobileApp />
+        </WikiLinkProvider>
+      </ThemeProvider>
+    )
+  }
   return (
     <ThemeProvider>
     <WikiLinkProvider>
