@@ -405,15 +405,24 @@ export default function CanvasPage() {
     const handler = (e: WheelEvent) => {
       if (overScrollable(e.target, e.deltaY)) return // let the card's text scroll
       e.preventDefault()
-      const vp = viewportRef.current
-      const factor = e.deltaY > 0 ? 0.92 : 1.08
-      const newZoom = Math.min(Math.max(vp.zoom * factor, 0.1), 5)
       const rect = el.getBoundingClientRect()
       const mx = e.clientX - rect.left
       const my = e.clientY - rect.top
-      const wx = (mx - vp.x) / vp.zoom
-      const wy = (my - vp.y) / vp.zoom
-      setViewport({ x: mx - wx * newZoom, y: my - wy * newZoom, zoom: newZoom })
+      // Pinch-zoom on a trackpad arrives as a wheel with ctrlKey set; Cmd/Ctrl+wheel
+      // is the explicit zoom gesture for a mouse. A plain wheel — including a
+      // two-finger trackpad swipe — pans the board (Figma/Miro-style), so the
+      // MacBook trackpad can move the canvas instead of only zooming it.
+      if (e.ctrlKey || e.metaKey) {
+        const factor = e.deltaY > 0 ? 0.92 : 1.08
+        setViewport(v => {
+          const newZoom = Math.min(Math.max(v.zoom * factor, 0.1), 5)
+          const wx = (mx - v.x) / v.zoom
+          const wy = (my - v.y) / v.zoom
+          return { x: mx - wx * newZoom, y: my - wy * newZoom, zoom: newZoom }
+        })
+      } else {
+        setViewport(v => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }))
+      }
     }
     el.addEventListener('wheel', handler, { passive: false })
     return () => el.removeEventListener('wheel', handler)

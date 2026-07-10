@@ -177,6 +177,11 @@ const initialState: AppState = {
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case 'ADD_MASTER_PROJECT':
+      // Ignore a re-add of an existing id: the mindtrain reconciliation can fire
+      // with an id that already exists, and appending it would create a duplicate
+      // master (often with a placeholder name like "プラン 1") that shadows the real
+      // one. Idempotent by id keeps that reconciliation safe.
+      if (state.masterProjects.some(p => p.id === action.payload.id)) return state
       return { ...state, masterProjects: [...state.masterProjects, action.payload] }
     case 'UPDATE_MASTER_PROJECT':
       return { ...state, masterProjects: state.masterProjects.map(p => p.id === action.payload.id ? action.payload : p) }
