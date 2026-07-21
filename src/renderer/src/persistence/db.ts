@@ -14,7 +14,7 @@ import { isRemote } from './runtime'
 import type { AppState } from '../store'
 import type {
   Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
-  CanvasTab, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CardPage, Bookmark, Flow, FlowNode, FlowEdge, FlowGroup, TimelineBand,
+  CanvasTab, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CardPage, Bookmark, Flow, FlowNode, FlowEdge, FlowGroup, Plan, TimelineBand,
 } from '../types'
 
 const SCHEMA_VERSION = 1
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS research (ord INTEGER, id TEXT PRIMARY KEY, masterPro
 CREATE TABLE IF NOT EXISTS research_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS sketches (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, strokes TEXT, createdAt TEXT, updatedAt TEXT);
 CREATE TABLE IF NOT EXISTS flows (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, nodes TEXT, edges TEXT, groups TEXT, createdAt TEXT, updatedAt TEXT);
+CREATE TABLE IF NOT EXISTS plans (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, content TEXT, createdAt TEXT, updatedAt TEXT);
 CREATE TABLE IF NOT EXISTS timeline_bands (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, startDate TEXT, endDate TEXT, color TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS ai_conversations (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, messages TEXT, createdAt TEXT, updatedAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_tabs (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, name TEXT, createdAt TEXT);
@@ -386,6 +387,11 @@ export async function loadState(): Promise<AppState | null> {
     createdAt: str(r.createdAt), updatedAt: str(r.updatedAt),
   }))
 
+  const plans: Plan[] = rows(db, 'SELECT * FROM plans ORDER BY ord').map(r => ({
+    id: str(r.id), masterProjectId: str(r.masterProjectId), name: str(r.name), content: str(r.content),
+    createdAt: str(r.createdAt), updatedAt: str(r.updatedAt),
+  }))
+
   const timelineBands: TimelineBand[] = rows(db, 'SELECT * FROM timeline_bands ORDER BY ord').map(r => ({
     id: str(r.id), masterProjectId: str(r.masterProjectId), title: str(r.title),
     startDate: str(r.startDate), endDate: str(r.endDate),
@@ -443,7 +449,7 @@ export async function loadState(): Promise<AppState | null> {
     x: num(r.x), y: num(r.y), fontSize: num(r.fontSize), color: str(r.color), createdAt: str(r.createdAt),
   }))
 
-  return { masterProjects, activeMasterProjectId, notes, noteFolders, projects, research, researchFolders, sketches, flows, timelineBands, aiConversations, canvasTabs, canvasCards, canvasArrows, canvasGroups, canvasStrokes, canvasLabels }
+  return { masterProjects, activeMasterProjectId, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, timelineBands, aiConversations, canvasTabs, canvasCards, canvasArrows, canvasGroups, canvasStrokes, canvasLabels }
 }
 
 // Saves are serialized through a single chain so that two debounced writes can
@@ -499,6 +505,7 @@ async function doSaveState(state: AppState): Promise<void> {
     researchFolders: state.researchFolders ?? [],
     sketches: state.sketches ?? [],
     flows: state.flows ?? [],
+    plans: state.plans ?? [],
     timelineBands: state.timelineBands ?? [],
     aiConversations: state.aiConversations ?? [],
     canvasTabs: state.canvasTabs ?? [],
@@ -511,7 +518,7 @@ async function doSaveState(state: AppState): Promise<void> {
   }
   db.run('BEGIN TRANSACTION')
   try {
-    for (const t of ['master_projects', 'notes', 'note_folders', 'projects', 'tasks', 'research', 'research_folders', 'sketches', 'flows', 'timeline_bands', 'ai_conversations', 'canvas_tabs', 'canvas_cards', 'canvas_arrows', 'canvas_groups', 'canvas_strokes', 'canvas_labels']) {
+    for (const t of ['master_projects', 'notes', 'note_folders', 'projects', 'tasks', 'research', 'research_folders', 'sketches', 'flows', 'plans', 'timeline_bands', 'ai_conversations', 'canvas_tabs', 'canvas_cards', 'canvas_arrows', 'canvas_groups', 'canvas_strokes', 'canvas_labels']) {
       db.run(`DELETE FROM ${t}`)
     }
 
@@ -553,6 +560,9 @@ async function doSaveState(state: AppState): Promise<void> {
 
     insert('INSERT INTO flows (ord,id,masterProjectId,name,nodes,edges,groups,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)',
       state.flows.map((f, i) => [i, f.id, f.masterProjectId, f.name, JSON.stringify(f.nodes ?? []), JSON.stringify(f.edges ?? []), JSON.stringify(f.groups ?? []), f.createdAt, f.updatedAt].map(B)))
+
+    insert('INSERT INTO plans (ord,id,masterProjectId,name,content,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?)',
+      state.plans.map((p, i) => [i, p.id, p.masterProjectId, p.name, p.content, p.createdAt, p.updatedAt].map(B)))
 
     insert('INSERT INTO timeline_bands (ord,id,masterProjectId,title,startDate,endDate,color,createdAt) VALUES (?,?,?,?,?,?,?,?)',
       state.timelineBands.map((b, i) => [i, b.id, b.masterProjectId, b.title, b.startDate, b.endDate, b.color ?? null, b.createdAt].map(B)))

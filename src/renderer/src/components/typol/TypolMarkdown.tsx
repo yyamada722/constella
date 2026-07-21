@@ -23,6 +23,7 @@ import { Editor, type CommandName } from './editor'
 import { renderMarkdown } from './markdown'
 import { renderMermaidIn } from './mermaid'
 import { putMedia, resolveMediaUrl } from '../../persistence/media'
+import { resolveLocalUrl } from '../../utils/localFile'
 import { IMAGE_ACCEPT, normalizeImageBlob } from '../../utils/image'
 import { useWikiLink } from '../WikiLink'
 
@@ -206,6 +207,11 @@ export function TypolMarkdown({
     host.querySelectorAll<HTMLImageElement>('img[src^="idb:"]').forEach(img => {
       const src = img.getAttribute('src') ?? ''
       resolveMediaUrl(src).then(url => { if (url) img.src = url })
+    })
+    // local: refs (server/NAS file references) resolve through Electron the same way.
+    host.querySelectorAll<HTMLImageElement>('img[src^="local:"]').forEach(img => {
+      const src = img.getAttribute('src') ?? ''
+      resolveLocalUrl(src).then(url => { if (url) img.src = url })
     })
     void renderMermaidIn(host)
     host.querySelectorAll<HTMLAnchorElement>('a[href^="wiki:"]').forEach(a => {

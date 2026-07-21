@@ -25,7 +25,7 @@ import './components/typol/typol.css'
   const api = (window as unknown as {
     api?: {
       onRemoteMediaRequest?: (cb: (reqId: string, id: string) => void) => void
-      replyRemoteMedia?: (reqId: string, bytes: Uint8Array | null) => void
+      replyRemoteMedia?: (reqId: string, bytes: Uint8Array | null, mime?: string) => void
     }
   }).api
   if (api?.onRemoteMediaRequest && api.replyRemoteMedia) {
@@ -33,7 +33,9 @@ import './components/typol/typol.css'
       try {
         const blob = await getMediaBlob('idb:' + id)
         const bytes = blob ? new Uint8Array(await blob.arrayBuffer()) : null
-        api.replyRemoteMedia!(reqId, bytes)
+        // Pass the stored blob's MIME along so the LAN server can serve a real
+        // Content-Type — remote clients type-sniff previews (PDF/画像) from it.
+        api.replyRemoteMedia!(reqId, bytes, blob?.type || '')
       } catch { api.replyRemoteMedia!(reqId, null) }
     })
   }

@@ -17,6 +17,7 @@ import SearchPage from './pages/SearchPage'
 import CanvasPage from './pages/CanvasPage'
 import SketchPage from './pages/SketchPage'
 import FlowPage from './pages/FlowPage'
+import PlanPage from './pages/PlanPage'
 import MindtrainView from './mindtrain/MindtrainView'
 import { ThemeProvider } from './theme/ThemeContext'
 
@@ -181,6 +182,7 @@ const SHORTCUT_SECTIONS: { title: string; items: [string, string][] }[] = [
   { title: 'キャンバス', items: [['ホイール', 'ズーム'], ['Space+ドラッグ / 中ボタン', 'パン'], ['Ctrl+G', 'グループ化'], ['Ctrl+C / V / D', 'コピー / 貼り付け / 複製'], ['Delete', '選択を削除']] },
   { title: 'スケッチ', items: [['ホイール', 'ズーム'], ['Ctrl+Z / Y', '元に戻す / やり直す']] },
   { title: 'ノート', items: [['Ctrl+V（編集中）', '画像を貼り付け'], ['右クリック（編集中）', 'Markdown挿入メニュー']] },
+  { title: '計画', items: [['## 2026-08-01', '日付見出し'], ['> [09:00] shoot 内容', '予定行（?ボタンで記法一覧）']] },
 ]
 
 function CheatSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -277,6 +279,7 @@ export default function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/flow" element={<FlowPage />} />
+            <Route path="/plan" element={<PlanPage />} />
             <Route path="/research" element={<ResearchPage />} />
             <Route path="/canvas" element={<CanvasPage />} />
             <Route path="/sketch" element={<SketchPage />} />
