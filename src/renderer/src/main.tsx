@@ -14,6 +14,9 @@ import '@fontsource/noto-sans-jp/400.css'
 import '@fontsource/noto-sans-jp/500.css'
 import '@fontsource/noto-sans-jp/700.css'
 import './index.css'
+// Auto-generated dark-theme remaps (scripts/gen-dark-css.mjs). MUST come after
+// index.css so the :where(.dark) overrides win by source order.
+import './dark-overrides.css'
 // Typol markdown editor styles + KaTeX. Highlight.js styles are loaded dynamically
 // via theme/applyTheme.ts so the user-selected code colorscheme can swap at runtime.
 import 'katex/dist/katex.min.css'

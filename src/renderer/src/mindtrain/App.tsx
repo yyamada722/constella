@@ -12,7 +12,7 @@ const histBtn = (enabled: boolean): CSSProperties => ({
   height: 26,
   borderRadius: 6,
   border: '1px solid var(--border)',
-  background: enabled ? '#fff' : 'var(--paper-soft)',
+  background: enabled ? 'var(--surface, #fff)' : 'var(--paper-soft)',
   color: enabled ? 'var(--ink-soft)' : 'var(--muted-soft)',
   cursor: enabled ? 'pointer' : 'default',
   fontSize: 15,

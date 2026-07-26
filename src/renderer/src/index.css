@@ -30,6 +30,36 @@ body {
   background: #94a3b8;
 }
 
+/* ── Dark theme (hand-written parts; class remaps live in dark-overrides.css) ── */
+
+:root {
+  --shape-fill: #ffffff;  /* canvas shape body fill */
+  --handle-fill: #ffffff; /* arrow endpoint / waypoint / port handle fill */
+  --ink-dark: #1e293b;    /* "black ink" display color (pen / labels) */
+  --surface: #ffffff;     /* generic light surface (mindtrain panels etc.) */
+}
+.dark {
+  /* Achromatic dark — pure neutral grays, no blue tint. */
+  color-scheme: dark;
+  --shape-fill: #262626;
+  --handle-fill: #404040;
+  --ink-dark: #e5e5e5;
+  --surface: #242427;
+}
+/* Pen strokes / arrows drawn in black ink flip to light ink on dark canvases.
+   Scoped to the canvas layer — sketch boards stay white and keep dark ink.
+   SVG presentation attributes lose to CSS, so a plain rule suffices. */
+.dark .canvas-ink [stroke="#1e293b"] { stroke: #e5e5e5; }
+/* Surfaces that must stay light in dark mode (e.g. the sketch drawing board). */
+.dark .keep-light { background-color: #ffffff; border-color: #d4d4d4; }
+.dark ::-webkit-scrollbar-thumb { background: #525252; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #737373; }
+.dark .md-content a { color: #a5b4fc; }
+.dark .md-content blockquote { color: #94a3b8; }
+.dark .md-content del { color: #64748b; }
+.dark .md-content code { background: rgba(148,163,184,0.18); }
+.dark .md-content pre { background: rgba(148,163,184,0.12); }
+
 /* While the Canvas pen/eraser tool is active, make every card body — most
    importantly the Electron <webview> embeds — click-through so the drawing
    overlay above them captures the stroke. A <webview> composites in its own

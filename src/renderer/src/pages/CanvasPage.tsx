@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes } from 'lucide-react'
 import { useApp } from '../store'
-import { CanvasCard, CanvasTab, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project } from '../types'
+import { CanvasCard, CanvasTab, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project, ShapeKind, PortDir } from '../types'
 import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
 import { PdfViewer } from '../components/PdfViewer'
@@ -29,7 +29,156 @@ const cardTypes = {
   // タスク下書き — a lightweight planning sticky. Scatter these, wire parent→child
   // with arrows, then タスク化 converts the whole flow into real tasks.
   taskDraft: { label: 'タスク下書き', icon: ListTodo, bg: 'bg-yellow-50', border: 'border-yellow-400 border-dashed', text: 'text-yellow-700', header: 'bg-yellow-100/60', defaultWidth: 210, defaultHeight: 112 },
+  // 構成図シェイプ — headerless outlined figure; which figure is card.shape.
+  // Excluded from the generic add menus (they get a dedicated shape grid instead).
+  shape: { label: 'シェイプ', icon: Shapes, bg: 'bg-white', border: 'border-slate-300', text: 'text-slate-500', header: 'bg-slate-50', defaultWidth: 200, defaultHeight: 120 },
 } as const
+
+/* ── 構成図シェイプ ── */
+
+const SHAPE_KINDS: { key: ShapeKind; label: string }[] = [
+  { key: 'rect', label: '四角形' },
+  { key: 'roundRect', label: '角丸四角' },
+  { key: 'ellipse', label: '円 / 楕円' },
+  { key: 'diamond', label: 'ひし形' },
+  { key: 'triangle', label: '三角形' },
+  { key: 'parallelogram', label: '平行四辺形' },
+  { key: 'hexagon', label: '六角形' },
+  { key: 'cylinder', label: '円柱 (DB)' },
+  { key: 'cloud', label: 'クラウド' },
+  { key: 'file', label: 'ファイル' },
+  { key: 'folder', label: 'フォルダー' },
+  { key: 'person', label: '人' },
+  { key: 'pc', label: 'PC' },
+  { key: 'server', label: 'サーバー' },
+]
+
+const SHAPE_DEFAULT_SIZE: Record<ShapeKind, { w: number; h: number }> = {
+  rect: { w: 200, h: 120 },
+  roundRect: { w: 200, h: 120 },
+  ellipse: { w: 180, h: 120 },
+  diamond: { w: 200, h: 140 },
+  triangle: { w: 200, h: 150 },
+  parallelogram: { w: 220, h: 120 },
+  hexagon: { w: 210, h: 120 },
+  cylinder: { w: 160, h: 160 },
+  cloud: { w: 240, h: 150 },
+  file: { w: 130, h: 160 },
+  folder: { w: 190, h: 140 },
+  person: { w: 120, h: 150 },
+  pc: { w: 170, h: 150 },
+  server: { w: 140, h: 180 },
+}
+
+// SVG path(s) for a shape drawn at (w × h) px. `outline` is the closed figure
+// (filled + stroked); `extras` are stroke-only decorations (e.g. cylinder rim).
+function shapePaths(kind: ShapeKind, w: number, h: number): { outline: string; extras: string[] } {
+  const p = 1.5 // inset so a 2px stroke isn't clipped at the svg edge
+  const cx = w / 2, cy = h / 2
+  const R = w - p, B = h - p
+  switch (kind) {
+    case 'roundRect': {
+      const r = Math.max(2, Math.min(14, (w - 2 * p) / 4, (h - 2 * p) / 4))
+      return { outline: `M ${p + r} ${p} H ${R - r} A ${r} ${r} 0 0 1 ${R} ${p + r} V ${B - r} A ${r} ${r} 0 0 1 ${R - r} ${B} H ${p + r} A ${r} ${r} 0 0 1 ${p} ${B - r} V ${p + r} A ${r} ${r} 0 0 1 ${p + r} ${p} Z`, extras: [] }
+    }
+    case 'ellipse': {
+      const rx = cx - p, ry = cy - p
+      return { outline: `M ${p} ${cy} A ${rx} ${ry} 0 1 0 ${R} ${cy} A ${rx} ${ry} 0 1 0 ${p} ${cy} Z`, extras: [] }
+    }
+    case 'diamond':
+      return { outline: `M ${cx} ${p} L ${R} ${cy} L ${cx} ${B} L ${p} ${cy} Z`, extras: [] }
+    case 'triangle':
+      return { outline: `M ${cx} ${p} L ${R} ${B} L ${p} ${B} Z`, extras: [] }
+    case 'parallelogram': {
+      const o = Math.min((w - 2 * p) * 0.22, 48)
+      return { outline: `M ${p + o} ${p} L ${R} ${p} L ${R - o} ${B} L ${p} ${B} Z`, extras: [] }
+    }
+    case 'hexagon': {
+      const o = Math.min((w - 2 * p) * 0.25, (h - 2 * p) * 0.6)
+      return { outline: `M ${p + o} ${p} L ${R - o} ${p} L ${R} ${cy} L ${R - o} ${B} L ${p + o} ${B} L ${p} ${cy} Z`, extras: [] }
+    }
+    case 'cylinder': {
+      const ry = Math.max(3, Math.min((h - 2 * p) * 0.18, 26))
+      const rx = cx - p
+      return {
+        outline: `M ${p} ${p + ry} A ${rx} ${ry} 0 0 1 ${R} ${p + ry} L ${R} ${B - ry} A ${rx} ${ry} 0 0 1 ${p} ${B - ry} Z`,
+        extras: [`M ${p} ${p + ry} A ${rx} ${ry} 0 0 0 ${R} ${p + ry}`],
+      }
+    }
+    case 'cloud': {
+      const W = w - 2 * p, H = h - 2 * p
+      const X = (f: number) => p + W * f, Y = (f: number) => p + H * f
+      return {
+        outline: `M ${X(0.22)} ${Y(0.82)} A ${W * 0.16} ${H * 0.24} 0 0 1 ${X(0.30)} ${Y(0.38)} A ${W * 0.17} ${H * 0.22} 0 0 1 ${X(0.56)} ${Y(0.26)} A ${W * 0.16} ${H * 0.20} 0 0 1 ${X(0.79)} ${Y(0.42)} A ${W * 0.13} ${H * 0.19} 0 0 1 ${X(0.80)} ${Y(0.82)} Z`,
+        extras: [],
+      }
+    }
+    case 'file': { // document with a folded top-right corner
+      const f = Math.min((w - 2 * p) * 0.3, (h - 2 * p) * 0.3, 26)
+      return {
+        outline: `M ${p} ${p} L ${R - f} ${p} L ${R} ${p + f} L ${R} ${B} L ${p} ${B} Z`,
+        extras: [`M ${R - f} ${p} L ${R - f} ${p + f} L ${R} ${p + f}`],
+      }
+    }
+    case 'folder': {
+      const th = Math.min((h - 2 * p) * 0.18, 20) // tab height
+      const tw = Math.min((w - 2 * p) * 0.4, 90)  // tab width
+      return {
+        outline: `M ${p} ${B} L ${p} ${p + th} L ${p + 3} ${p} L ${p + tw} ${p} L ${p + tw + 6} ${p + th} L ${R} ${p + th} L ${R} ${B} Z`,
+        extras: [],
+      }
+    }
+    case 'person': { // head circle + shoulder dome
+      const hr = Math.min(w * 0.18, h * 0.16)
+      const bw = Math.min(w * 0.3, (w - 2 * p) / 2)
+      const bodyTop = p + 2 * hr + Math.max(2, h * 0.04)
+      return {
+        outline: `M ${cx} ${p} A ${hr} ${hr} 0 1 0 ${cx} ${p + 2 * hr} A ${hr} ${hr} 0 1 0 ${cx} ${p} Z ` +
+          `M ${cx - bw} ${B} A ${bw} ${B - bodyTop} 0 0 1 ${cx + bw} ${B} Z`,
+        extras: [],
+      }
+    }
+    case 'pc': { // monitor + stand + base
+      const sh = (h - 2 * p) * 0.62 // screen height
+      return {
+        outline: `M ${p} ${p} H ${R} V ${p + sh} H ${p} Z`,
+        extras: [
+          `M ${cx} ${p + sh} L ${cx} ${B - 4}`,
+          `M ${cx - w * 0.18} ${B - 3} L ${cx + w * 0.18} ${B - 3}`,
+        ],
+      }
+    }
+    case 'server': { // rack with 3 bays + LED ticks
+      const H = h - 2 * p
+      const r = 4
+      const y1 = p + H / 3, y2 = p + (2 * H) / 3
+      return {
+        outline: `M ${p + r} ${p} H ${R - r} A ${r} ${r} 0 0 1 ${R} ${p + r} V ${B - r} A ${r} ${r} 0 0 1 ${R - r} ${B} H ${p + r} A ${r} ${r} 0 0 1 ${p} ${B - r} V ${p + r} A ${r} ${r} 0 0 1 ${p + r} ${p} Z`,
+        extras: [
+          `M ${p} ${y1} L ${R} ${y1}`,
+          `M ${p} ${y2} L ${R} ${y2}`,
+          `M ${p + 8} ${p + H / 6} L ${p + 18} ${p + H / 6}`,
+          `M ${p + 8} ${p + H / 2} L ${p + 18} ${p + H / 2}`,
+          `M ${p + 8} ${p + (5 * H) / 6} L ${p + 18} ${p + (5 * H) / 6}`,
+        ],
+      }
+    }
+    case 'rect':
+    default:
+      return { outline: `M ${p} ${p} H ${R} V ${B} H ${p} Z`, extras: [] }
+  }
+}
+
+// Tiny outline preview used in the add-menu / context-menu shape grids.
+function ShapeGlyph({ kind }: { kind: ShapeKind }) {
+  const { outline, extras } = shapePaths(kind, 22, 15)
+  return (
+    <svg width={22} height={15} viewBox="0 0 22 15" className="shrink-0">
+      <path d={outline} fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinejoin="round" />
+      {extras.map((d, i) => <path key={i} d={d} fill="none" stroke="currentColor" strokeWidth={1.2} />)}
+    </svg>
+  )
+}
 
 /* ── タスク下書きカード body ── */
 
@@ -152,28 +301,128 @@ function resamplePoints(pts: number[], step: number): number[] {
   return out
 }
 
-// Point on a card's border along the line from its center toward (tx, ty)
+// Point on a card's border along the line from its center toward (tx, ty).
+// Shape cards get figure-aware intersection for ellipse / diamond so arrows
+// touch the drawn outline, not the invisible bounding box; other figures use
+// the rect approximation.
 function cardBorderPoint(card: CanvasCard, tx: number, ty: number) {
   const cx = card.x + card.width / 2, cy = card.y + card.height / 2
   const dx = tx - cx, dy = ty - cy
   if (dx === 0 && dy === 0) return { x: cx, y: cy }
-  const s = 1 / Math.max(Math.abs(dx) / (card.width / 2), Math.abs(dy) / (card.height / 2))
+  const a = card.width / 2, b = card.height / 2
+  let s: number
+  if (card.type === 'shape' && card.shape === 'ellipse') {
+    s = 1 / Math.hypot(dx / a, dy / b)
+  } else if (card.type === 'shape' && card.shape === 'diamond') {
+    s = 1 / (Math.abs(dx) / a + Math.abs(dy) / b)
+  } else {
+    s = 1 / Math.max(Math.abs(dx) / a, Math.abs(dy) / b)
+  }
   return { x: cx + dx * s, y: cy + dy * s }
 }
 
-// Resolve an arrow's visual endpoints: attached ends follow their card (clipped to border)
+/* ── 接続ポート（8方位） ── */
+
+const PORT_DIRS: PortDir[] = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw']
+const PORT_SNAP_SCREEN = 18 // snap radius in SCREEN px (divide by zoom for canvas units)
+
+// The 8 connection-port anchors on a card's outline. Plain cards use the
+// bounding box; shape cards place ports on the figure's silhouette (matching
+// shapePaths geometry, ignoring its 1.5px stroke inset) so arrows dock onto
+// the drawn outline, not the invisible bbox.
+function portPoint(card: CanvasCard, dir: PortDir): { x: number; y: number } {
+  const { x, y, width: w, height: h } = card
+  const cx = x + w / 2, cy = y + h / 2
+  const kind = card.type === 'shape' ? (card.shape ?? 'rect') : 'rect'
+  let t: Record<PortDir, [number, number]>
+  switch (kind) {
+    case 'ellipse':
+    case 'cloud': { // cloud ≈ inscribed ellipse — close enough for its fuzzy outline
+      const a = w / 2, b = h / 2, k = Math.SQRT1_2
+      t = { n: [cx, y], ne: [cx + a * k, cy - b * k], e: [x + w, cy], se: [cx + a * k, cy + b * k], s: [cx, y + h], sw: [cx - a * k, cy + b * k], w: [x, cy], nw: [cx - a * k, cy - b * k] }
+      break
+    }
+    case 'diamond': // vertices + edge midpoints
+      t = { n: [cx, y], ne: [cx + w / 4, y + h / 4], e: [x + w, cy], se: [cx + w / 4, y + h * 0.75], s: [cx, y + h], sw: [cx - w / 4, y + h * 0.75], w: [x, cy], nw: [cx - w / 4, y + h / 4] }
+      break
+    case 'triangle': { // apex + base corners + thirds of the slanted edges
+      const rp = (f: number): [number, number] => [cx + (w / 2) * f, y + h * f]
+      const lp = (f: number): [number, number] => [cx - (w / 2) * f, y + h * f]
+      t = { n: [cx, y], ne: rp(1 / 3), e: rp(2 / 3), se: [x + w, y + h], s: [cx, y + h], sw: [x, y + h], w: lp(2 / 3), nw: lp(1 / 3) }
+      break
+    }
+    case 'parallelogram': {
+      const o = Math.min((w - 3) * 0.22, 48)
+      t = { n: [x + (w + o) / 2, y], ne: [x + w, y], e: [x + w - o / 2, cy], se: [x + w - o, y + h], s: [x + (w - o) / 2, y + h], sw: [x, y + h], w: [x + o / 2, cy], nw: [x + o, y] }
+      break
+    }
+    case 'hexagon': {
+      const o = Math.min((w - 3) * 0.25, (h - 3) * 0.6)
+      t = { n: [cx, y], ne: [x + w - o, y], e: [x + w, cy], se: [x + w - o, y + h], s: [cx, y + h], sw: [x + o, y + h], w: [x, cy], nw: [x + o, y] }
+      break
+    }
+    case 'cylinder': {
+      const ry = Math.max(3, Math.min((h - 3) * 0.18, 26))
+      t = { n: [cx, y], ne: [x + w, y + ry], e: [x + w, cy], se: [x + w, y + h - ry], s: [cx, y + h], sw: [x, y + h - ry], w: [x, cy], nw: [x, y + ry] }
+      break
+    }
+    case 'roundRect': { // corners pulled onto the rounded arc
+      const r = Math.max(2, Math.min(14, (w - 3) / 4, (h - 3) / 4))
+      const c = r * (1 - Math.SQRT1_2)
+      t = { n: [cx, y], ne: [x + w - c, y + c], e: [x + w, cy], se: [x + w - c, y + h - c], s: [cx, y + h], sw: [x + c, y + h - c], w: [x, cy], nw: [x + c, y + c] }
+      break
+    }
+    default: // rect + every non-shape card: bounding box
+      t = { n: [cx, y], ne: [x + w, y], e: [x + w, cy], se: [x + w, y + h], s: [cx, y + h], sw: [x, y + h], w: [x, cy], nw: [x, y] }
+  }
+  const [px, py] = t[dir]
+  return { x: px, y: py }
+}
+
+// Resolve an arrow's visual endpoints: a port-anchored end sits at that fixed
+// port; a portless attached end follows its card (clipped to border toward the
+// other end); a free end keeps its stored coordinates.
 function resolveArrowEnds(arrow: CanvasArrow, byId: Map<string, CanvasCard>) {
   const fc = arrow.fromCardId ? byId.get(arrow.fromCardId) : undefined
   const tc = arrow.toCardId ? byId.get(arrow.toCardId) : undefined
-  let p1 = fc ? { x: fc.x + fc.width / 2, y: fc.y + fc.height / 2 } : { x: arrow.x1, y: arrow.y1 }
-  let p2 = tc ? { x: tc.x + tc.width / 2, y: tc.y + tc.height / 2 } : { x: arrow.x2, y: arrow.y2 }
-  if (fc) p1 = cardBorderPoint(fc, p2.x, p2.y)
-  if (tc) p2 = cardBorderPoint(tc, p1.x, p1.y)
+  let p1 = fc
+    ? (arrow.fromPort ? portPoint(fc, arrow.fromPort) : { x: fc.x + fc.width / 2, y: fc.y + fc.height / 2 })
+    : { x: arrow.x1, y: arrow.y1 }
+  let p2 = tc
+    ? (arrow.toPort ? portPoint(tc, arrow.toPort) : { x: tc.x + tc.width / 2, y: tc.y + tc.height / 2 })
+    : { x: arrow.x2, y: arrow.y2 }
+  // A portless attached end aims at the NEAREST waypoint (not the far end) so
+  // the border exit follows the bent path's first segment.
+  const wps = arrow.points ?? []
+  const t1 = wps[0] ?? p2
+  const t2 = wps[wps.length - 1] ?? p1
+  if (fc && !arrow.fromPort) p1 = cardBorderPoint(fc, t1.x, t1.y)
+  if (tc && !arrow.toPort) p2 = cardBorderPoint(tc, wps.length ? t2.x : p1.x, wps.length ? t2.y : p1.y)
   return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
 }
 
-// Arrow path + label point (straight L or curved quadratic Q)
-function arrowGeometry(e: { x1: number; y1: number; x2: number; y2: number }, curved?: boolean) {
+// Arrow path + label point. With waypoints → polyline (curved is ignored);
+// otherwise straight L or curved quadratic Q. Label sits at the half-length
+// point of the path.
+function arrowGeometry(e: { x1: number; y1: number; x2: number; y2: number }, curved?: boolean, points?: { x: number; y: number }[]) {
+  if (points && points.length) {
+    const pts = [{ x: e.x1, y: e.y1 }, ...points, { x: e.x2, y: e.y2 }]
+    let total = 0
+    for (let i = 1; i < pts.length; i++) total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+    let half = total / 2
+    let lx = pts[0].x, ly = pts[0].y
+    for (let i = 1; i < pts.length; i++) {
+      const seg = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+      if (seg >= half) {
+        const t = seg === 0 ? 0 : half / seg
+        lx = pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t
+        ly = pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t
+        break
+      }
+      half -= seg
+    }
+    return { d: 'M ' + pts.map(pt => `${pt.x} ${pt.y}`).join(' L '), lx, ly }
+  }
   const mx = (e.x1 + e.x2) / 2, my = (e.y1 + e.y2) / 2
   if (!curved) return { d: `M ${e.x1} ${e.y1} L ${e.x2} ${e.y2}`, lx: mx, ly: my }
   const dx = e.x2 - e.x1, dy = e.y2 - e.y1
@@ -200,10 +449,11 @@ function splitPointsByBrush(pts: number[], ex: number, ey: number, r: number): n
 }
 
 interface DragState {
-  kind: 'pan' | 'card' | 'resize' | 'arrow-p1' | 'arrow-p2' | 'group-move' | 'group-resize' | 'label-move' | 'select-rect'
+  kind: 'pan' | 'card' | 'resize' | 'arrow-p1' | 'arrow-p2' | 'arrow-way' | 'group-move' | 'group-resize' | 'label-move' | 'select-rect'
   cardId?: string
   cards?: { id: string; x: number; y: number }[]
   arrow?: CanvasArrow
+  wayIndex?: number // 'arrow-way': which entry of arrow.points is being dragged
   group?: CanvasGroup
   groupCards?: { id: string; x: number; y: number }[]
   groupGroups?: CanvasGroup[]
@@ -274,6 +524,20 @@ export default function CanvasPage() {
   const [editingLabelId, setEditingLabelId] = useState<string | null>(null)
   const [drawArrow, setDrawArrow] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
   const drawArrowRef = useRef<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+  // Port the dragged arrow end is currently snapped to (highlight), and the
+  // port the in-progress arrow STARTED from (committed on mouseup).
+  const [snapPort, setSnapPort] = useState<{ cardId: string; dir: PortDir } | null>(null)
+  const drawArrowFromRef = useRef<{ cardId: string; dir: PortDir } | null>(null)
+  // Shape card the pointer is hovering (select tool) — its ports show as
+  // draggable connection sources. Cleared with a short delay so moving from
+  // the card body onto a port dot (half outside the bbox) doesn't hide them.
+  const [hoverPortCardId, setHoverPortCardId] = useState<string | null>(null)
+  const hoverPortTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const setPortHover = useCallback((id: string | null) => {
+    if (hoverPortTimer.current) { clearTimeout(hoverPortTimer.current); hoverPortTimer.current = null }
+    if (id) setHoverPortCardId(id)
+    else hoverPortTimer.current = setTimeout(() => setHoverPortCardId(null), 140)
+  }, [])
   const [drawGroup, setDrawGroup] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const drawGroupRef = useRef<{ x0: number; y0: number; x: number; y: number; w: number; h: number } | null>(null)
   const [penColor, setPenColor] = useState(PEN_COLORS[0])
@@ -333,6 +597,22 @@ export default function CanvasPage() {
       if (x >= c.x && x <= c.x + c.width && y >= c.y && y <= c.y + c.height) return c
     }
     return undefined
+  }, [])
+
+  // Nearest connection port within radius r (canvas units) of a point, across
+  // every card on the tab. Used to snap arrow ends while dragging.
+  const nearestPort = useCallback((x: number, y: number, r: number) => {
+    let best: { card: CanvasCard; dir: PortDir; x: number; y: number } | null = null
+    let bd = r
+    for (const c of tabCardsRef.current) {
+      if (x < c.x - r || x > c.x + c.width + r || y < c.y - r || y > c.y + c.height + r) continue
+      for (const dir of PORT_DIRS) {
+        const p = portPoint(c, dir)
+        const d = Math.hypot(p.x - x, p.y - y)
+        if (d < bd) { bd = d; best = { card: c, dir, x: p.x, y: p.y } }
+      }
+    }
+    return best
   }, [])
 
   const tabGroups = useMemo(
@@ -568,7 +848,11 @@ export default function CanvasPage() {
     }
     if (!canvasLocked && tool === 'arrow') {
       const p = toCanvas(e.clientX, e.clientY)
-      const a = { x1: p.x, y1: p.y, x2: p.x, y2: p.y }
+      // Start on (or near) a port → the arrow's tail docks to that fixed port.
+      const snap = nearestPort(p.x, p.y, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+      drawArrowFromRef.current = snap ? { cardId: snap.card.id, dir: snap.dir } : null
+      const sx = snap ? snap.x : p.x, sy = snap ? snap.y : p.y
+      const a = { x1: sx, y1: sy, x2: sx, y2: sy }
       drawArrowRef.current = a
       setDrawArrow(a)
       setIsDragging(true)
@@ -591,7 +875,7 @@ export default function CanvasPage() {
     setSelectedIds([])
     setIsDragging(true)
     e.preventDefault()
-  }, [tool, toCanvas, dispatch, activeTabId, canvasLocked])
+  }, [tool, toCanvas, dispatch, activeTabId, canvasLocked, nearestPort])
 
   const selectCard = useCallback((id: string, additive: boolean) => {
     setSelectedArrowId(null)
@@ -688,9 +972,12 @@ export default function CanvasPage() {
     }
     if (drawArrowRef.current) {
       const p = toCanvas(e.clientX, e.clientY)
-      const a = { ...drawArrowRef.current, x2: p.x, y2: p.y }
+      // Snap the live head to a nearby port (highlighted via snapPort).
+      const snap = nearestPort(p.x, p.y, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+      const a = { ...drawArrowRef.current, x2: snap ? snap.x : p.x, y2: snap ? snap.y : p.y }
       drawArrowRef.current = a
       setDrawArrow(a)
+      setSnapPort(snap ? { cardId: snap.card.id, dir: snap.dir } : null)
       return
     }
     if (drawGroupRef.current) {
@@ -733,13 +1020,25 @@ export default function CanvasPage() {
       d.cards?.forEach(c => dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: snap(c.x + dx / zoom), y: snap(c.y + dy / zoom) } }))
       d.labels?.forEach(l => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: snap(l.x + dx / zoom), y: snap(l.y + dy / zoom) } }))
     } else if (d.kind === 'resize' && d.cardId) {
-      const w = Math.max(160, snap((d.startW ?? 220) + dx / zoom))
-      const h = Math.max(80, snap((d.startH ?? 140) + dy / zoom))
+      // Shapes may shrink far below the normal card minimum (small circles, dots).
+      const isShape = tabCardsRef.current.find(c => c.id === d.cardId)?.type === 'shape'
+      const w = Math.max(isShape ? 40 : 160, snap((d.startW ?? 220) + dx / zoom))
+      const h = Math.max(isShape ? 40 : 80, snap((d.startH ?? 140) + dy / zoom))
       dispatch({ type: 'RESIZE_CANVAS_CARD', payload: { id: d.cardId, width: w, height: h } })
     } else if ((d.kind === 'arrow-p1' || d.kind === 'arrow-p2') && d.arrow) {
       const p = toCanvas(e.clientX, e.clientY)
-      const upd = d.kind === 'arrow-p1' ? { x1: p.x, y1: p.y, fromCardId: undefined } : { x2: p.x, y2: p.y, toCardId: undefined }
+      const snap = nearestPort(p.x, p.y, PORT_SNAP_SCREEN / zoom)
+      const px = snap ? snap.x : p.x, py = snap ? snap.y : p.y
+      setSnapPort(snap ? { cardId: snap.card.id, dir: snap.dir } : null)
+      const upd = d.kind === 'arrow-p1'
+        ? { x1: px, y1: py, fromCardId: undefined, fromPort: undefined }
+        : { x2: px, y2: py, toCardId: undefined, toPort: undefined }
       dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...d.arrow, ...upd } })
+    } else if (d.kind === 'arrow-way' && d.arrow && d.wayIndex != null) {
+      const p = toCanvas(e.clientX, e.clientY)
+      const pts = [...(d.arrow.points ?? [])]
+      pts[d.wayIndex] = { x: snap(p.x), y: snap(p.y) }
+      dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...d.arrow, points: pts } })
     } else if (d.kind === 'group-move' && d.group) {
       const gx = snap(d.startX + dx / zoom), gy = snap(d.startY + dy / zoom)
       dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...d.group, x: gx, y: gy } })
@@ -753,9 +1052,10 @@ export default function CanvasPage() {
     } else if (d.kind === 'label-move' && d.label) {
       dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...d.label, x: snap(d.startX + dx / zoom), y: snap(d.startY + dy / zoom) } })
     }
-  }, [dispatch, toCanvas, tabCards, tabLabels, applyBrush])
+  }, [dispatch, toCanvas, tabCards, tabLabels, applyBrush, nearestPort])
 
   const handleMouseUp = useCallback(() => {
+    setSnapPort(null)
     // Commit the pen stroke / eraser edit that was driven through handleMouseMove
     // (see the note there — the z-50 drag overlay owns the whole gesture).
     if (strokeRef.current) {
@@ -786,13 +1086,25 @@ export default function CanvasPage() {
     }
     if (drawArrowRef.current) {
       const a = drawArrowRef.current
+      const fromSnap = drawArrowFromRef.current
       drawArrowRef.current = null
+      drawArrowFromRef.current = null
       setDrawArrow(null)
       setIsDragging(false)
       const len = Math.hypot(a.x2 - a.x1, a.y2 - a.y1)
       if (len >= 8) {
-        const fromCard = cardAtPoint(a.x1, a.y1), toCard = cardAtPoint(a.x2, a.y2)
-        const arrow: CanvasArrow = { id: generateId(), tabId: activeTabId, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2, fromCardId: fromCard?.id, toCardId: toCard?.id, createdAt: new Date().toISOString() }
+        // Port-snapped ends dock to their port; otherwise fall back to the
+        // card under the endpoint (auto border clipping).
+        const toSnap = nearestPort(a.x2, a.y2, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+        const fromCard = fromSnap ? tabCardsRef.current.find(c => c.id === fromSnap.cardId) : cardAtPoint(a.x1, a.y1)
+        const toCard = toSnap ? toSnap.card : cardAtPoint(a.x2, a.y2)
+        const arrow: CanvasArrow = {
+          id: generateId(), tabId: activeTabId, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2,
+          fromCardId: fromCard?.id, toCardId: toCard?.id,
+          fromPort: fromSnap && fromCard ? fromSnap.dir : undefined,
+          toPort: toSnap && toCard ? toSnap.dir : undefined,
+          createdAt: new Date().toISOString(),
+        }
         dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
         setSelectedArrowId(arrow.id)
         setTool('select')
@@ -819,14 +1131,18 @@ export default function CanvasPage() {
       if (arrow) {
         const ex = d.kind === 'arrow-p1' ? arrow.x1 : arrow.x2
         const ey = d.kind === 'arrow-p1' ? arrow.y1 : arrow.y2
-        const card = cardAtPoint(ex, ey)
-        const upd = d.kind === 'arrow-p1' ? { fromCardId: card?.id } : { toCardId: card?.id }
+        // Dropped on a port → dock there; inside a card → auto border attach.
+        const snap = nearestPort(ex, ey, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+        const card = snap ? snap.card : cardAtPoint(ex, ey)
+        const upd = d.kind === 'arrow-p1'
+          ? { fromCardId: card?.id, fromPort: snap && card ? snap.dir : undefined }
+          : { toCardId: card?.id, toPort: snap && card ? snap.dir : undefined }
         dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...arrow, ...upd } })
       }
     }
     dragRef.current = null
     setIsDragging(false)
-  }, [dispatch, activeTabId, cardAtPoint, penColor, penWidth])
+  }, [dispatch, activeTabId, cardAtPoint, penColor, penWidth, nearestPort])
   handleMouseUpRef.current = handleMouseUp
 
   const handleArrowEndDown = useCallback((e: React.MouseEvent, arrow: CanvasArrow, which: 'p1' | 'p2') => {
@@ -836,6 +1152,50 @@ export default function CanvasPage() {
     dragRef.current = { kind: which === 'p1' ? 'arrow-p1' : 'arrow-p2', arrow, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
     setIsDragging(true)
   }, [])
+
+  // Start drawing an arrow FROM a hover port (select tool) — same flow as the
+  // arrow tool: handleMouseMove tracks the head, handleMouseUp commits.
+  const handlePortDown = useCallback((e: React.MouseEvent, card: CanvasCard, dir: PortDir) => {
+    if (e.button !== 0 || canvasLockedRef.current) return
+    e.stopPropagation()
+    e.preventDefault()
+    const p = portPoint(card, dir)
+    drawArrowFromRef.current = { cardId: card.id, dir }
+    const a = { x1: p.x, y1: p.y, x2: p.x, y2: p.y }
+    drawArrowRef.current = a
+    setDrawArrow(a)
+    setIsDragging(true)
+  }, [])
+
+  // Drag an existing bend waypoint.
+  const handleWayDown = useCallback((e: React.MouseEvent, arrow: CanvasArrow, idx: number) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    if (canvasLockedRef.current) return
+    dragRef.current = { kind: 'arrow-way', arrow, wayIndex: idx, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+    setIsDragging(true)
+  }, [])
+
+  // Drag a virtual segment-midpoint handle → insert a new waypoint there and
+  // keep dragging it in one gesture.
+  const handleWayInsert = useCallback((e: React.MouseEvent, arrow: CanvasArrow, idx: number, x: number, y: number) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    if (canvasLockedRef.current) return
+    const pts = [...(arrow.points ?? [])]
+    pts.splice(idx, 0, { x, y })
+    const updated = { ...arrow, points: pts }
+    dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: updated })
+    dragRef.current = { kind: 'arrow-way', arrow: updated, wayIndex: idx, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+    setIsDragging(true)
+  }, [dispatch])
+
+  // Double-click a waypoint → remove it.
+  const handleWayRemove = useCallback((arrow: CanvasArrow, idx: number) => {
+    if (canvasLockedRef.current) return
+    const pts = (arrow.points ?? []).filter((_, i) => i !== idx)
+    dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...arrow, points: pts.length ? pts : undefined } })
+  }, [dispatch])
 
   const handleGroupHeaderDown = useCallback((e: React.MouseEvent, group: CanvasGroup) => {
     if (e.button !== 0) return
@@ -1441,6 +1801,26 @@ export default function CanvasPage() {
     setShowAddMenu(false)
   }
 
+  // Shape cards skip addCard: they start with an EMPTY title (the label is
+  // opt-in via double-click) and take their default size from the figure.
+  function addShapeCard(kind: ShapeKind, at?: { x: number; y: number }) {
+    if (canvasLockedRef.current) return
+    const vp = viewportRef.current
+    const rect = canvasRef.current?.getBoundingClientRect()
+    const scx = rect ? rect.width / 2 : 400
+    const scy = rect ? rect.height / 2 : 300
+    const size = SHAPE_DEFAULT_SIZE[kind]
+    const x = at ? at.x - size.w / 2 : (scx - vp.x) / vp.zoom - size.w / 2
+    const y = at ? at.y : (scy - vp.y) / vp.zoom - size.h / 2
+    const card: CanvasCard = {
+      id: generateId(), tabId: activeTabId, type: 'shape', shape: kind, title: '', content: '',
+      x, y, width: size.w, height: size.h, createdAt: new Date().toISOString(),
+    }
+    dispatch({ type: 'ADD_CANVAS_CARD', payload: card })
+    setSelectedIds([card.id])
+    setShowAddMenu(false)
+  }
+
   // ── フロー図 → タスク一括変換 ──
   // Every タスク下書き card on the active tab becomes a real Task in the chosen
   // board. Arrows between two drafts define parent→child; an arrow from an
@@ -1572,7 +1952,7 @@ export default function CanvasPage() {
     try {
       const dataUrl = await toPng(el, {
         pixelRatio: 2,
-        backgroundColor: '#ffffff',
+        backgroundColor: document.documentElement.classList.contains('dark') ? '#171717' : '#ffffff',
         filter: node => !(node instanceof HTMLElement && node.dataset.exportIgnore === '1'),
       })
       const a = document.createElement('a')
@@ -1640,8 +2020,8 @@ export default function CanvasPage() {
                 <Plus size={16} /> カード追加
               </button>
               {showAddMenu && (
-                <div className="absolute left-0 top-10 z-20 bg-slate-100 border border-slate-300 rounded-lg shadow-xl py-1 min-w-[140px]">
-                  {(Object.keys(cardTypes) as CanvasCard['type'][]).map(key => {
+                <div className="absolute left-0 top-10 z-20 bg-slate-100 border border-slate-300 rounded-lg shadow-xl py-1 min-w-[200px]">
+                  {(Object.keys(cardTypes) as CanvasCard['type'][]).filter(k => k !== 'shape').map(key => {
                     const c = cardTypes[key]
                     const Icon = c.icon
                     return (
@@ -1650,6 +2030,21 @@ export default function CanvasPage() {
                       </button>
                     )
                   })}
+                  <div className="h-px bg-slate-300/60 my-1" />
+                  <div className="px-3 pb-1 pt-0.5 text-[11px] font-medium text-slate-400 flex items-center gap-1.5"><Shapes size={12} /> シェイプ（構成図）</div>
+                  <div className="grid grid-cols-3 gap-0.5 px-1.5 pb-1">
+                    {SHAPE_KINDS.map(s => (
+                      <button
+                        key={s.key}
+                        onClick={() => addShapeCard(s.key)}
+                        title={s.label}
+                        className="flex flex-col items-center gap-1 px-1 py-1.5 rounded hover:bg-slate-200 text-slate-600"
+                      >
+                        <ShapeGlyph kind={s.key} />
+                        <span className="text-[9px] leading-none whitespace-nowrap">{s.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -2141,7 +2536,7 @@ export default function CanvasPage() {
             // card or its <webview> — receives the mouse. For 'arrow' this is what
             // lets the user drag card→card directly: the mousedown lands on the
             // canvas bg INSIDE the card's bbox, so cardAtPoint attaches both ends.
-            className={!canvasLocked && (tool === 'pen' || tool === 'eraser' || tool === 'arrow') ? 'canvas-drawing' : undefined}
+            className={`canvas-ink${!canvasLocked && (tool === 'pen' || tool === 'eraser' || tool === 'arrow') ? ' canvas-drawing' : ''}`}
             style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`, transformOrigin: '0 0', position: 'absolute', top: 0, left: 0 }}
           >
             {/* Group areas (backmost) */}
@@ -2194,11 +2589,14 @@ export default function CanvasPage() {
                     key={a.id}
                     arrow={a}
                     ends={ends}
-                    d={arrowGeometry(ends, a.curved).d}
+                    d={arrowGeometry(ends, a.curved, a.points).d}
                     selected={selectedArrowId === a.id}
                     interactive={tool === 'select'}
                     onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]) }}
                     onEndDown={handleArrowEndDown}
+                    onWayDown={handleWayDown}
+                    onWayInsert={handleWayInsert}
+                    onWayRemove={handleWayRemove}
                     onEditLabel={() => { if (canvasLocked) return; setSelectedArrowId(a.id); setEditingArrowId(a.id) }}
                     onContextMenu={e => handleArrowContextMenu(e, a)}
                   />
@@ -2216,7 +2614,7 @@ export default function CanvasPage() {
             {tabArrows.map(a => {
               const editing = editingArrowId === a.id
               if (!editing && !a.label) return null
-              const g = arrowGeometry(resolveArrowEnds(a, cardsById), a.curved)
+              const g = arrowGeometry(resolveArrowEnds(a, cardsById), a.curved, a.points)
               return (
                 <div key={a.id} className="absolute" style={{ left: g.lx, top: g.ly, transform: 'translate(-50%, -50%)' }} onMouseDown={ev => ev.stopPropagation()}>
                   {editing ? (
@@ -2254,6 +2652,7 @@ export default function CanvasPage() {
                 onUpdate={updates => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...card, ...updates } })}
                 onSelect={(additive: boolean) => selectCard(card.id, additive)}
                 onContextMenu={e => handleCardContextMenu(e, card)}
+                onPortHover={card.type === 'shape' ? (h: boolean) => setPortHover(h ? card.id : null) : undefined}
                 pickerOpen={pickerOpenCardId === card.id}
                 detachOpen={detachOpenCardId === card.id}
                 pickerTab={pickerTab}
@@ -2266,6 +2665,43 @@ export default function CanvasPage() {
                 onPickerSearch={setPickerSearch}
               />
             ))}
+
+            {/* Connection ports — hidden normally. Shown on EVERY card while an
+                arrow is being drawn / an endpoint re-attached (snap targets), or
+                on the HOVERED shape card (select tool) as draggable sources.
+                Sizes are divided by zoom for a constant screen size. */}
+            {!canvasLocked && (() => {
+              const endpointDrag = isDragging && (dragRef.current?.kind === 'arrow-p1' || dragRef.current?.kind === 'arrow-p2')
+              const showAll = tool === 'arrow' || !!drawArrow || endpointDrag
+              const hoverCard = !showAll && tool === 'select' && hoverPortCardId ? cardsById.get(hoverPortCardId) : undefined
+              if (!showAll && !hoverCard) return null
+              const portCards = showAll ? tabCards : [hoverCard!]
+              const interactive = !showAll
+              return (
+                <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
+                  {portCards.map(c => PORT_DIRS.map(dir => {
+                    const p = portPoint(c, dir)
+                    const hot = snapPort?.cardId === c.id && snapPort.dir === dir
+                    return (
+                      <circle
+                        key={`${c.id}-${dir}`}
+                        cx={p.x} cy={p.y}
+                        r={(hot ? 6 : interactive ? 4.4 : 3.2) / viewport.zoom}
+                        stroke="#6366f1"
+                        strokeWidth={(hot ? 2 : 1.4) / viewport.zoom}
+                        opacity={hot ? 1 : 0.8}
+                        style={{
+                          fill: hot ? '#6366f1' : 'var(--handle-fill)',
+                          ...(interactive ? { pointerEvents: 'auto' as const, cursor: 'crosshair' } : {}),
+                        }}
+                        onMouseDown={interactive ? e => handlePortDown(e, c, dir) : undefined}
+                        onMouseEnter={interactive ? () => setPortHover(c.id) : undefined}
+                      />
+                    )
+                  }))}
+                </svg>
+              )
+            })()}
 
             {/* Pen strokes (top layer, over cards) */}
             <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
@@ -2383,7 +2819,7 @@ export default function CanvasPage() {
                   <div className="h-px bg-slate-200 my-1" />
                   <div className="px-3 pb-1 pt-0.5 text-[11px] font-medium text-slate-400 flex items-center gap-1.5"><Plus size={12} /> カードを追加</div>
                   <div className="grid grid-cols-2 gap-0.5 px-1 pb-1">
-                    {Object.entries(cardTypes).map(([key, cfg]) => {
+                    {Object.entries(cardTypes).filter(([key]) => key !== 'shape').map(([key, cfg]) => {
                       const Icon = cfg.icon
                       return (
                         <button
@@ -2396,6 +2832,21 @@ export default function CanvasPage() {
                         </button>
                       )
                     })}
+                  </div>
+                  <div className="h-px bg-slate-200 my-1" />
+                  <div className="px-3 pb-1 pt-0.5 text-[11px] font-medium text-slate-400 flex items-center gap-1.5"><Shapes size={12} /> シェイプを追加</div>
+                  <div className="grid grid-cols-3 gap-0.5 px-1.5 pb-1">
+                    {SHAPE_KINDS.map(s => (
+                      <button
+                        key={s.key}
+                        onClick={() => { addShapeCard(s.key, { x: contextMenu.canvasX, y: contextMenu.canvasY }); setContextMenu(null) }}
+                        title={s.label}
+                        className="flex flex-col items-center gap-1 px-1 py-1.5 rounded hover:bg-slate-100 text-slate-600"
+                      >
+                        <ShapeGlyph kind={s.key} />
+                        <span className="text-[9px] leading-none whitespace-nowrap">{s.label}</span>
+                      </button>
+                    ))}
                   </div>
                 </>
               ) : canvasLocked ? (
@@ -2418,6 +2869,9 @@ export default function CanvasPage() {
                   <button onClick={() => { if (selectedArrowId) setEditingArrowId(selectedArrowId); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> ラベルを編集</button>
                   {selArrow && (
                     <button onClick={() => { dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selArrow, curved: !selArrow.curved } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Spline size={14} /> {selArrow.curved ? '直線にする' : '曲線にする'}</button>
+                  )}
+                  {selArrow && (selArrow.points?.length ?? 0) > 0 && (
+                    <button onClick={() => { dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selArrow, points: undefined } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Spline size={14} /> 折れ点をすべて削除</button>
                   )}
                   <div className="h-px bg-slate-200 my-1" />
                   <button onClick={() => { setContextMenu(null); requestDeleteSelection() }} className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600 flex items-center justify-between">
@@ -2598,7 +3052,7 @@ function labelBox(l: CanvasLabel): { x: number; y: number; w: number; h: number 
 
 /* ── Arrow (SVG) ── */
 
-const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, interactive, onSelect, onEndDown, onEditLabel, onContextMenu }: {
+const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, interactive, onSelect, onEndDown, onWayDown, onWayInsert, onWayRemove, onEditLabel, onContextMenu }: {
   arrow: CanvasArrow
   ends: { x1: number; y1: number; x2: number; y2: number }
   d: string
@@ -2606,11 +3060,18 @@ const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, interactiv
   interactive: boolean
   onSelect: () => void
   onEndDown: (e: React.MouseEvent, arrow: CanvasArrow, which: 'p1' | 'p2') => void
+  onWayDown: (e: React.MouseEvent, arrow: CanvasArrow, idx: number) => void
+  onWayInsert: (e: React.MouseEvent, arrow: CanvasArrow, idx: number, x: number, y: number) => void
+  onWayRemove: (arrow: CanvasArrow, idx: number) => void
   onEditLabel: () => void
   onContextMenu: (e: React.MouseEvent) => void
 }) {
   const color = arrow.color || '#6366f1'
   const width = arrow.width || 2
+  const wps = arrow.points ?? []
+  // Full vertex chain (ends + waypoints) — segment midpoints host the
+  // "drag to bend here" ghost handles.
+  const chain = [{ x: ends.x1, y: ends.y1 }, ...wps, { x: ends.x2, y: ends.y2 }]
   return (
     <g>
       <path
@@ -2630,10 +3091,30 @@ const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, interactiv
       )}
       {selected && interactive && (
         <>
-          <circle cx={ends.x1} cy={ends.y1} r={5} fill={arrow.fromCardId ? '#4f46e5' : '#fff'} stroke="#4f46e5" strokeWidth={2}
-            style={{ pointerEvents: 'all', cursor: 'move' }} onMouseDown={e => onEndDown(e, arrow, 'p1')} />
-          <circle cx={ends.x2} cy={ends.y2} r={5} fill={arrow.toCardId ? '#4f46e5' : '#fff'} stroke="#4f46e5" strokeWidth={2}
-            style={{ pointerEvents: 'all', cursor: 'move' }} onMouseDown={e => onEndDown(e, arrow, 'p2')} />
+          <circle cx={ends.x1} cy={ends.y1} r={5} stroke="#4f46e5" strokeWidth={2}
+            style={{ fill: arrow.fromCardId ? '#4f46e5' : 'var(--handle-fill)', pointerEvents: 'all', cursor: 'move' }} onMouseDown={e => onEndDown(e, arrow, 'p1')} />
+          <circle cx={ends.x2} cy={ends.y2} r={5} stroke="#4f46e5" strokeWidth={2}
+            style={{ fill: arrow.toCardId ? '#4f46e5' : 'var(--handle-fill)', pointerEvents: 'all', cursor: 'move' }} onMouseDown={e => onEndDown(e, arrow, 'p2')} />
+          {/* Bend waypoints: square handles, drag to move, double-click to remove */}
+          {wps.map((pt, i) => (
+            <rect key={`w${i}`} x={pt.x - 4.5} y={pt.y - 4.5} width={9} height={9} rx={2}
+              stroke="#4f46e5" strokeWidth={2}
+              style={{ fill: 'var(--handle-fill)', pointerEvents: 'all', cursor: 'move' }}
+              onMouseDown={e => onWayDown(e, arrow, i)}
+              onDoubleClick={e => { e.stopPropagation(); onWayRemove(arrow, i) }}
+            />
+          ))}
+          {/* Ghost midpoint handles: drag to insert a bend at that segment */}
+          {chain.slice(0, -1).map((pt, i) => {
+            const nx = (pt.x + chain[i + 1].x) / 2, ny = (pt.y + chain[i + 1].y) / 2
+            return (
+              <circle key={`m${i}`} cx={nx} cy={ny} r={4}
+                fill="#c7d2fe" stroke="#6366f1" strokeWidth={1.2} opacity={0.8}
+                style={{ pointerEvents: 'all', cursor: 'copy' }}
+                onMouseDown={e => onWayInsert(e, arrow, i, nx, ny)}
+              />
+            )
+          })}
         </>
       )}
     </g>
@@ -2740,7 +3221,7 @@ const LabelItem = memo(function LabelItem({ label, selected, editing, viewLocked
         onBlur={onEndEdit}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur() } }}
         className="absolute bg-white/90 rounded px-1 outline outline-1 outline-indigo-400 leading-snug"
-        style={{ left: label.x, top: label.y, fontSize: label.fontSize, color: label.color, fontWeight: 600, width: `${Math.max(4, label.text.length + 2)}ch` }}
+        style={{ left: label.x, top: label.y, fontSize: label.fontSize, color: label.color === '#1e293b' ? 'var(--ink-dark)' : label.color, fontWeight: 600, width: `${Math.max(4, label.text.length + 2)}ch` }}
       />
     )
   }
@@ -2750,7 +3231,7 @@ const LabelItem = memo(function LabelItem({ label, selected, editing, viewLocked
       onDoubleClick={e => { e.stopPropagation(); onStartEdit() }}
       onContextMenu={onContextMenu}
       className={`absolute whitespace-nowrap leading-snug px-1 rounded select-none ${viewLocked ? 'cursor-default' : 'cursor-move'} ${selected ? 'outline outline-2 outline-offset-2 outline-indigo-500 bg-indigo-500/10 shadow-sm' : ''}`}
-      style={{ left: label.x, top: label.y, fontSize: label.fontSize, color: label.color, fontWeight: 600 }}
+      style={{ left: label.x, top: label.y, fontSize: label.fontSize, color: label.color === '#1e293b' ? 'var(--ink-dark)' : label.color, fontWeight: 600 }}
     >
       {label.text || <span className="text-slate-400 font-normal">ラベル</span>}
     </div>
@@ -3824,7 +4305,7 @@ const Minimap = memo(function Minimap({ cards, groups, viewport, canvasW, canvas
 
 /* ── Canvas card ── */
 
-const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked, isSelected, onHeaderDown, onResizeDown, onUpdate, onSelect, onContextMenu, pickerOpen, detachOpen, pickerTab, pickerSearch, onOpenPicker, onClosePicker, onOpenDetach, onCloseDetach, onPickerTab, onPickerSearch }: {
+const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked, isSelected, onHeaderDown, onResizeDown, onUpdate, onSelect, onContextMenu, onPortHover, pickerOpen, detachOpen, pickerTab, pickerSearch, onOpenPicker, onClosePicker, onOpenDetach, onCloseDetach, onPickerTab, onPickerSearch }: {
   card: CanvasCard
   viewLocked?: boolean
   isSelected: boolean
@@ -3833,6 +4314,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
   onUpdate: (updates: Partial<CanvasCard>) => void
   onSelect: (additive: boolean) => void
   onContextMenu: (e: React.MouseEvent) => void
+  onPortHover?: (hovering: boolean) => void // shape cards: show/hide the hover connection ports
   pickerOpen: boolean
   detachOpen: boolean
   pickerTab: 'existing' | 'new'
@@ -3877,6 +4359,71 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
     const pages = card.pages!.filter(p => p.id !== pageId)
     onUpdate({ pages })
     if (activePageId === pageId) setActivePageId(pages[0]?.id ?? '')
+  }
+
+  // Shape cards are headerless figures: the whole body is the drag handle,
+  // double-click edits the centered label, color reuses the card palette (dot hex).
+  if (card.type === 'shape') {
+    const kind = card.shape ?? 'rect'
+    const { outline, extras } = shapePaths(kind, card.width, card.height)
+    const dot = card.color ? COLOR_THEMES[card.color]?.dot : undefined
+    const stroke = dot ?? '#64748b'
+    return (
+      <div
+        className={`absolute select-none ${isSelected ? 'ring-2 ring-indigo-400/70 rounded-md' : ''}`}
+        style={{ left: card.x, top: card.y, width: card.width, height: card.height, cursor: locked ? 'default' : 'grab' }}
+        onMouseDown={e => {
+          if (e.button !== 0) return
+          if (e.shiftKey) { e.stopPropagation(); onSelect(true); return }
+          onHeaderDown(e, card)
+        }}
+        onContextMenu={onContextMenu}
+        onDoubleClick={() => { if (!locked) setEditingTitle(true) }}
+        onMouseEnter={() => onPortHover?.(true)}
+        onMouseLeave={() => onPortHover?.(false)}
+        title={locked ? undefined : 'ダブルクリックでラベルを編集'}
+      >
+        <svg width={card.width} height={card.height} className="block">
+          <path d={outline} style={{ fill: 'var(--shape-fill)' }} fillOpacity={0.85} />
+          {dot && <path d={outline} fill={dot} fillOpacity={0.16} />}
+          <path d={outline} fill="none" stroke={stroke} strokeWidth={2} strokeLinejoin="round" />
+          {extras.map((d, i) => <path key={i} d={d} fill="none" stroke={stroke} strokeWidth={2} />)}
+        </svg>
+        {locked && <Lock size={12} className="absolute top-1 right-1 text-amber-500" />}
+        {editingTitle && !locked ? (
+          <div className="absolute inset-0 flex items-center justify-center px-3">
+            <input
+              autoFocus
+              type="text"
+              value={card.title}
+              onChange={e => onUpdate({ title: e.target.value })}
+              onMouseDown={e => e.stopPropagation()}
+              onBlur={() => setEditingTitle(false)}
+              onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur() } }}
+              className="w-full max-w-[85%] text-center text-sm font-medium bg-white/85 border border-indigo-300 rounded px-1.5 py-0.5 outline-none text-slate-800 placeholder-slate-400"
+              placeholder="ラベル…"
+            />
+          </div>
+        ) : card.title ? (
+          // Triangles have no room at the vertical center-top; pictograms
+          // (person / pc) sit the label at the bottom over a white pill so it
+          // stays readable across the glyph lines.
+          <div className={`absolute inset-0 flex justify-center px-3 pointer-events-none ${kind === 'triangle' ? 'items-end pb-[12%]' : (kind === 'person' || kind === 'pc') ? 'items-end pb-0.5' : 'items-center'}`}>
+            <span className={`max-w-[88%] text-sm font-medium text-center break-words leading-snug text-slate-700 ${(kind === 'person' || kind === 'pc' || kind === 'server' || kind === 'file' || kind === 'folder') ? 'bg-white/75 rounded px-1' : ''}`}>{card.title}</span>
+          </div>
+        ) : null}
+        {!locked && (
+          <div
+            className="absolute bottom-0 right-0 w-4 h-4 cursor-nwse-resize group"
+            onMouseDown={e => onResizeDown(e, card)}
+          >
+            <svg className="absolute bottom-1 right-1 text-slate-400 group-hover:text-slate-600 transition-colors" width="8" height="8" viewBox="0 0 8 8">
+              <path d="M7 1L1 7M7 4L4 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -4437,6 +4984,21 @@ const ListCardComponent = memo(function ListCardComponent({ card, onUpdate, onDe
           <AudioCardBody card={card} onUpdate={onUpdate} fixedHeight={150} />
         ) : card.type === 'sequence' ? (
           <SequenceCardBody card={card} onUpdate={onUpdate} fixedHeight={320} />
+        ) : card.type === 'shape' ? (
+          (() => {
+            const { outline, extras } = shapePaths(card.shape ?? 'rect', 160, 90)
+            const dot = card.color ? COLOR_THEMES[card.color]?.dot : undefined
+            const stroke = dot ?? '#64748b'
+            return (
+              <div className="flex items-center justify-center py-2">
+                <svg width={160} height={90}>
+                  <path d={outline} style={{ fill: dot ?? 'var(--shape-fill)' }} fillOpacity={dot ? 0.16 : 0.9} />
+                  <path d={outline} fill="none" stroke={stroke} strokeWidth={2} strokeLinejoin="round" />
+                  {extras.map((d, i) => <path key={i} d={d} fill="none" stroke={stroke} strokeWidth={2} />)}
+                </svg>
+              </div>
+            )
+          })()
         ) : (
           <MarkdownText
             value={card.content}

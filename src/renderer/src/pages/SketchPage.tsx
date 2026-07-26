@@ -431,7 +431,7 @@ export default function SketchPage() {
             <div className="flex-1 min-h-0 bg-slate-50 p-4">
               <svg
                 ref={svgRef}
-                className="w-full h-full bg-white rounded-lg border border-slate-200 touch-none overscroll-contain select-none"
+                className="keep-light w-full h-full bg-white rounded-lg border border-slate-200 touch-none overscroll-contain select-none"
                 style={{
                   cursor: panRef.current ? 'grabbing' : (spaceRef.current ? 'grab' : (tool === 'eraser' ? 'cell' : 'crosshair')),
                   WebkitUserSelect: 'none',

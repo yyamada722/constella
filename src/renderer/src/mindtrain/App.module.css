@@ -45,7 +45,7 @@
   width: 14px;
   height: 14px;
   border-radius: 3px;
-  background: #ffffff;
+  background: var(--surface);
   border: 3px solid var(--ink);
   display: inline-block;
   flex-shrink: 0;

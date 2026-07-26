@@ -87,6 +87,9 @@ export interface Bookmark {
   label?: string
 }
 
+// One of the 8 connection ports on a card's outline (compass directions).
+export type PortDir = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
+
 export interface CanvasArrow {
   id: string
   tabId: string
@@ -96,6 +99,9 @@ export interface CanvasArrow {
   y2: number
   fromCardId?: string
   toCardId?: string
+  fromPort?: PortDir // when set (with fromCardId), the end docks to that fixed port instead of the auto border point
+  toPort?: PortDir
+  points?: { x: number; y: number }[] // bend waypoints between the two ends (canvas coords, in order)
   label?: string
   curved?: boolean
   color?: string // arrow stroke/arrowhead color (default indigo #6366f1)
@@ -211,10 +217,14 @@ export interface TimelineBand {
   createdAt: string
 }
 
+// Diagram shapes for 'shape' cards — plain outlined figures (構成図・フローチャート用).
+export type ShapeKind = 'rect' | 'roundRect' | 'ellipse' | 'diamond' | 'triangle' | 'parallelogram' | 'hexagon' | 'cylinder' | 'cloud'
+  | 'file' | 'folder' | 'person' | 'pc' | 'server' // pictogram shapes (IT構成図の定番)
+
 export interface CanvasCard {
   id: string
   tabId: string
-  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft'
+  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft' | 'shape'
   title: string
   content: string
   url?: string
@@ -229,6 +239,7 @@ export interface CanvasCard {
   refNoteId?: string // when set on a 'note' card, the card mirrors this Note (live read/write)
   refTaskId?: string // when set on a 'todo' card, the card mirrors this Task (live read/write)
   draftWhen?: DraftWhen // 'taskDraft' cards: rough target timing, converted to endDate on タスク化
+  shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
 
   x: number
   y: number
