@@ -238,7 +238,7 @@ export type ShapeKind = 'rect' | 'roundRect' | 'ellipse' | 'diamond' | 'triangle
 export interface CanvasCard {
   id: string
   tabId: string
-  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft' | 'shape'
+  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft' | 'shape' | 'sketch'
   title: string
   content: string
   url?: string
@@ -252,6 +252,7 @@ export interface CanvasCard {
   stationId?: string // linked 路線図 (mindtrain) station — back-reference for card↔station jump
   refNoteId?: string // when set on a 'note' card, the card mirrors this Note (live read/write)
   refTaskId?: string // when set on a 'todo' card, the card mirrors this Task (live read/write)
+  refSketchId?: string // when set on a 'sketch' card, the card live-mirrors this Sketch (read-only on canvas)
   draftWhen?: DraftWhen // 'taskDraft' cards: rough target timing, converted to endDate on タスク化
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
 
