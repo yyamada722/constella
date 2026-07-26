@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush } from 'lucide-react'
 import { useApp } from '../store'
-import { CanvasCard, CanvasTab, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project, ShapeKind, PortDir } from '../types'
+import { CanvasCard, CanvasTab, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
 import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
 import { PdfViewer } from '../components/PdfViewer'
@@ -27,6 +27,8 @@ const cardTypes = {
   video: { label: '動画', icon: Video, bg: 'bg-fuchsia-50', border: 'border-fuchsia-200', text: 'text-fuchsia-600', header: 'bg-fuchsia-100/50', defaultWidth: 480, defaultHeight: 300 },
   audio: { label: '音声', icon: AudioLines, bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-600', header: 'bg-orange-100/50', defaultWidth: 360, defaultHeight: 150 },
   sequence: { label: '連番再生', icon: Layers, bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-600', header: 'bg-indigo-100/50', defaultWidth: 360, defaultHeight: 360 },
+  // スケッチカード — live-mirrors a Sketch (from the スケッチ page), rendered read-only.
+  sketch: { label: 'スケッチ', icon: Brush, bg: 'bg-fuchsia-50', border: 'border-fuchsia-200', text: 'text-fuchsia-600', header: 'bg-fuchsia-100/50', defaultWidth: 320, defaultHeight: 260 },
   // タスク下書き — a lightweight planning sticky. Scatter these, wire parent→child
   // with arrows, then タスク化 converts the whole flow into real tasks.
   taskDraft: { label: 'タスク下書き', icon: ListTodo, bg: 'bg-yellow-50', border: 'border-yellow-400 border-dashed', text: 'text-yellow-700', header: 'bg-yellow-100/60', defaultWidth: 210, defaultHeight: 112 },
@@ -229,6 +231,79 @@ const TaskDraftCardBody = memo(function TaskDraftCardBody({ card, onUpdate, onSe
       <div className="text-[9px] text-slate-400 truncate">
         {card.draftWhen ? `期日目安 ${draftWhenToEndDate(card.draftWhen)}` : '期日チップは任意 / 矢印で 親→子'}
       </div>
+    </div>
+  )
+})
+
+/* ── スケッチカード body ── */
+// Read-only mirror of a Sketch. All editing stays on the スケッチ page; here we
+// just render its strokes as an auto-fitted <svg>.
+const SketchCardBody = memo(function SketchCardBody({ sketch, onUnlink, locked }: {
+  sketch: Sketch
+  onUnlink: () => void
+  locked: boolean
+}) {
+  // Fit every stroke into the card: bbox over all points + a small padding.
+  // Memoized on the stroke array so canvas pan/zoom re-renders stay cheap.
+  const fit = useMemo(() => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const s of sketch.strokes) {
+      for (let i = 0; i < s.points.length; i += 2) {
+        const x = s.points[i], y = s.points[i + 1]
+        if (x < minX) minX = x
+        if (y < minY) minY = y
+        if (x > maxX) maxX = x
+        if (y > maxY) maxY = y
+      }
+    }
+    if (!isFinite(minX)) return null
+    const pad = 8
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad
+    return { viewBox: `${minX} ${minY} ${maxX - minX} ${maxY - minY}` }
+  }, [sketch.strokes])
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="px-3 py-1 border-b border-slate-200/60 flex items-center gap-1 text-[10px] text-slate-500 shrink-0">
+        <Link2 size={10} className="text-fuchsia-400 shrink-0" />
+        <span className="truncate flex-1" title={sketch.name}>{sketch.name || '(無題)'}</span>
+        {!locked && (
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onUnlink() }}
+            title="リンクを解除"
+            className="p-0.5 rounded hover:bg-slate-100 text-slate-400 hover:text-rose-500 shrink-0"
+          >
+            <Unlink size={10} />
+          </button>
+        )}
+      </div>
+      {fit ? (
+        <svg
+          viewBox={fit.viewBox}
+          preserveAspectRatio="xMidYMid meet"
+          className="w-full h-full flex-1 min-h-0"
+          style={{ pointerEvents: 'none' }}
+        >
+          {sketch.strokes.map((s, i) => {
+            let pts = ''
+            for (let j = 0; j < s.points.length; j += 2) pts += `${s.points[j]},${s.points[j + 1]} `
+            return (
+              <polyline
+                key={i}
+                points={pts.trim()}
+                fill="none"
+                stroke={s.color}
+                strokeWidth={s.width}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )
+          })}
+        </svg>
+      ) : (
+        <div className="flex-1 min-h-0 flex items-center justify-center text-[11px] text-slate-400">（空のスケッチ）</div>
+      )}
     </div>
   )
 })
@@ -2906,6 +2981,12 @@ export default function CanvasPage() {
                       <div className="h-px bg-slate-200 my-1" />
                     </>
                   )}
+                  {selCards.length === 1 && selCards[0].refSketchId && state.sketches.some(s => s.id === selCards[0].refSketchId) && (
+                    <>
+                      <button onClick={() => { navigate('/sketch', { state: { focusSketchId: selCards[0].refSketchId } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-fuchsia-600 flex items-center gap-2"><Brush size={14} /> スケッチで開く</button>
+                      <div className="h-px bg-slate-200 my-1" />
+                    </>
+                  )}
                   <button onClick={() => { duplicateSelection(); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center justify-between">
                     <span className="flex items-center gap-2"><Copy size={14} /> 複製</span><kbd className="text-[10px] text-slate-400">Ctrl+D</kbd>
                   </button>
@@ -4398,7 +4479,8 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
   const { state, dispatch } = useApp()
   const linkedNote = card.refNoteId ? state.notes.find(n => n.id === card.refNoteId) : undefined
   const linkedTask = card.refTaskId ? (() => { for (const p of state.projects) { const t = p.tasks.find(x => x.id === card.refTaskId); if (t) return t } return undefined })() : undefined
-  const isRefBroken = (!!card.refNoteId && !linkedNote) || (!!card.refTaskId && !linkedTask)
+  const linkedSketch = card.refSketchId ? state.sketches.find(s => s.id === card.refSketchId) : undefined
+  const isRefBroken = (!!card.refNoteId && !linkedNote) || (!!card.refTaskId && !linkedTask) || (!!card.refSketchId && !linkedSketch)
   const cfg = cardTypes[card.type]
   const theme = (card.color && COLOR_THEMES[card.color]) || cfg
   const Icon = cfg.icon
@@ -4737,10 +4819,25 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
           <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-4 text-center">
             <span className="text-[11px] text-slate-500">リンク先が見つかりません</span>
             <button
-              onClick={() => onUpdate({ refNoteId: undefined, refTaskId: undefined })}
+              onClick={() => onUpdate({ refNoteId: undefined, refTaskId: undefined, refSketchId: undefined })}
               className="text-[10px] px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
             >リンクを解除</button>
           </div>
+        ) : card.type === 'sketch' ? (
+          linkedSketch ? (
+            <SketchCardBody sketch={linkedSketch} onUnlink={() => onUpdate({ refSketchId: undefined })} locked={locked} />
+          ) : (
+            <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-4 text-center">
+              <span className="text-[11px] text-slate-400">スケッチが未選択です</span>
+              {!locked && (
+                <button
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={e => { e.stopPropagation(); onOpenPicker() }}
+                  className="text-[10px] px-2 py-0.5 rounded border border-fuchsia-300 text-fuchsia-600 hover:bg-fuchsia-50"
+                >スケッチを選択</button>
+              )}
+            </div>
+          )
         ) : (
           <div className="flex-1 min-h-0 flex flex-col">
             {(card.type === 'note' || card.type === 'todo') && !locked && (
@@ -4780,22 +4877,39 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                 className={`px-2 py-0.5 rounded ${pickerTab === 'existing' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
                 onClick={() => onPickerTab('existing')}
               >既存</button>
-              <button
-                className={`px-2 py-0.5 rounded ${pickerTab === 'new' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
-                onClick={() => onPickerTab('new')}
-              >新規作成</button>
+              {card.type !== 'sketch' && (
+                <button
+                  className={`px-2 py-0.5 rounded ${pickerTab === 'new' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
+                  onClick={() => onPickerTab('new')}
+                >新規作成</button>
+              )}
             </div>
-            {pickerTab === 'existing' ? (
+            {(pickerTab === 'existing' || card.type === 'sketch') ? (
               <>
                 <input
                   value={pickerSearch}
                   onChange={e => onPickerSearch(e.target.value)}
-                  placeholder={card.type === 'note' ? 'ノートを検索…' : 'タスクを検索…'}
+                  placeholder={card.type === 'note' ? 'ノートを検索…' : card.type === 'sketch' ? 'スケッチを検索…' : 'タスクを検索…'}
                   autoFocus
                   className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none focus:border-indigo-400 mb-1"
                 />
                 <div className="max-h-[220px] overflow-y-auto">
-                  {card.type === 'note'
+                  {card.type === 'sketch'
+                    ? state.sketches
+                        .filter(s => s.masterProjectId === state.activeMasterProjectId)
+                        .filter(s => !pickerSearch || (s.name || '').toLowerCase().includes(pickerSearch.toLowerCase()))
+                        .map(s => (
+                          <button
+                            key={s.id}
+                            className="w-full text-left px-1.5 py-1 hover:bg-slate-50 rounded text-xs text-slate-700 truncate flex items-center gap-1"
+                            onClick={() => { onUpdate({ refSketchId: s.id }); onClosePicker() }}
+                            title={s.name}
+                          >
+                            <span className="truncate">{s.name || '(無題)'}</span>
+                            <span className="ml-auto text-[9px] text-slate-400 shrink-0">{s.strokes.length}本</span>
+                          </button>
+                        ))
+                    : card.type === 'note'
                     ? state.notes
                         .filter(n => n.masterProjectId === state.activeMasterProjectId)
                         .filter(n => !pickerSearch || (n.title || '').toLowerCase().includes(pickerSearch.toLowerCase()))
@@ -4824,6 +4938,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                         ))
                   }
                   {((card.type === 'note' && state.notes.filter(n => n.masterProjectId === state.activeMasterProjectId).length === 0) ||
+                    (card.type === 'sketch' && state.sketches.filter(s => s.masterProjectId === state.activeMasterProjectId).length === 0) ||
                     (card.type === 'todo' && state.projects.filter(p => p.masterProjectId === state.activeMasterProjectId).every(p => p.tasks.length === 0))) && (
                     <div className="px-1.5 py-2 text-[10px] text-slate-400 text-center">候補がありません</div>
                   )}
@@ -4891,7 +5006,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
             <button
               className="text-xs text-left px-2 py-1.5 hover:bg-rose-50 hover:text-rose-700 rounded text-slate-600"
               onClick={() => {
-                onUpdate({ refNoteId: undefined, refTaskId: undefined })
+                onUpdate({ refNoteId: undefined, refTaskId: undefined, refSketchId: undefined })
                 onCloseDetach()
               }}
             >カードを空にする</button>

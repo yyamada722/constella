@@ -1,4 +1,5 @@
 import { useState, useRef, useMemo, useEffect, useCallback } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Plus, Trash2, Pencil, Eraser, Undo2, Redo2, Eraser as ClearIcon, ZoomIn, ZoomOut, Maximize, ImageDown, FileDown } from 'lucide-react'
 import { useApp } from '../store'
 import { Sketch, SketchStroke } from '../types'
@@ -31,6 +32,17 @@ export default function SketchPage() {
   useEffect(() => {
     if (selectedId && !sketches.find(s => s.id === selectedId)) setSelectedId(sketches[0]?.id ?? null)
   }, [sketches, selectedId])
+
+  // Cross-page entry: the Canvas sketch card can navigate('/sketch', { state: { focusSketchId } }) to surface a sketch.
+  const location = useLocation()
+  const handledLocKey = useRef('')
+  useEffect(() => {
+    const st = location.state as { focusSketchId?: string } | null
+    if (!st?.focusSketchId || handledLocKey.current === location.key) return
+    if (!state.sketches.some(s => s.id === st.focusSketchId)) return
+    handledLocKey.current = location.key
+    setSelectedId(st.focusSketchId)
+  }, [location.key, location.state, state.sketches])
 
   const svgRef = useRef<SVGSVGElement>(null)
   const drawingRef = useRef(false)
