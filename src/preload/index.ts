@@ -64,6 +64,12 @@ contextBridge.exposeInMainWorld('api', {
   openFile: (bytes: Uint8Array, name: string, type: string): Promise<void> => ipcRenderer.invoke('file:open-temp', bytes, name, type),
   // Local / server file references (`local:` refs): files stay on the NAS or the
   // local disk; the app stores only the path and reads bytes on demand.
+  // 計画の PDF 書き出し: 印刷用 HTML → PDF 化と、保存ダイアログ経由の書き出し。
+  pdf: {
+    render: (html: string, margins: { top: number; bottom: number; left: number; right: number }): Promise<Uint8Array> =>
+      ipcRenderer.invoke('pdf:render-html', html, margins),
+    save: (bytes: Uint8Array, defaultName: string): Promise<boolean> => ipcRenderer.invoke('pdf:save', bytes, defaultName),
+  },
   localFile: {
     pick: (): Promise<string[] | null> => ipcRenderer.invoke('local:pick'),
     stat: (path: string): Promise<{ exists: boolean; size?: number; mtime?: number }> => ipcRenderer.invoke('local:stat', path),

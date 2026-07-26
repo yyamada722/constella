@@ -24,7 +24,7 @@ const IS_TOUCH = typeof window !== 'undefined' && !!window.matchMedia?.('(pointe
 
 /* ── イベント種別 → アイコン + 色 ── */
 
-type Tone = 'sky' | 'indigo' | 'amber' | 'orange' | 'cyan' | 'violet' | 'rose' | 'emerald' | 'fuchsia' | 'blue' | 'teal' | 'slate'
+export type Tone = 'sky' | 'indigo' | 'amber' | 'orange' | 'cyan' | 'violet' | 'rose' | 'emerald' | 'fuchsia' | 'blue' | 'teal' | 'slate'
 
 const TONE_CLS: Record<Tone, { bubble: string; text: string }> = {
   sky: { bubble: 'bg-sky-100 text-sky-600 border-sky-200', text: 'text-sky-600' },
@@ -61,7 +61,8 @@ const TYPE_STYLE: Record<string, [LucideIcon, Tone]> = {
   prep: [ClipboardList, 'slate'], plan: [ClipboardList, 'slate'],
 }
 
-function typeStyle(type: string): [LucideIcon, Tone] {
+// planPdf (PDF書き出し) も同じ種別→トーン対応を使う。
+export function typeStyle(type: string): [LucideIcon, Tone] {
   return TYPE_STYLE[type] ?? [MapPin, 'slate']
 }
 
@@ -553,7 +554,9 @@ export function ItineraryView({ content, fallbackTitle }: { content: string; fal
         return (
           <div key={si} className="mb-2">
             {sec.day && (
-              <div className="sticky top-0 z-10 -mx-1 px-1 py-1.5 bg-gradient-to-b from-white via-white to-transparent">
+              // from/via-white は gen-dark-css の走査対象外 (bg-系のみ) — ダークは明示
+              // dark: variant で下地色 (bg-white→neutral-800 と同じ) に合わせる
+              <div className="sticky top-0 z-10 -mx-1 px-1 py-1.5 bg-gradient-to-b from-white via-white to-transparent dark:from-neutral-800 dark:via-neutral-800">
                 <div className="flex items-baseline gap-2">
                   <span className="text-sm font-bold text-slate-800">{formatDayLabel(sec.day.date)}</span>
                   <span className="text-[10px] text-slate-400 font-mono">{sec.day.date}</span>
