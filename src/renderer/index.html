@@ -6,6 +6,10 @@
   <title>Constella</title>
 </head>
 <body class="bg-slate-50 text-slate-900">
+  <script>
+    // Apply the saved theme before first paint to avoid a light flash.
+    try { if (localStorage.getItem('constella.theme') === 'dark') document.documentElement.classList.add('dark') } catch (e) { /* ignore */ }
+  </script>
   <div id="root"></div>
   <script type="module" src="./src/main.tsx"></script>
 </body>

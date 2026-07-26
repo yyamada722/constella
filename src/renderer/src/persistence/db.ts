@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS plans (ord INTEGER, id TEXT PRIMARY KEY, masterProjec
 CREATE TABLE IF NOT EXISTS timeline_bands (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, startDate TEXT, endDate TEXT, color TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS ai_conversations (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, messages TEXT, createdAt TEXT, updatedAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_tabs (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, name TEXT, createdAt TEXT);
-CREATE TABLE IF NOT EXISTS canvas_cards (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, type TEXT, title TEXT, content TEXT, url TEXT, color TEXT, locked INTEGER, pages TEXT, crop TEXT, bookmarks TEXT, pdf TEXT, frames TEXT, stationId TEXT, refNoteId TEXT, refTaskId TEXT, draftWhen TEXT, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
-CREATE TABLE IF NOT EXISTS canvas_arrows (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, x1 REAL, y1 REAL, x2 REAL, y2 REAL, fromCardId TEXT, toCardId TEXT, label TEXT, curved INTEGER, color TEXT, width REAL, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS canvas_cards (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, type TEXT, title TEXT, content TEXT, url TEXT, color TEXT, locked INTEGER, pages TEXT, crop TEXT, bookmarks TEXT, pdf TEXT, frames TEXT, stationId TEXT, refNoteId TEXT, refTaskId TEXT, draftWhen TEXT, shape TEXT, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS canvas_arrows (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, x1 REAL, y1 REAL, x2 REAL, y2 REAL, fromCardId TEXT, toCardId TEXT, label TEXT, curved INTEGER, color TEXT, width REAL, fromPort TEXT, toPort TEXT, points TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_groups (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, title TEXT, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_strokes (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, points TEXT, color TEXT, width REAL, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_labels (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, text TEXT, x REAL, y REAL, fontSize REAL, color TEXT, createdAt TEXT);
@@ -257,6 +257,10 @@ async function getDb(): Promise<Database> {
     try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN sharedAlias TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE research ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE canvas_cards ADD COLUMN shape TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN fromPort TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN toPort TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN points TEXT') } catch { /* column already present */ }
     // One-time migration: collapse all pre-existing data under a single default
     // master project ('メイン'). Runs once (meta-gated); the in-memory
     // normalizeMasterProjects in store.tsx is the comprehensive safety net for any
@@ -422,6 +426,7 @@ export async function loadState(): Promise<AppState | null> {
     refNoteId: optStr(r.refNoteId),
     refTaskId: optStr(r.refTaskId),
     draftWhen: optStr(r.draftWhen) as CanvasCard['draftWhen'],
+    shape: optStr(r.shape) as CanvasCard['shape'],
     x: num(r.x), y: num(r.y), width: num(r.width), height: num(r.height), createdAt: str(r.createdAt),
   }))
 
@@ -431,6 +436,9 @@ export async function loadState(): Promise<AppState | null> {
     fromCardId: optStr(r.fromCardId), toCardId: optStr(r.toCardId),
     label: optStr(r.label), curved: bool(r.curved),
     color: optStr(r.color), width: r.width == null ? undefined : num(r.width),
+    fromPort: optStr(r.fromPort) as CanvasArrow['fromPort'],
+    toPort: optStr(r.toPort) as CanvasArrow['toPort'],
+    points: parseJson<{ x: number; y: number }[]>(r.points),
     createdAt: str(r.createdAt),
   }))
 
@@ -573,7 +581,7 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO canvas_tabs (ord,id,projectId,name,createdAt) VALUES (?,?,?,?,?)',
       state.canvasTabs.map((t, i) => [i, t.id, t.projectId, t.name, t.createdAt].map(B)))
 
-    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,draftWhen,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,draftWhen,shape,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.canvasCards.map((c, i) => [i, c.id, c.tabId, c.type, c.title, c.content,
         c.url ?? null, c.color ?? null, c.locked ? 1 : 0, c.pages ? JSON.stringify(c.pages) : null,
         c.crop ? JSON.stringify(c.crop) : null,
@@ -583,12 +591,14 @@ async function doSaveState(state: AppState): Promise<void> {
         c.stationId ?? null,
         c.refNoteId ?? null, c.refTaskId ?? null,
         c.draftWhen ?? null,
+        c.shape ?? null,
         c.x, c.y, c.width, c.height, c.createdAt].map(B)))
 
-    insert('INSERT INTO canvas_arrows (ord,id,tabId,x1,y1,x2,y2,fromCardId,toCardId,label,curved,color,width,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    insert('INSERT INTO canvas_arrows (ord,id,tabId,x1,y1,x2,y2,fromCardId,toCardId,label,curved,color,width,fromPort,toPort,points,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.canvasArrows.map((a, i) => [i, a.id, a.tabId, a.x1, a.y1, a.x2, a.y2,
         a.fromCardId ?? null, a.toCardId ?? null, a.label ?? null, a.curved ? 1 : 0,
-        a.color ?? null, a.width ?? null, a.createdAt].map(B)))
+        a.color ?? null, a.width ?? null, a.fromPort ?? null, a.toPort ?? null,
+        a.points && a.points.length ? JSON.stringify(a.points) : null, a.createdAt].map(B)))
 
     insert('INSERT INTO canvas_groups (ord,id,tabId,title,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?)',
       state.canvasGroups.map((g, i) => [i, g.id, g.tabId, g.title, g.x, g.y, g.width, g.height, g.createdAt].map(B)))

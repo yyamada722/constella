@@ -96,7 +96,7 @@
   padding: 4px 8px;
   border: 2px solid var(--ink);
   border-radius: 4px;
-  background: #ffffff;
+  background: var(--surface);
   color: var(--ink);
   outline: none;
   z-index: 20;
@@ -185,7 +185,7 @@
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 3px solid #ffffff;
+  border: 3px solid var(--surface);
   box-shadow: 0 0 0 1px var(--border);
   cursor: pointer;
   padding: 0;
@@ -215,7 +215,7 @@
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  border: 3px solid #ffffff;
+  border: 3px solid var(--surface);
   box-shadow: 0 0 0 1px var(--border);
   cursor: pointer;
   padding: 0;
@@ -305,7 +305,7 @@
   height: 12px;
   border-radius: 50%;
   flex-shrink: 0;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--surface);
   box-shadow: 0 0 0 1px var(--border);
 }
 
@@ -352,7 +352,7 @@
 }
 
 .dirBtn:hover {
-  background: #ffffff;
+  background: var(--surface);
   border-color: var(--ink-soft);
   color: var(--ink);
 }
@@ -425,7 +425,7 @@
   height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--surface);
 }
 
 .pickingHint strong {

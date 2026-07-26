@@ -1802,7 +1802,7 @@ export function Canvas() {
           <button
             onClick={fitToContent}
             title="全体表示（すべてが見えるように調整）"
-            style={{ pointerEvents: 'auto', padding: '5px 11px', borderRadius: 7, border: '1px solid var(--border)', background: '#fff', color: 'var(--ink-soft)', fontSize: 12, fontWeight: 600, cursor: 'pointer', boxShadow: 'var(--shadow-card)' }}
+            style={{ pointerEvents: 'auto', padding: '5px 11px', borderRadius: 7, border: '1px solid var(--border)', background: 'var(--surface, #fff)', color: 'var(--ink-soft)', fontSize: 12, fontWeight: 600, cursor: 'pointer', boxShadow: 'var(--shadow-card)' }}
           >
             ⤢ 全体表示
           </button>

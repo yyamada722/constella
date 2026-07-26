@@ -16,6 +16,7 @@
   --accent: #2d72d9;
   --selection: #e84c5a;
   --danger: #dc3545;
+  --surface: #ffffff; /* panel / card faces (was hardcoded #ffffff) */
   --shadow-card: 0 1px 0 rgba(26, 29, 34, 0.04),
     0 8px 24px rgba(26, 29, 34, 0.06);
 
@@ -31,6 +32,25 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background: var(--paper);
+}
+
+/* Dark theme (Constella-wide .dark on <html>): achromatic gray remap of the
+   paper/ink variable set. Line colors, station casings and white-on-color
+   text stay as-is — like a dark metro map. */
+.dark .mt-root {
+  --paper: #1b1b1d;
+  --paper-light: #232326;
+  --paper-deep: #2e2e33;
+  --paper-soft: #202023;
+  --ink: #e7e7ea;
+  --ink-soft: #c9c9ce;
+  --muted: #8e8e96;
+  --muted-soft: #64646c;
+  --border: #3a3a40;
+  --border-soft: #2c2c31;
+  --surface: #242427;
+  --shadow-card: 0 1px 0 rgba(0, 0, 0, 0.3),
+    0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 .mt-root button {

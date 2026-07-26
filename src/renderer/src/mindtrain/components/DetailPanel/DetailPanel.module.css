@@ -99,7 +99,7 @@
 
 .input:focus {
   border-color: var(--ink);
-  background: #ffffff;
+  background: var(--surface);
   box-shadow: 0 0 0 3px rgba(24, 23, 21, 0.08);
 }
 
@@ -120,7 +120,7 @@
 
 .textarea:focus {
   border-color: var(--ink);
-  background: #ffffff;
+  background: var(--surface);
   box-shadow: 0 0 0 3px rgba(24, 23, 21, 0.08);
 }
 
@@ -177,7 +177,7 @@
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 3px solid #ffffff;
+  border: 3px solid var(--surface);
   box-shadow: 0 0 0 1px var(--border);
   cursor: pointer;
   padding: 0;
@@ -226,7 +226,7 @@
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 3px solid #ffffff;
+  border: 3px solid var(--surface);
   box-shadow: 0 0 0 1px var(--border);
   cursor: pointer;
   padding: 0;
@@ -287,14 +287,14 @@
   border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
-  background: #ffffff;
+  background: var(--surface);
 }
 
 .lineChipDot {
   width: 9px;
   height: 9px;
   border-radius: 50%;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--surface);
   box-shadow: 0 0 0 1px currentColor;
 }
 
