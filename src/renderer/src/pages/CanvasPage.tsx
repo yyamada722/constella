@@ -10,6 +10,7 @@ import { MarkdownText } from '../components/MarkdownText'
 import { ImageCropper } from '../components/ImageCropper'
 import { ClippedImage } from '../components/ClippedImage'
 import { putMedia, deleteMedia, isMediaRef, useMediaUrl, getMediaBlob, resolveMediaUrl } from '../persistence/media'
+import { isLocalRef, localRefPath, localFileApi, localFileName, toLocalRef } from '../utils/localFile'
 import { IMAGE_ACCEPT, isImageFile, normalizeImageBlob } from '../utils/image'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
 import WaveSurfer from 'wavesurfer.js'
@@ -2529,6 +2530,21 @@ async function applyImageFile(file: File | null | undefined, card: CanvasCard, o
   onUpdate({ url, title: card.title || file.name, content: file.name })
 }
 
+// サーバー(NAS)やローカルディスク上のファイルを「取り込まず」パス参照でカードに
+// リンクする（url = local:<絶対パス>）。バイトは表示時に都度読むので、サーバー側で
+// 差し替えれば再起動後に反映される。Electron のみ（ブラウザ/リモートは非対応）。
+async function linkLocalFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {
+  const api = localFileApi()
+  if (!api) return
+  const paths = await api.pick().catch(() => null)
+  const p = paths?.[0]
+  if (!p) return
+  if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
+  const name = localFileName(p)
+  const extra = card.type === 'video' || card.type === 'audio' ? { bookmarks: [] as Bookmark[] } : {}
+  onUpdate({ url: toLocalRef(p), title: card.title || name, content: name, ...extra })
+}
+
 function pickFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {
   const input = document.createElement('input')
   input.type = 'file'
@@ -2794,6 +2810,12 @@ function cardFileName(card: CanvasCard): string {
 async function openCardSource(card: CanvasCard): Promise<void> {
   const u = card.url
   if (!u) return
+  if (isLocalRef(u)) {
+    // パス参照 → 元ファイルそのものを OS 既定アプリで開く（テンポラリ複製なし）。
+    const api = localFileApi()
+    if (api) { api.open(localRefPath(u)).catch(() => {}) }
+    return
+  }
   if (isMediaRef(u)) {
     try {
       const api = (window as unknown as { api?: { openFile?: (b: Uint8Array, n: string, t: string) => Promise<void> } }).api
@@ -3019,15 +3041,28 @@ const PdfCardBody = memo(function PdfCardBody({ card, onUpdate, fixedHeight, loc
           <div className="flex-1 flex items-center justify-center text-slate-400 text-xs" style={fixedHeight ? { height: fixedHeight } : undefined}>読み込み中…</div>
         )
       ) : (
-        <button
-          onClick={() => { if (!locked) pickFileForCard(card, onUpdate) }}
-          disabled={locked}
-          className="flex-1 flex flex-col items-center justify-center gap-1.5 text-slate-400 hover:text-rose-600 disabled:hover:text-slate-400 disabled:cursor-default text-xs transition-colors"
+        <div
+          className="flex-1 flex flex-col items-center justify-center gap-1.5 text-xs"
           style={fixedHeight ? { height: fixedHeight } : undefined}
         >
-          <FileDown size={22} className="opacity-50" />
-          {locked ? 'PDF未設定' : 'PDFファイルを選択'}
-        </button>
+          <button
+            onClick={() => { if (!locked) pickFileForCard(card, onUpdate) }}
+            disabled={locked}
+            className="flex flex-col items-center gap-1.5 text-slate-400 hover:text-rose-600 disabled:hover:text-slate-400 disabled:cursor-default transition-colors"
+          >
+            <FileDown size={22} className="opacity-50" />
+            {locked ? 'PDF未設定' : 'PDFファイルを選択'}
+          </button>
+          {!locked && localFileApi() && (
+            <button
+              onClick={() => linkLocalFileForCard(card, onUpdate)}
+              title="サーバー / ローカルのファイルを取り込まずパス参照でリンク"
+              className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+            >
+              <Link2 size={11} /> サーバー参照
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
@@ -3070,9 +3105,20 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
           <div className="text-slate-400 text-[11px]">読み込み中…</div>
         )
       ) : (
-        <div className="text-center text-slate-400 text-[11px] px-4 leading-relaxed pointer-events-none">
-          <ImageIcon size={26} className="mx-auto mb-1.5 opacity-40" />
-          {locked ? '画像未設定' : <>画像を選択<br />ドラッグ&ドロップ / 貼り付け</>}
+        <div className="text-center text-slate-400 text-[11px] px-4 leading-relaxed">
+          <div className="pointer-events-none">
+            <ImageIcon size={26} className="mx-auto mb-1.5 opacity-40" />
+            {locked ? '画像未設定' : <>画像を選択<br />ドラッグ&ドロップ / 貼り付け</>}
+          </div>
+          {!locked && localFileApi() && (
+            <button
+              onClick={e => { e.stopPropagation(); linkLocalFileForCard(card, onUpdate) }}
+              title="サーバー / ローカルの画像を取り込まずパス参照でリンク"
+              className="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 bg-white/70 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+            >
+              <Link2 size={11} /> サーバー参照
+            </button>
+          )}
         </div>
       )}
       {card.url && src && !locked && (
@@ -3195,13 +3241,24 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
           </div>
         ) : (
           <>
-            <button
-              onClick={() => pickFileForCard(card, onUpdate)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-600 hover:bg-fuchsia-500/20 transition-colors text-xs"
-            >
-              <Video size={13} />
-              動画を選択
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => pickFileForCard(card, onUpdate)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-600 hover:bg-fuchsia-500/20 transition-colors text-xs"
+              >
+                <Video size={13} />
+                動画を選択
+              </button>
+              {localFileApi() && (
+                <button
+                  onClick={() => linkLocalFileForCard(card, onUpdate)}
+                  title="サーバー / ローカルの動画を取り込まずパス参照でリンク"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+                >
+                  <Link2 size={11} /> サーバー参照
+                </button>
+              )}
+            </div>
             <span className="text-[10px] text-slate-400">または URL を貼り付け</span>
             <input
               type="text"
@@ -3498,12 +3555,23 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
         {locked ? (
           <div className="flex items-center gap-1.5 text-slate-400 text-xs"><AudioLines size={13} /> 音声未設定</div>
         ) : (
-          <button
-            onClick={() => pickFileForCard(card, onUpdate)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-orange-500/10 border border-orange-500/30 text-orange-600 hover:bg-orange-500/20 transition-colors text-xs"
-          >
-            <AudioLines size={13} /> 音声を選択
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => pickFileForCard(card, onUpdate)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-orange-500/10 border border-orange-500/30 text-orange-600 hover:bg-orange-500/20 transition-colors text-xs"
+            >
+              <AudioLines size={13} /> 音声を選択
+            </button>
+            {localFileApi() && (
+              <button
+                onClick={() => linkLocalFileForCard(card, onUpdate)}
+                title="サーバー / ローカルの音声を取り込まずパス参照でリンク"
+                className="flex items-center gap-1 px-2 py-1.5 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+              >
+                <Link2 size={11} /> サーバー参照
+              </button>
+            )}
+          </div>
         )}
       </div>
     )

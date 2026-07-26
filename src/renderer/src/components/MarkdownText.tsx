@@ -14,9 +14,9 @@ function MdImage({ src, alt }: { src?: string; alt?: string }) {
   return <img src={resolved} alt={alt ?? ''} />
 }
 
-// Mirror react-markdown's safe URL handling but allow our idb: refs (images) and wiki: links.
+// Mirror react-markdown's safe URL handling but allow our idb:/local: refs (images) and wiki: links.
 function urlTransform(url: string): string {
-  if (url.startsWith('idb:') || url.startsWith('wiki:')) return url
+  if (url.startsWith('idb:') || url.startsWith('local:') || url.startsWith('wiki:')) return url
   const colon = url.indexOf(':')
   if (colon === -1) return url // relative
   const scheme = url.slice(0, colon).toLowerCase()

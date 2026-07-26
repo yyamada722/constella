@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 import { generateId } from '../utils'
 import { isRemote } from './runtime'
+import { isLocalRef, resolveLocalUrl } from '../utils/localFile'
 
 const DB_NAME = 'constella_media'
 const OLD_DB_NAME = 'maind_set_media' // pre-rename store; migrated once on first open
@@ -221,13 +222,19 @@ export async function resolveMediaUrl(ref: string): Promise<string | null> {
 /**
  * Resolve a card URL for rendering. Pass-through for normal http/data/blob URLs
  * (incl. the bundled sample PDF); `idb:` refs are loaded from IndexedDB and
- * turned into a usable object URL.
+ * `local:` refs (files referenced in place on a server/local disk) are read via
+ * Electron — both turned into a usable object URL.
  */
 export function useMediaUrl(ref: string | undefined | null): string | undefined {
-  const [url, setUrl] = useState<string | undefined>(() => (ref && !isMediaRef(ref) ? ref : undefined))
+  const [url, setUrl] = useState<string | undefined>(() => (ref && !isMediaRef(ref) && !isLocalRef(ref) ? ref : undefined))
   useEffect(() => {
     let alive = true
     if (!ref) { setUrl(undefined); return }
+    if (isLocalRef(ref)) {
+      setUrl(undefined)
+      resolveLocalUrl(ref).then(u => { if (alive) setUrl(u ?? undefined) })
+      return () => { alive = false }
+    }
     if (!isMediaRef(ref)) { setUrl(ref); return }
     setUrl(undefined)
     resolveMediaUrl(ref).then(u => { if (alive) setUrl(u ?? undefined) })
