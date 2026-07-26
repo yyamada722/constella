@@ -27,8 +27,8 @@ contextBridge.exposeInMainWorld('api', {
   onRemoteMediaRequest: (cb: (reqId: string, id: string) => void): void => {
     ipcRenderer.on('remote:media-request', (_e, reqId: string, id: string) => cb(reqId, id))
   },
-  replyRemoteMedia: (reqId: string, bytes: Uint8Array | null): void => {
-    ipcRenderer.send('remote:media-reply', reqId, bytes)
+  replyRemoteMedia: (reqId: string, bytes: Uint8Array | null, mime?: string): void => {
+    ipcRenderer.send('remote:media-reply', reqId, bytes, mime ?? '')
   },
   // AI assistant — Anthropic Claude API proxied through main (key never enters the renderer).
   ai: {
@@ -62,4 +62,13 @@ contextBridge.exposeInMainWorld('api', {
   // Open a media card's stored bytes in the OS default app. `type` is the card
   // type, used main-side to force a safe file extension.
   openFile: (bytes: Uint8Array, name: string, type: string): Promise<void> => ipcRenderer.invoke('file:open-temp', bytes, name, type),
+  // Local / server file references (`local:` refs): files stay on the NAS or the
+  // local disk; the app stores only the path and reads bytes on demand.
+  localFile: {
+    pick: (): Promise<string[] | null> => ipcRenderer.invoke('local:pick'),
+    stat: (path: string): Promise<{ exists: boolean; size?: number; mtime?: number }> => ipcRenderer.invoke('local:stat', path),
+    read: (path: string): Promise<{ bytes: Uint8Array; mime: string } | null> => ipcRenderer.invoke('local:read', path),
+    open: (path: string): Promise<string> => ipcRenderer.invoke('local:open', path),
+    reveal: (path: string): Promise<void> => ipcRenderer.invoke('local:reveal', path),
+  },
 })

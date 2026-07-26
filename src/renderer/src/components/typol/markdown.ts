@@ -118,11 +118,12 @@ export function renderMarkdown(md: string): RenderResult {
   return {
     html: DOMPurify.sanitize(html, {
       ADD_ATTR: ["target"],
-      // Extend DOMPurify's allowed-URI regex so Constella's idb: image refs and
-      // wiki: hyperlinks survive sanitization. The default blocks any non-http(s)/
-      // mailto/tel/sms scheme, which would strip <img src="idb:…"> entirely.
+      // Extend DOMPurify's allowed-URI regex so Constella's idb: image refs,
+      // local: file refs and wiki: hyperlinks survive sanitization. The default
+      // blocks any non-http(s)/mailto/tel/sms scheme, which would strip
+      // <img src="idb:…"> entirely.
       ALLOWED_URI_REGEXP:
-        /^(?:(?:https?|mailto|tel|callto|sms|cid|xmpp|idb|wiki):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+        /^(?:(?:https?|mailto|tel|callto|sms|cid|xmpp|idb|local|wiki):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
     }),
     blockLines,
   };

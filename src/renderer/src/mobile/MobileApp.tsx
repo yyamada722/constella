@@ -10,18 +10,22 @@ import { useApp } from '../store'
 import { generateId } from '../utils'
 import { isoToday, isoToDate } from '../utils/date'
 import { MarkdownText } from '../components/MarkdownText'
+import { ItineraryView } from '../components/ItineraryView'
+import { parseItinerary, formatDayLabel } from '../utils/itinerary'
 import type { Note, Task, ResearchItem } from '../types'
 import {
   Home, FileText, CheckSquare, Globe, Search as SearchIcon, RefreshCw, Plus,
   ChevronDown, Check, Circle, CircleDot, CheckCircle2, ExternalLink, X, Pencil,
+  Map as MapIcon, CalendarDays,
 } from 'lucide-react'
 
-type Tab = 'home' | 'notes' | 'tasks' | 'research' | 'search'
+type Tab = 'home' | 'notes' | 'tasks' | 'plan' | 'research' | 'search'
 
 const TABS: { id: Tab; label: string; icon: typeof Home }[] = [
   { id: 'home', label: 'ホーム', icon: Home },
   { id: 'notes', label: 'ノート', icon: FileText },
   { id: 'tasks', label: 'タスク', icon: CheckSquare },
+  { id: 'plan', label: '計画', icon: MapIcon },
   { id: 'research', label: 'リサーチ', icon: Globe },
   { id: 'search', label: '検索', icon: SearchIcon },
 ]
@@ -226,6 +230,130 @@ function TaskRow({ projectId, task }: { projectId: string; task: Task }) {
   )
 }
 
+// タスク追加シート — ボード選択（新規ボード作成も）+ 期日 + 優先度をまとめて指定
+// して1タップで追加。ボードが無いプロジェクトでもここから作れる。
+function AddTaskSheet({ onClose }: { onClose: () => void }) {
+  const { state, dispatch } = useApp()
+  const active = state.activeMasterProjectId
+  const boards = useMemo(() => state.projects.filter(p => p.masterProjectId === active), [state.projects, active])
+  const [boardId, setBoardId] = useState<string>(boards[0]?.id ?? '__new__')
+  const [newBoard, setNewBoard] = useState('')
+  const [title, setTitle] = useState('')
+  const [due, setDue] = useState('') // '' = 期日なし / YYYY-MM-DD
+  const [priority, setPriority] = useState(0) // 0 = なし
+  const pad2 = (n: number) => String(n).padStart(2, '0')
+  const today = isoToday()
+  const tomorrow = (() => {
+    const d = isoToDate(today)
+    d.setDate(d.getDate() + 1)
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+  })()
+
+  const add = () => {
+    const t = title.trim()
+    if (!t) return
+    let pid = boardId
+    if (pid === '__new__') {
+      pid = generateId()
+      dispatch({
+        type: 'ADD_PROJECT',
+        payload: { id: pid, masterProjectId: active, name: newBoard.trim() || '新しいボード', description: '', tasks: [], createdAt: new Date().toISOString() },
+      })
+    }
+    const task: Task = {
+      id: generateId(), title: t, description: '', status: 'todo', tags: [], createdAt: new Date().toISOString(),
+      ...(due ? { endDate: due } : {}),
+      ...(priority ? { priority: priority as Task['priority'] } : {}),
+    }
+    dispatch({ type: 'ADD_TASK', payload: { projectId: pid, task } })
+    onClose()
+  }
+
+  const chip = (selected: boolean) =>
+    `shrink-0 px-3 py-2 rounded-lg border text-sm transition-colors ${
+      selected
+        ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-300 font-semibold'
+        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+    }`
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col justify-end">
+      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} />
+      <div
+        className="relative bg-white dark:bg-slate-900 rounded-t-2xl p-4 space-y-3 shadow-2xl"
+        style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 16px)' }}
+      >
+        <div className="flex items-center">
+          <h2 className="flex-1 text-sm font-bold text-slate-800 dark:text-slate-100">新しいタスク</h2>
+          <button onClick={onClose} className="p-2 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"><X size={18} /></button>
+        </div>
+        <input
+          autoFocus
+          value={title}
+          onChange={e => setTitle(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') add() }}
+          placeholder="タスク名"
+          className="w-full px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm outline-none focus:border-indigo-400 text-slate-800 dark:text-slate-100"
+        />
+        {/* ボード */}
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">ボード</div>
+          <div className="flex gap-1.5 overflow-x-auto pb-1">
+            {boards.map(b => (
+              <button key={b.id} onClick={() => setBoardId(b.id)} className={chip(boardId === b.id)}>{b.name}</button>
+            ))}
+            <button onClick={() => setBoardId('__new__')} className={chip(boardId === '__new__')}>＋ 新規ボード</button>
+          </div>
+          {boardId === '__new__' && (
+            <input
+              value={newBoard}
+              onChange={e => setNewBoard(e.target.value)}
+              placeholder="ボード名"
+              className="mt-1.5 w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm outline-none focus:border-indigo-400 text-slate-800 dark:text-slate-100"
+            />
+          )}
+        </div>
+        {/* 期日 */}
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">期日</div>
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+            <button onClick={() => setDue('')} className={chip(due === '')}>なし</button>
+            <button onClick={() => setDue(today)} className={chip(due === today)}>今日</button>
+            <button onClick={() => setDue(tomorrow)} className={chip(due === tomorrow)}>明日</button>
+            <input
+              type="date"
+              value={due}
+              onChange={e => setDue(e.target.value)}
+              className={`shrink-0 px-2 py-1.5 rounded-lg border text-sm bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 ${
+                due && due !== today && due !== tomorrow ? 'border-indigo-400' : 'border-slate-200 dark:border-slate-700'
+              }`}
+            />
+          </div>
+        </div>
+        {/* 優先度 */}
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">優先度</div>
+          <div className="flex gap-1.5">
+            <button onClick={() => setPriority(0)} className={chip(priority === 0)}>なし</button>
+            {[1, 2, 3].map(p => (
+              <button key={p} onClick={() => setPriority(p)} className={chip(priority === p)}>
+                <span className={p === 1 ? 'text-rose-500 font-bold' : p === 2 ? 'text-amber-500 font-bold' : ''}>P{p}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <button
+          onClick={add}
+          disabled={!title.trim()}
+          className="w-full py-3 rounded-xl bg-indigo-500 text-white text-sm font-semibold disabled:opacity-40 active:bg-indigo-600"
+        >
+          追加
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function TasksTab() {
   const { state, dispatch } = useApp()
   const active = state.activeMasterProjectId
@@ -233,6 +361,7 @@ function TasksTab() {
   const [adding, setAdding] = useState<string | null>(null) // projectId with the quick-add open
   const [text, setText] = useState('')
   const [showDone, setShowDone] = useState<Record<string, boolean>>({})
+  const [sheetOpen, setSheetOpen] = useState(false)
   const add = (projectId: string) => {
     const t = text.trim()
     if (!t) { setAdding(null); return }
@@ -280,6 +409,85 @@ function TasksTab() {
           </section>
         )
       })}
+      {!sheetOpen && (
+        <button
+          onClick={() => setSheetOpen(true)}
+          className="fixed right-4 bottom-20 z-30 w-12 h-12 rounded-full bg-indigo-500 text-white shadow-lg flex items-center justify-center active:bg-indigo-600"
+          style={{ marginBottom: 'env(safe-area-inset-bottom)' }}
+          title="タスクを追加"
+        >
+          <Plus size={22} />
+        </button>
+      )}
+      {sheetOpen && <AddTaskSheet onClose={() => setSheetOpen(false)} />}
+    </div>
+  )
+}
+
+// ── Plan (計画) tab — 出張先で行程・eチケットを参照する閲覧専用ビュー ──
+function PlanOverlay({ planId, onClose }: { planId: string; onClose: () => void }) {
+  const { state } = useApp()
+  const plan = state.plans.find(p => p.id === planId)
+  if (!plan) return null
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-white">
+      <div className="shrink-0 h-12 flex items-center gap-1 px-2 border-b border-slate-200">
+        <button onClick={onClose} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100"><X size={18} /></button>
+        <div className="flex-1 min-w-0 text-sm font-semibold truncate text-slate-800">{plan.name || '無題の計画'}</div>
+      </div>
+      <div className="flex-1 overflow-y-auto overscroll-contain bg-white">
+        <ItineraryView content={plan.content} fallbackTitle={plan.name} />
+        <div className="h-8" style={{ marginBottom: 'env(safe-area-inset-bottom)' }} />
+      </div>
+    </div>
+  )
+}
+
+function PlanTab({ openPlan }: { openPlan: (id: string) => void }) {
+  const { state } = useApp()
+  const active = state.activeMasterProjectId
+  const plans = useMemo(() =>
+    state.plans
+      .filter(p => p.masterProjectId === active)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+  [state.plans, active])
+  // 一覧に日程チップを出すため軽くパース（計画数は少ない前提）。
+  const summaries = useMemo(() => new Map(plans.map(p => {
+    const it = parseItinerary(p.content)
+    return [p.id, it] as const
+  })), [plans])
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {plans.length === 0 && (
+        <div className="p-8 text-center text-sm text-slate-400 leading-relaxed">
+          計画はまだありません。<br />PC側の「計画」で撮影出張の行程を作成すると<br />ここから参照できます
+        </div>
+      )}
+      <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+        {plans.map(p => {
+          const it = summaries.get(p.id)
+          return (
+            <li key={p.id}>
+              <button onClick={() => openPlan(p.id)} className="w-full px-4 py-3 text-left active:bg-slate-50 dark:active:bg-slate-800">
+                <div className="flex items-center gap-2">
+                  <MapIcon size={14} className="shrink-0 text-cyan-600" />
+                  <span className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">{p.name || '無題の計画'}</span>
+                  <span className="ml-auto shrink-0 text-[10px] text-slate-400">{fmtDate(p.updatedAt)}</span>
+                </div>
+                <div className="mt-1 flex items-center gap-2 pl-6">
+                  {it?.firstDate && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-indigo-600">
+                      <CalendarDays size={11} />
+                      {formatDayLabel(it.firstDate)}{it.lastDate && it.lastDate !== it.firstDate ? ` 〜 ${formatDayLabel(it.lastDate)}` : ''}
+                    </span>
+                  )}
+                  {!!it?.eventCount && <span className="text-[10px] text-slate-400">{it.eventCount} 件の予定</span>}
+                </div>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
@@ -494,6 +702,7 @@ function TaskRowLite({ projectId, projectName, task, onGo }: { projectId: string
 export default function MobileApp() {
   const [tab, setTab] = useState<Tab>('home')
   const [openedNote, setOpenedNote] = useState<{ id: string; edit: boolean } | null>(null)
+  const [openedPlan, setOpenedPlan] = useState<string | null>(null)
   const openNote = (id: string, edit: boolean) => setOpenedNote({ id, edit })
   return (
     <div className="fixed inset-0 flex flex-col bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
@@ -501,6 +710,7 @@ export default function MobileApp() {
       {tab === 'home' && <HomeTab openNote={openNote} goTab={setTab} />}
       {tab === 'notes' && <NotesTab openNote={openNote} />}
       {tab === 'tasks' && <TasksTab />}
+      {tab === 'plan' && <PlanTab openPlan={setOpenedPlan} />}
       {tab === 'research' && <ResearchTab />}
       {tab === 'search' && <SearchTab openNote={openNote} goTab={setTab} />}
       <nav
@@ -519,6 +729,7 @@ export default function MobileApp() {
         ))}
       </nav>
       {openedNote && <NoteOverlay noteId={openedNote.id} startEditing={openedNote.edit} onClose={() => setOpenedNote(null)} />}
+      {openedPlan && <PlanOverlay planId={openedPlan} onClose={() => setOpenedPlan(null)} />}
     </div>
   )
 }

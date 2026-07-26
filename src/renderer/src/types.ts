@@ -204,6 +204,20 @@ export interface Flow {
   updatedAt: string
 }
 
+/* ── 計画 (Plan) — TripMD-style itinerary documents for asset-shooting trips ── */
+
+// A markdown itinerary document (TripMD-compatible subset). `content` holds the
+// raw markdown: `## YYYY-MM-DD` day headings + `> [HH:MM] type title` event lines,
+// with e-ticket attachments referenced as [label](idb:…) / [label](local:…) links.
+export interface Plan {
+  id: string
+  masterProjectId: string // owning master project
+  name: string
+  content: string
+  createdAt: string
+  updatedAt: string
+}
+
 // A cross-project period annotation ("この期間は出張" 等). Master-scoped: shared
 // by every board/task in the master and rendered as a band + tinted region in
 // the Gantt so scheduling can account for it.

@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, memo } from 'react'
+import { createPortal } from 'react-dom'
 import * as pdfjsLib from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { ChevronLeft, ChevronRight, List, Maximize, BookOpen, ListTree, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, List, Maximize, Maximize2, BookOpen, ListTree, X } from 'lucide-react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
@@ -12,6 +13,9 @@ const CMAP_URL = `${PDF_BASE}cmaps/`
 const STANDARD_FONT_URL = `${PDF_BASE}standard_fonts/`
 
 type PdfMode = 'scroll' | 'single' | 'spread'
+
+// タッチ主体の端末ではツールバーの各ボタンを一回り大きくする（タップしやすさ優先）。
+const IS_TOUCH = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches
 
 type OutlineItem = { title: string; depth: number; pageNum: number | null }
 
@@ -101,11 +105,13 @@ const LazyScrollPage = memo(function LazyScrollPage({ doc, pageNum, width, aspec
 
 /* ── PDF viewer with 3 modes ── */
 
-export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, onStateChange }: {
+export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, onStateChange, noFullscreen }: {
   url: string
   fixedHeight?: number
   initial?: { page?: number; mode?: PdfMode }
   onStateChange?: (s: { page: number; mode: PdfMode }) => void
+  /** Internal: set on the instance INSIDE the fullscreen overlay (no nested expand). */
+  noFullscreen?: boolean
 }) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [numPages, setNumPages] = useState(0)
@@ -119,8 +125,19 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
   const [aspect, setAspect] = useState(0)
   const [outline, setOutline] = useState<OutlineItem[]>([])
   const [showOutline, setShowOutline] = useState(false)
+  // 全画面表示 — the toolbar expand button portals a screen-filling copy of this
+  // viewer (own doc instance); page/mode changes there sync back on the fly so
+  // closing it keeps the reading position.
+  const [fullscreen, setFullscreen] = useState(false)
   const areaRef = useRef<HTMLDivElement>(null)
   const outlineRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setFullscreen(false) } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [fullscreen])
 
   // Load the document whenever the URL changes
   useEffect(() => {
@@ -194,16 +211,21 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
     return () => el.removeEventListener('wheel', stop)
   }, [showOutline])
 
-  // Measure the render area
+  // Measure the render area. Sub-pixel churn is ignored: the rendered canvas can
+  // nudge the measured rect by <1px, and echoing that back into the canvas size
+  // would oscillate the preview (shrink → re-measure → shrink …).
   useEffect(() => {
     const el = areaRef.current
     if (!el) return
+    const apply = (w: number, h: number) => {
+      setBox(prev => (Math.abs(prev.w - w) < 1 && Math.abs(prev.h - h) < 1 ? prev : { w, h }))
+    }
     const ro = new ResizeObserver(entries => {
       const r = entries[0].contentRect
-      setBox({ w: r.width, h: r.height })
+      apply(r.width, r.height)
     })
     ro.observe(el)
-    setBox({ w: el.clientWidth, h: el.clientHeight })
+    apply(el.clientWidth, el.clientHeight)
     return () => ro.disconnect()
   }, [doc])
 
@@ -254,10 +276,21 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="relative flex-1 min-h-0" style={fixedHeight ? { height: fixedHeight } : undefined}>
+      {/* fixedHeight: `flex: 0 0 auto` is REQUIRED — with the default flex-1
+          (basis 0) an ancestor that is a plain block collapses this box to its
+          content height, and the ResizeObserver then chases the shrinking canvas
+          in a feedback loop (preview がだんだん小さくなる). */}
+      <div
+        className={`relative min-h-0 ${fixedHeight ? '' : 'flex-1'}`}
+        style={fixedHeight ? { height: fixedHeight, flex: '0 0 auto' } : undefined}
+      >
         <div
           ref={areaRef}
           className={`h-full bg-slate-100 ${mode === 'scroll' ? 'overflow-y-auto' : 'overflow-hidden'}`}
+          // Reserve the scrollbar lane permanently in scroll mode — otherwise the
+          // bar's appearance shrinks the pages, the shorter content hides the bar,
+          // the pages grow back, and the preview visibly pulses.
+          style={mode === 'scroll' ? { scrollbarGutter: 'stable' } : undefined}
         >
           {!doc ? (
             <div className="h-full flex items-center justify-center text-slate-400 text-xs">
@@ -312,15 +345,15 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
         )}
       </div>
 
-      <div className="flex items-center gap-1.5 px-2 py-1 shrink-0 border-t border-slate-200 bg-slate-50">
+      <div className={`flex items-center gap-1.5 px-2 shrink-0 border-t border-slate-200 bg-slate-50 ${IS_TOUCH ? 'py-1.5' : 'py-1'}`}>
         {outline.length > 0 && (
           <>
             <button
               onClick={() => setShowOutline(v => !v)}
-              className={`p-1 rounded transition-colors ${showOutline ? 'bg-rose-500/20 text-rose-600' : 'text-slate-500 hover:text-slate-800'}`}
+              className={`rounded transition-colors ${IS_TOUCH ? 'p-2.5' : 'p-1'} ${showOutline ? 'bg-rose-500/20 text-rose-600' : 'text-slate-500 hover:text-slate-800'}`}
               title="しおり"
             >
-              <ListTree size={13} />
+              <ListTree size={IS_TOUCH ? 20 : 13} />
             </button>
             <div className="w-px h-3.5 bg-slate-300" />
           </>
@@ -328,9 +361,9 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
         <button
           onClick={() => go(page - step)}
           disabled={page <= 1 || mode === 'scroll'}
-          className="p-0.5 rounded text-slate-600 hover:text-slate-900 disabled:text-slate-300 disabled:cursor-default"
+          className={`rounded text-slate-600 hover:text-slate-900 disabled:text-slate-300 disabled:cursor-default ${IS_TOUCH ? 'p-2' : 'p-0.5'}`}
         >
-          <ChevronLeft size={14} />
+          <ChevronLeft size={IS_TOUCH ? 22 : 14} />
         </button>
         <input
           type="range"
@@ -342,7 +375,7 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
           onChange={e => go(parseInt(e.target.value))}
           className="flex-1 h-1 accent-rose-500 cursor-pointer disabled:opacity-30 disabled:cursor-default"
         />
-        <div className="flex items-center gap-0.5 text-[11px] text-slate-600 tabular-nums shrink-0">
+        <div className={`flex items-center gap-0.5 text-slate-600 tabular-nums shrink-0 ${IS_TOUCH ? 'text-sm' : 'text-[11px]'}`}>
           <input
             type="text"
             inputMode="numeric"
@@ -351,7 +384,7 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
             onFocus={e => e.target.select()}
             onKeyDown={e => { if (e.key === 'Enter') { commitPageInput(); e.currentTarget.blur() } }}
             onBlur={commitPageInput}
-            className="w-9 bg-slate-100 border border-slate-300 rounded text-center text-slate-700 outline-none focus:border-rose-500/50 px-0.5 py-px"
+            className={`bg-slate-100 border border-slate-300 rounded text-center text-slate-700 outline-none focus:border-rose-500/50 px-0.5 ${IS_TOUCH ? 'w-12 py-1.5' : 'w-9 py-px'}`}
           />
           {mode === 'spread' && page + 1 <= numPages && <span>-{page + 1}</span>}
           <span className="text-slate-500">/ {numPages || '–'}</span>
@@ -359,9 +392,9 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
         <button
           onClick={() => go(page + step)}
           disabled={page >= numPages || mode === 'scroll'}
-          className="p-0.5 rounded text-slate-600 hover:text-slate-900 disabled:text-slate-300 disabled:cursor-default"
+          className={`rounded text-slate-600 hover:text-slate-900 disabled:text-slate-300 disabled:cursor-default ${IS_TOUCH ? 'p-2' : 'p-0.5'}`}
         >
-          <ChevronRight size={14} />
+          <ChevronRight size={IS_TOUCH ? 22 : 14} />
         </button>
         <div className="w-px h-3.5 bg-slate-300" />
         <div className="flex rounded overflow-hidden border border-slate-300">
@@ -369,14 +402,59 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
             <button
               key={m.key}
               onClick={() => { setMode(m.key); onStateChange?.({ page, mode: m.key }) }}
-              className={`p-1 transition-colors ${mode === m.key ? 'bg-rose-500/20 text-rose-600' : 'text-slate-400 hover:text-slate-800'}`}
+              className={`transition-colors ${IS_TOUCH ? 'p-2.5' : 'p-1'} ${mode === m.key ? 'bg-rose-500/20 text-rose-600' : 'text-slate-400 hover:text-slate-800'}`}
               title={m.label}
             >
-              <m.icon size={12} />
+              <m.icon size={IS_TOUCH ? 18 : 12} />
             </button>
           ))}
         </div>
+        {!noFullscreen && (
+          <>
+            <div className="w-px h-3.5 bg-slate-300" />
+            <button
+              onClick={() => setFullscreen(true)}
+              className={`rounded text-slate-500 hover:text-rose-600 transition-colors ${IS_TOUCH ? 'p-2.5' : 'p-1'}`}
+              title="全画面で表示"
+            >
+              <Maximize2 size={IS_TOUCH ? 20 : 13} />
+            </button>
+          </>
+        )}
       </div>
+
+      {fullscreen && createPortal(
+        <div className="fixed inset-0 z-[140] flex flex-col bg-slate-900/95" onMouseDown={e => e.stopPropagation()}>
+          <div className="shrink-0 flex items-center gap-2 px-3 py-2">
+            <span className="text-xs text-slate-300 truncate flex-1">PDF 全画面表示</span>
+            <span className="text-[10px] text-slate-500">Esc で閉じる</span>
+            <button
+              onClick={() => setFullscreen(false)}
+              className={`rounded-lg text-slate-300 hover:text-white hover:bg-white/10 transition-colors ${IS_TOUCH ? 'p-2.5' : 'p-1.5'}`}
+              title="閉じる"
+            >
+              <X size={IS_TOUCH ? 22 : 16} />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 mx-auto w-full max-w-[1400px] px-3 pb-3 flex flex-col">
+            <div className="flex-1 min-h-0 flex flex-col rounded-lg overflow-hidden bg-white shadow-2xl">
+              <PdfViewer
+                url={url}
+                initial={{ page, mode }}
+                noFullscreen
+                onStateChange={s => {
+                  // Mirror the fullscreen reading position back into this (inline)
+                  // viewer and the persisted card view state.
+                  setPage(s.page)
+                  setMode(s.mode)
+                  onStateChange?.(s)
+                }}
+              />
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 })

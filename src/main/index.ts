@@ -1,5 +1,5 @@
-import { app, BrowserWindow, shell, ipcMain } from 'electron'
-import { join, dirname, normalize } from 'path'
+import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
+import { join, dirname, normalize, extname } from 'path'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
 import { createServer, Server } from 'http'
 import { networkInterfaces } from 'os'
@@ -129,6 +129,70 @@ ipcMain.handle('file:open-temp', async (_e, bytes: Uint8Array, name: string, typ
   await shell.openPath(p)
 })
 
+// ── Local / server file references (アセットのパス参照) ──
+// Assets can stay where they live (NAS の UNC パスやローカルフォルダ); the DB stores
+// only a `local:<absolute path>` reference and the bytes are read on demand.
+
+// Per-extension MIME for local file previews (renderer builds a typed Blob).
+const LOCAL_MIME: Record<string, string> = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+  '.webp': 'image/webp', '.avif': 'image/avif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska', '.ogv': 'video/ogg',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.aac': 'audio/aac',
+  '.txt': 'text/plain', '.md': 'text/plain', '.json': 'application/json',
+}
+// Reading huge files through IPC would balloon renderer memory — preview reads are
+// capped; bigger files can still be opened in their OS default app.
+const LOCAL_READ_MAX = 512 * 1024 * 1024
+// Never hand these to shell.openPath — a reference (possibly arriving via an
+// imported backup) must not be able to launch code.
+const LOCAL_BLOCKED_EXTS = new Set([
+  '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse',
+  '.wsf', '.wsh', '.msi', '.msp', '.hta', '.cpl', '.jar', '.lnk', '.url', '.reg', '.appx',
+  '.app', '.command', '.sh',
+])
+
+ipcMain.handle('local:pick', async (): Promise<string[] | null> => {
+  if (!mainWindow || mainWindow.isDestroyed()) return null
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: 'サーバー / ローカルのファイルを参照',
+    properties: ['openFile', 'multiSelections'],
+  })
+  return r.canceled || r.filePaths.length === 0 ? null : r.filePaths
+})
+
+ipcMain.handle('local:stat', async (_e, p: string): Promise<{ exists: boolean; size?: number; mtime?: number }> => {
+  try {
+    const s = await stat(p)
+    if (!s.isFile()) return { exists: false }
+    return { exists: true, size: s.size, mtime: s.mtimeMs }
+  } catch { return { exists: false } }
+})
+
+ipcMain.handle('local:read', async (_e, p: string): Promise<{ bytes: Buffer; mime: string } | null> => {
+  try {
+    const s = await stat(p)
+    if (!s.isFile() || s.size > LOCAL_READ_MAX) return null
+    return { bytes: await readFile(p), mime: LOCAL_MIME[extname(p).toLowerCase()] ?? 'application/octet-stream' }
+  } catch { return null }
+})
+
+// Open the ORIGINAL file in its OS default app (not a temp copy — edits land on
+// the server file itself). Returns '' on success, else a user-facing message.
+ipcMain.handle('local:open', async (_e, p: string): Promise<string> => {
+  if (LOCAL_BLOCKED_EXTS.has(extname(p).toLowerCase())) return '実行可能ファイルは開けません'
+  try {
+    const s = await stat(p)
+    if (!s.isFile()) return 'ファイルが見つかりません'
+  } catch { return 'ファイルが見つかりません' }
+  return shell.openPath(p)
+})
+
+ipcMain.handle('local:reveal', async (_e, p: string): Promise<void> => {
+  shell.showItemInFolder(p)
+})
+
 // YouTube (since late 2025) refuses to play embeds that arrive without a valid
 // HTTP Referer/origin. The renderer is loaded from file:// (no usable origin), so
 // embeds fail. Rather than move the whole app off file:// (which would change the
@@ -236,12 +300,16 @@ const MIME: Record<string, string> = {
 
 // Media proxy: the renderer holds media blobs in IndexedDB, so the server asks the
 // (always-running) desktop renderer for the bytes when a remote client requests them.
-const mediaWaiters = new Map<string, (bytes: Uint8Array | null) => void>()
-ipcMain.on('remote:media-reply', (_e, reqId: string, bytes: Uint8Array | null) => {
+// The stored blob's MIME rides along so remote clients receive a real Content-Type
+// (an octet-stream response makes the itinerary attachment preview fall back to
+// 「プレビュー非対応」 on phones).
+type MediaAnswer = { bytes: Uint8Array; mime: string } | null
+const mediaWaiters = new Map<string, (r: MediaAnswer) => void>()
+ipcMain.on('remote:media-reply', (_e, reqId: string, bytes: Uint8Array | null, mime?: string) => {
   const w = mediaWaiters.get(reqId)
-  if (w) { mediaWaiters.delete(reqId); w(bytes ?? null) }
+  if (w) { mediaWaiters.delete(reqId); w(bytes ? { bytes, mime: mime || '' } : null) }
 })
-function fetchMediaFromRenderer(id: string): Promise<Uint8Array | null> {
+function fetchMediaFromRenderer(id: string): Promise<MediaAnswer> {
   return new Promise((resolve) => {
     if (!mainWindow || mainWindow.isDestroyed()) return resolve(null)
     const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -278,10 +346,10 @@ async function handleLanRequest(req: import('http').IncomingMessage, res: import
   if (path.startsWith('/api/media/')) {
     const id = decodeURIComponent(path.slice('/api/media/'.length))
     if (!/^[A-Za-z0-9]+$/.test(id)) { res.writeHead(400); res.end(); return }
-    const bytes = await fetchMediaFromRenderer(id)
-    if (!bytes) { res.writeHead(404); res.end(); return }
-    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' })
-    res.end(Buffer.from(bytes))
+    const answer = await fetchMediaFromRenderer(id)
+    if (!answer) { res.writeHead(404); res.end(); return }
+    res.writeHead(200, { 'Content-Type': answer.mime || 'application/octet-stream', 'Cache-Control': 'no-store' })
+    res.end(Buffer.from(answer.bytes))
     return
   }
 
