@@ -644,13 +644,17 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
                     setBoardFilter(s => {
                       const n = new Set(s)
                       if (ev.altKey) {
-                        // Alt-click = solo (show only this)
-                        return n.size === 1 && n.has(b.id) ? new Set() : new Set([b.id])
+                        // Alt-click = hide only this one (show everyone else)
+                        const others = new Set(boards.filter(bb => bb.id !== b.id).map(bb => bb.id))
+                        // Toggling the same exclusion resets to "show all"
+                        if (n.size === others.size && ![...others].some(id => !n.has(id))) return new Set()
+                        return others
                       }
                       if (n.size === 0) {
-                        // No filter active → start with everyone except clicked
-                        for (const bb of boards) if (bb.id !== b.id) n.add(bb.id)
-                      } else if (n.has(b.id)) {
+                        // No filter active → first click solos the clicked board
+                        return new Set([b.id])
+                      }
+                      if (n.has(b.id)) {
                         n.delete(b.id)
                         if (n.size === 0) return new Set()  // back to "show all"
                       } else {
@@ -660,7 +664,7 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
                       return n
                     })
                   }}
-                  title={`${b.name}（クリックで表示/非表示、Alt+クリックで単独表示）`}
+                  title={`${b.name}（クリックで単独表示→追加/解除、Alt+クリックでこれだけ隠す）`}
                   className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border transition-all shrink-0 ${hidden ? 'border-slate-200 text-slate-400 bg-white opacity-50' : `${cls.border} ${cls.text} ${cls.bg}`}`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${cls.dot} ${hidden ? 'opacity-30' : ''}`} />
