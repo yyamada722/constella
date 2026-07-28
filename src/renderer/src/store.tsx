@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useEffect, useMemo, useState, useRef, useCallback, ReactNode } from 'react'
-import { Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Flow, Plan, TimelineBand } from './types'
+import { Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Flow, Plan, PlanFolder, TimelineBand } from './types'
 import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNotice } from './persistence/db'
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
@@ -21,6 +21,7 @@ export interface AppState {
   sketches: Sketch[]
   flows: Flow[]
   plans: Plan[]
+  planFolders: PlanFolder[]
   timelineBands: TimelineBand[]
   aiConversations: AIConversation[]
   canvasTabs: CanvasTab[]
@@ -71,6 +72,9 @@ export type Action =
   | { type: 'ADD_PLAN'; payload: Plan }
   | { type: 'UPDATE_PLAN'; payload: Plan }
   | { type: 'DELETE_PLAN'; payload: string }
+  | { type: 'ADD_PLAN_FOLDER'; payload: PlanFolder }
+  | { type: 'UPDATE_PLAN_FOLDER'; payload: PlanFolder }
+  | { type: 'DELETE_PLAN_FOLDER'; payload: string }
   | { type: 'ADD_AI_CONVERSATION'; payload: AIConversation }
   | { type: 'UPDATE_AI_CONVERSATION'; payload: AIConversation }
   | { type: 'DELETE_AI_CONVERSATION'; payload: string }
@@ -147,6 +151,7 @@ const initialState: AppState = {
   sketches: [],
   flows: [],
   plans: [],
+  planFolders: [],
   timelineBands: [],
   aiConversations: [],
   canvasTabs: [
@@ -205,6 +210,7 @@ function reducer(state: AppState, action: Action): AppState {
         sketches: state.sketches.filter(s => s.masterProjectId !== mid),
         flows: state.flows.filter(f => f.masterProjectId !== mid),
         plans: state.plans.filter(p => p.masterProjectId !== mid),
+        planFolders: state.planFolders.filter(f => f.masterProjectId !== mid),
         // timelineBands are GLOBAL personal-schedule spans shown in every project's
         // Gantt, so they intentionally survive a master-project deletion.
         aiConversations: state.aiConversations.filter(c => c.masterProjectId !== mid),
@@ -378,6 +384,20 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, plans: state.plans.map(p => p.id === action.payload.id ? action.payload : p) }
     case 'DELETE_PLAN':
       return { ...state, plans: state.plans.filter(p => p.id !== action.payload) }
+    case 'ADD_PLAN_FOLDER':
+      return { ...state, planFolders: [...state.planFolders, action.payload] }
+    case 'UPDATE_PLAN_FOLDER':
+      return { ...state, planFolders: state.planFolders.map(f => f.id === action.payload.id ? action.payload : f) }
+    case 'DELETE_PLAN_FOLDER':
+      // Cascade-promote (same as note folders): child folders bubble up to root,
+      // plans in the deleted folder become unfiled.
+      return {
+        ...state,
+        planFolders: state.planFolders
+          .filter(f => f.id !== action.payload)
+          .map(f => f.parentId === action.payload ? { ...f, parentId: undefined } : f),
+        plans: state.plans.map(p => p.folderId === action.payload ? { ...p, folderId: undefined } : p),
+      }
     case 'UPDATE_SKETCH':
       return { ...state, sketches: state.sketches.map(s => s.id === action.payload.id ? action.payload : s) }
     case 'DELETE_SKETCH':
@@ -590,6 +610,7 @@ function normalizeMasterProjects(s: AppState): AppState {
   const sketches = fixScope(s.sketches)
   const flows = fixScope(s.flows ?? [])
   const plans = fixScope(s.plans ?? [])
+  const planFolders = fixScope(s.planFolders ?? [])
   const timelineBands = fixScope(s.timelineBands ?? [])
   const aiConversations = fixScope(s.aiConversations)
   // Canvas categories (tabs) carry the owning master id in `projectId`.
@@ -601,7 +622,7 @@ function normalizeMasterProjects(s: AppState): AppState {
   if (!activeMasterProjectId || !ids.has(activeMasterProjectId)) { changed = true; activeMasterProjectId = fallback }
 
   if (!changed) return s
-  return { ...s, masterProjects, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, timelineBands, aiConversations, canvasTabs, activeMasterProjectId }
+  return { ...s, masterProjects, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, planFolders, timelineBands, aiConversations, canvasTabs, activeMasterProjectId }
 }
 
 const AppContext = createContext<{

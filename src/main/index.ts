@@ -5,6 +5,10 @@ import { createServer, Server } from 'http'
 import { networkInterfaces } from 'os'
 import Anthropic from '@anthropic-ai/sdk'
 
+// E2E hook: isolate userData (and the single-instance lock derived from it) so an
+// automated run never collides with — or writes into — the real installation.
+if (process.env.CONSTELLA_USERDATA) app.setPath('userData', process.env.CONSTELLA_USERDATA)
+
 // Persist the SQLite database (serialized by sql.js in the renderer) to a real
 // file under the app's userData directory.
 const dbPath = (): string => join(app.getPath('userData'), 'constella.db')
@@ -191,6 +195,51 @@ ipcMain.handle('local:open', async (_e, p: string): Promise<string> => {
 
 ipcMain.handle('local:reveal', async (_e, p: string): Promise<void> => {
   shell.showItemInFolder(p)
+})
+
+// ── 計画の PDF 書き出し ──
+// The renderer builds a self-contained print HTML (all user text escaped there)
+// and we rasterize it via a hidden BrowserWindow + printToPDF. JS is disabled in
+// the window since the document never needs it. Margins are in inches.
+ipcMain.handle('pdf:render-html', async (_e, html: string, margins: { top: number; bottom: number; left: number; right: number }): Promise<Buffer> => {
+  const dir = join(app.getPath('temp'), 'constella')
+  await mkdir(dir, { recursive: true })
+  const p = join(dir, `print-${Date.now()}-${Math.random().toString(36).slice(2)}.html`)
+  await writeFile(p, html, 'utf8')
+  const win = new BrowserWindow({
+    show: false,
+    webPreferences: { sandbox: true, javascript: false },
+  })
+  try {
+    await win.loadFile(p)
+    return await win.webContents.printToPDF({
+      pageSize: 'A4',
+      printBackground: true,
+      margins: { top: margins.top, bottom: margins.bottom, left: margins.left, right: margins.right },
+    })
+  } finally {
+    win.destroy()
+    unlink(p).catch(() => { /* temp cleanup is best-effort */ })
+  }
+})
+
+ipcMain.handle('pdf:save', async (_e, bytes: Uint8Array, defaultName: string): Promise<boolean> => {
+  // E2E hook: ダイアログを出せない自動テストでは環境変数のパスへ直接保存する。
+  if (process.env.CONSTELLA_PDF_SAVE_TO) {
+    await writeFile(process.env.CONSTELLA_PDF_SAVE_TO, Buffer.from(bytes))
+    return true
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const safe = (defaultName || '計画').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: '計画をPDFに書き出し',
+    defaultPath: safe + '.pdf',
+    filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  })
+  if (r.canceled || !r.filePath) return false
+  await writeFile(r.filePath, Buffer.from(bytes))
+  shell.showItemInFolder(r.filePath)
+  return true
 })
 
 // YouTube (since late 2025) refuses to play embeds that arrive without a valid

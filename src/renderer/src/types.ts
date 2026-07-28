@@ -214,8 +214,19 @@ export interface Plan {
   masterProjectId: string // owning master project
   name: string
   content: string
+  folderId?: string // owning PlanFolder (undefined = 未分類)
   createdAt: string
   updatedAt: string
+}
+
+// Sidebar folder for plans — same shape/UX as NoteFolder (nesting + color + D&D).
+export interface PlanFolder {
+  id: string
+  masterProjectId: string
+  name: string
+  createdAt: string
+  parentId?: string
+  color?: BoardColor
 }
 
 // A cross-project period annotation ("この期間は出張" 等). Master-scoped: shared
