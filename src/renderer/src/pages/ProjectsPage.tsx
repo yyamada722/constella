@@ -9,7 +9,7 @@ import { BOARD_COLOR_CLASSES, ALL_BOARD_COLORS, boardColorFor } from '../utils/b
 import { SearchInput } from '../components/SearchInput'
 import LinkedNotesField from '../components/LinkedNotesField'
 import NotePanel from '../components/NotePanel'
-import { confirmDialog } from '../components/ConfirmDialog'
+import { confirmDialog, chooseDialog } from '../components/ConfirmDialog'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
 import GanttView from './GanttView'
 import CalendarView from './CalendarView'
@@ -269,19 +269,20 @@ export default function ProjectsPage() {
       if (others.length === 0) {
         if (!(await confirmDialog(`ボード「${project.name}」には ${project.tasks.length} 件のタスクがあります。すべて削除してよいですか？\n(他のボードが無いため移動できません)`))) return
       } else {
-        const moveTarget = prompt(
-          `ボード「${project.name}」には ${project.tasks.length} 件のタスクがあります。\n移動先のボード番号を選んでください (キャンセル=削除して破棄):\n` +
-          others.map((b, i) => `${i + 1}. ${b.name}`).join('\n')
+        const choice = await chooseDialog(
+          `ボード「${project.name}」には ${project.tasks.length} 件のタスクがあります。\nタスクをどうしますか？`,
+          [
+            ...others.map(b => ({ label: `「${b.name}」へ移動して削除`, value: b.id })),
+            { label: 'タスクごと削除', value: '__discard__', danger: true },
+          ]
         )
-        if (moveTarget) {
-          const idx = parseInt(moveTarget, 10) - 1
-          const target = others[idx]
-          if (!target) { alert('無効な番号です'); return }
+        if (choice === null) return
+        if (choice !== '__discard__') {
+          const target = others.find(b => b.id === choice)
+          if (!target) return
           // Move all tasks from project to target (as roots so cross-board parents don't dangle locally)
           const newTargetTasks = [...target.tasks, ...project.tasks.map(t => ({ ...t, parentId: undefined }))]
           dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: target.id, tasks: newTargetTasks } })
-        } else {
-          if (!(await confirmDialog('タスクごと削除しますか？'))) return
         }
       }
     }
