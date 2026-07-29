@@ -3644,8 +3644,14 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
 
   const onPaste = (e: React.ClipboardEvent) => {
     if (locked) return
+    // Only an EMPTY card consumes the paste (the placeholder invites it). A filled
+    // card lets the event bubble to the window handler, which creates a new card —
+    // otherwise Ctrl+V while this card is focused would silently replace its image
+    // (and delete the old blob). stopPropagation keeps the window handler from
+    // ALSO creating a duplicate card for the same paste.
+    if (card.url) return
     const item = Array.from(e.clipboardData.items).find(i => i.type.startsWith('image/'))
-    if (item) { e.preventDefault(); applyImageFile(item.getAsFile(), card, onUpdate) }
+    if (item) { e.preventDefault(); e.stopPropagation(); applyImageFile(item.getAsFile(), card, onUpdate) }
   }
 
   return (
@@ -4289,7 +4295,9 @@ const SequenceCardBody = memo(function SequenceCardBody({ card, onUpdate, fixedH
     if (locked) return
     const item = Array.from(e.clipboardData.items).find(i => i.type.startsWith('image/'))
     const file = item?.getAsFile()
-    if (file) { e.preventDefault(); addFiles([file]) }
+    // stopPropagation: without it the window paste handler also fires and drops a
+    // stray new image card next to the frame that was just added.
+    if (file) { e.preventDefault(); e.stopPropagation(); addFiles([file]) }
   }
 
   if (n === 0) {
