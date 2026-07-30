@@ -131,12 +131,39 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
   const [fullscreen, setFullscreen] = useState(false)
   const areaRef = useRef<HTMLDivElement>(null)
   const outlineRef = useRef<HTMLDivElement>(null)
+  const fsRef = useRef<HTMLDivElement>(null)
+  const fsOpenerRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!fullscreen) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setFullscreen(false) } }
+    const overlay = fsRef.current
+    // The overlay covers the page but lives in a portal at the end of <body>, so
+    // without this Tab walks straight onto the controls behind it and keyboard
+    // users can drive a UI they cannot see.
+    const focusables = (): HTMLElement[] =>
+      Array.from(overlay?.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ?? [])
+        .filter(el => !el.hasAttribute('disabled'))
+    focusables()[0]?.focus()
+
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') { e.stopPropagation(); setFullscreen(false); return }
+      if (e.key !== 'Tab') return
+      const items = focusables()
+      if (items.length === 0) return
+      const i = items.indexOf(document.activeElement as HTMLElement)
+      const next = e.shiftKey
+        ? items[(i <= 0 ? items.length : i) - 1]
+        : items[i === items.length - 1 ? 0 : i + 1]
+      e.stopPropagation(); e.preventDefault()
+      next?.focus()
+    }
     window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      // Hand focus back to the expand button so the tab order resumes where it was.
+      fsOpenerRef.current?.focus()
+      fsOpenerRef.current = null
+    }
   }, [fullscreen])
 
   // Load the document whenever the URL changes
@@ -413,7 +440,7 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
           <>
             <div className="w-px h-3.5 bg-slate-300" />
             <button
-              onClick={() => setFullscreen(true)}
+              onClick={e => { fsOpenerRef.current = e.currentTarget; setFullscreen(true) }}
               className={`rounded text-slate-500 hover:text-rose-600 transition-colors ${IS_TOUCH ? 'p-2.5' : 'p-1'}`}
               title="全画面で表示"
             >
@@ -424,7 +451,14 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
       </div>
 
       {fullscreen && createPortal(
-        <div className="fixed inset-0 z-[140] flex flex-col bg-slate-900/95" onMouseDown={e => e.stopPropagation()}>
+        <div
+          ref={fsRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label="PDF 全画面表示"
+          className="fixed inset-0 z-[140] flex flex-col bg-slate-900/95"
+          onMouseDown={e => e.stopPropagation()}
+        >
           <div className="shrink-0 flex items-center gap-2 px-3 py-2">
             <span className="text-xs text-slate-300 truncate flex-1">PDF 全画面表示</span>
             <span className="text-[10px] text-slate-500">Esc で閉じる</span>

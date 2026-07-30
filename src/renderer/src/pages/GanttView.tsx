@@ -142,6 +142,16 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
 
   // Board filter: when non-empty, only boards in this set are shown in rows.
   const [boardFilter, setBoardFilter] = useState<Set<string>>(new Set())
+  // Drop ids of boards that no longer exist. Without this, soloing a board and
+  // then deleting it leaves a filter that matches nothing — and once only one
+  // board remains the chips stop rendering, so there is no way back.
+  useEffect(() => {
+    setBoardFilter(prev => {
+      if (prev.size === 0) return prev
+      const live = new Set([...prev].filter(id => boards.some(b => b.id === id)))
+      return live.size === prev.size ? prev : live
+    })
+  }, [boards])
   const filteredBoards = useMemo(
     () => boardFilter.size === 0 ? boards : boards.filter(b => boardFilter.has(b.id)),
     [boards, boardFilter]

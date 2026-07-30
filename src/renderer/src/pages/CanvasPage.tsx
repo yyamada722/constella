@@ -9,8 +9,10 @@ import { PdfViewer } from '../components/PdfViewer'
 import { MarkdownText } from '../components/MarkdownText'
 import { ImageCropper } from '../components/ImageCropper'
 import { ClippedImage } from '../components/ClippedImage'
-import { putMedia, deleteMedia, isMediaRef, useMediaUrl, getMediaBlob, resolveMediaUrl } from '../persistence/media'
-import { isLocalRef, localRefPath, localFileApi, localFileName, toLocalRef } from '../utils/localFile'
+import { putMedia, deleteMedia, isMediaRef, useMediaUrl, useMediaState, getMediaBlob, resolveMediaUrl } from '../persistence/media'
+import { MediaFallback } from '../components/MediaFallback'
+import { isLocalRef, localRefPath, localFileApi, localFileName, localKind, toLocalRef, type LocalKind } from '../utils/localFile'
+import { alertDialog } from '../components/ConfirmDialog'
 import { IMAGE_ACCEPT, isImageFile, normalizeImageBlob } from '../utils/image'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
 import WaveSurfer from 'wavesurfer.js'
@@ -3068,12 +3070,27 @@ async function applyImageFile(file: File | null | undefined, card: CanvasCard, o
 // サーバー(NAS)やローカルディスク上のファイルを「取り込まず」パス参照でカードに
 // リンクする（url = local:<絶対パス>）。バイトは表示時に都度読むので、サーバー側で
 // 差し替えれば再起動後に反映される。Electron のみ（ブラウザ/リモートは非対応）。
+// Media cards render one fixed viewer, so linking (say) an audio file into a PDF
+// card leaves a card that can never display anything. The picker is filtered by
+// card type and the result re-checked — every OS dialog also offers "all files".
+const CARD_LOCAL_KIND: Partial<Record<CanvasCard['type'], LocalKind>> = {
+  pdf: 'pdf', image: 'image', video: 'video', audio: 'audio',
+}
+const LOCAL_KIND_LABEL: Record<LocalKind, string> = {
+  pdf: 'PDF', image: '画像', video: '動画', audio: '音声', other: 'ファイル',
+}
+
 async function linkLocalFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {
   const api = localFileApi()
   if (!api) return
-  const paths = await api.pick().catch(() => null)
+  const want = CARD_LOCAL_KIND[card.type]
+  const paths = await api.pick(want).catch(() => null)
   const p = paths?.[0]
   if (!p) return
+  if (want && localKind(p) !== want) {
+    await alertDialog(`このカードには${LOCAL_KIND_LABEL[want]}ファイルのみリンクできます。\n選択されたファイル: ${localFileName(p)}`)
+    return
+  }
   if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
   const name = localFileName(p)
   const extra = card.type === 'video' || card.type === 'audio' ? { bookmarks: [] as Bookmark[] } : {}
@@ -3586,7 +3603,7 @@ const PdfCardBody = memo(function PdfCardBody({ card, onUpdate, fixedHeight, loc
   fixedHeight?: number
   locked?: boolean
 }) {
-  const src = useMediaUrl(card.url)
+  const { url: src, status } = useMediaState(card.url)
   const { dispatch } = useApp()
   // Persist the PDF page/mode as view-only state (no undo step). Stable identity so
   // PdfViewer stays memoized.
@@ -3600,7 +3617,9 @@ const PdfCardBody = memo(function PdfCardBody({ card, onUpdate, fixedHeight, loc
         src ? (
           <PdfViewer url={src} fixedHeight={fixedHeight} initial={card.pdf} onStateChange={onPdfState} />
         ) : (
-          <div className="flex-1 flex items-center justify-center text-slate-400 text-xs" style={fixedHeight ? { height: fixedHeight } : undefined}>読み込み中…</div>
+          <div className="flex-1 flex items-center justify-center" style={fixedHeight ? { height: fixedHeight } : undefined}>
+            <MediaFallback status={status} refUrl={card.url} />
+          </div>
         )
       ) : (
         <div
@@ -3640,7 +3659,7 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
 }) {
   const [dragOver, setDragOver] = useState(false)
   const [cropping, setCropping] = useState(false)
-  const src = useMediaUrl(card.url)
+  const { url: src, status } = useMediaState(card.url)
 
   const onPaste = (e: React.ClipboardEvent) => {
     if (locked) return
@@ -3670,7 +3689,7 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
         src ? (
           <ClippedImage src={src} crop={card.crop} alt={card.content || ''} />
         ) : (
-          <div className="text-slate-400 text-[11px]">読み込み中…</div>
+          <MediaFallback status={status} refUrl={card.url} compact />
         )
       ) : (
         <div className="text-center text-slate-400 text-[11px] px-4 leading-relaxed">
@@ -3720,7 +3739,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
   fixedHeight?: number
   locked?: boolean
 }) {
-  const src = useMediaUrl(card.url)
+  const { url: src, status } = useMediaState(card.url)
   const { dispatch } = useApp()
   const videoRef = useRef<HTMLVideoElement>(null)
   const webviewRef = useRef<(HTMLElement & { capturePage?: () => Promise<{ toDataURL(): string }>; executeJavaScript?: (code: string) => Promise<unknown> }) | null>(null)
@@ -3876,8 +3895,12 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
               title={card.title || 'video'}
             />
           )
-        ) : (
+        ) : src ? (
           <video ref={videoRef} src={src} controls className="absolute inset-0 w-full h-full object-contain bg-black" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <MediaFallback status={status} refUrl={card.url} />
+          </div>
         )}
         {!locked && (
           <button
@@ -4076,7 +4099,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
   fixedHeight?: number
   locked?: boolean
 }) {
-  const src = useMediaUrl(card.url)
+  const { url: src, status } = useMediaState(card.url)
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const [playing, setPlaying] = useState(false)
@@ -4161,6 +4184,11 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
     >
       <div className="relative flex-1 min-h-0">
         <div ref={containerRef} className="absolute inset-0" />
+        {!src && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <MediaFallback status={status} refUrl={card.url} compact />
+          </div>
+        )}
         {ready && dur > 0 && (card.bookmarks ?? []).map(b => (
           <div
             key={b.id}

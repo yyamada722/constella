@@ -13,8 +13,9 @@ import { Plan, PlanFolder } from '../types'
 import { generateId } from '../utils'
 import { putMedia } from '../persistence/media'
 import { localFileApi, localFileName, toLocalRef } from '../utils/localFile'
+import { mdLink } from '../utils/mdLink'
 import { ItineraryView } from '../components/ItineraryView'
-import { confirmDialog } from '../components/ConfirmDialog'
+import { confirmDialog, alertDialog } from '../components/ConfirmDialog'
 import { exportPlanPdf, pdfApi } from '../utils/planPdf'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
@@ -167,7 +168,7 @@ export default function PlanPage() {
     try {
       await exportPlanPdf(selected)
     } catch (e) {
-      await confirmDialog(`PDFの書き出しに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
+      await alertDialog(`PDFの書き出しに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setExporting(false)
     }
@@ -319,7 +320,9 @@ export default function PlanPage() {
     if (!localApi) return
     const paths = await localApi.pick().catch(() => null)
     if (!paths?.length) return
-    insertAtCaret(paths.map(p => `[${localFileName(p)}](${toLocalRef(p)})`).join(' '))
+    // mdLink() bracket-wraps destinations with spaces — otherwise a path like
+    // "C:\Trip Files\ticket.pdf" would not parse back out as a link at all.
+    insertAtCaret(paths.map(p => mdLink(localFileName(p), toLocalRef(p))).join(' '))
   }
 
   const showEditor = viewMode !== 'preview' && !!selected

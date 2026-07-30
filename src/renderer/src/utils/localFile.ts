@@ -26,7 +26,8 @@ export function localFileName(pathOrRef: string): string {
 }
 
 interface LocalFileApi {
-  pick: () => Promise<string[] | null>
+  /** `kind` pre-selects the OS dialog's file filter; the caller still validates the result. */
+  pick: (kind?: LocalKind) => Promise<string[] | null>
   stat: (path: string) => Promise<{ exists: boolean; size?: number; mtime?: number }>
   read: (path: string) => Promise<{ bytes: Uint8Array; mime: string } | null>
   open: (path: string) => Promise<string>
@@ -68,16 +69,75 @@ export async function getLocalBlob(ref: string): Promise<Blob | null> {
   } catch { return null }
 }
 
-// Object URLs are cached per ref for the app lifetime (same policy as media.ts).
-// The URL is a byte snapshot; re-launching the app picks up server-side changes.
-const urlCache = new Map<string, string>()
+// Object URLs are cached per ref. Unlike media.ts (whose blobs are app-authored
+// and small) a `local:` ref can point at a multi-GB video on a share, and each
+// cached URL pins its bytes in renderer memory for as long as it lives — a few
+// large cards used to be enough to push the process into an OOM. So the cache is
+// byte-budgeted and evicts least-recently-used entries, revoking their URLs.
+//
+// Eviction may only touch entries nothing is displaying: revoking a URL that is
+// still a live <img>/<video> src would blank it. Call sites that render a
+// resolved URL therefore retain it and release on unmount (see useMediaState);
+// retained entries are skipped by the sweep even when over budget.
+const URL_CACHE_BUDGET = 256 * 1024 * 1024
 
-export async function resolveLocalUrl(ref: string): Promise<string | null> {
+interface CacheEntry {
+  url: string
+  size: number
+  refs: number
+  usedAt: number
+}
+
+const urlCache = new Map<string, CacheEntry>()
+let cachedBytes = 0
+let useCounter = 0
+
+function evictToBudget(): void {
+  if (cachedBytes <= URL_CACHE_BUDGET) return
+  // Oldest-used first, skipping anything currently on screen.
+  const evictable = [...urlCache.entries()].filter(([, e]) => e.refs === 0).sort((a, b) => a[1].usedAt - b[1].usedAt)
+  for (const [ref, e] of evictable) {
+    if (cachedBytes <= URL_CACHE_BUDGET) break
+    URL.revokeObjectURL(e.url)
+    urlCache.delete(ref)
+    cachedBytes -= e.size
+  }
+}
+
+/**
+ * Object URL for a `local:` ref, or null when the bytes can't be read.
+ *
+ * Pass `retain` when the URL is about to be displayed: the entry is then pinned
+ * as part of the same synchronous step that creates it, so no interleaved
+ * eviction can revoke it in the gap, and the caller must {@link releaseLocalUrl}
+ * when the element goes away.
+ */
+export async function resolveLocalUrl(ref: string, retain = false): Promise<string | null> {
+  const pin = (e: CacheEntry): string => {
+    e.usedAt = ++useCounter
+    if (retain) e.refs++
+    return e.url
+  }
   const cached = urlCache.get(ref)
-  if (cached) return cached
+  if (cached) return pin(cached)
   const blob = await getLocalBlob(ref)
   if (!blob) return null
-  const url = URL.createObjectURL(blob)
-  urlCache.set(ref, url)
+  // A concurrent caller may have populated the entry while we were reading; keep
+  // one URL per ref so retain/release counts stay meaningful.
+  const raced = urlCache.get(ref)
+  if (raced) return pin(raced)
+  const entry: CacheEntry = { url: URL.createObjectURL(blob), size: blob.size, refs: 0, usedAt: ++useCounter }
+  urlCache.set(ref, entry)
+  cachedBytes += blob.size
+  const url = pin(entry)
+  evictToBudget()
   return url
+}
+
+/** Counterpart to {@link retainLocalUrl}; the entry becomes evictable at zero. */
+export function releaseLocalUrl(ref: string): void {
+  const e = urlCache.get(ref)
+  if (!e) return
+  e.refs = Math.max(0, e.refs - 1)
+  if (e.refs === 0) evictToBudget()
 }

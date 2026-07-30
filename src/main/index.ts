@@ -157,39 +157,72 @@ const LOCAL_BLOCKED_EXTS = new Set([
   '.app', '.command', '.sh',
 ])
 
-ipcMain.handle('local:pick', async (): Promise<string[] | null> => {
+// Extensions offered per card kind, so a PDF card's picker doesn't invite an
+// audio file. The renderer re-checks the chosen path — every dialog also offers
+// "all files", and these filters are only a nudge.
+const LOCAL_PICK_FILTERS: Record<string, { name: string; extensions: string[] }> = {
+  image: { name: '画像', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'svg'] },
+  pdf: { name: 'PDF', extensions: ['pdf'] },
+  video: { name: '動画', extensions: ['mp4', 'webm', 'mov', 'm4v', 'mkv', 'ogv'] },
+  audio: { name: '音声', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'] },
+}
+
+ipcMain.handle('local:pick', async (_e, kind?: string): Promise<string[] | null> => {
   if (!mainWindow || mainWindow.isDestroyed()) return null
+  const preferred = kind ? LOCAL_PICK_FILTERS[kind] : undefined
   const r = await dialog.showOpenDialog(mainWindow, {
     title: 'サーバー / ローカルのファイルを参照',
     properties: ['openFile', 'multiSelections'],
+    filters: preferred ? [preferred, { name: 'すべてのファイル', extensions: ['*'] }] : undefined,
   })
   return r.canceled || r.filePaths.length === 0 ? null : r.filePaths
 })
 
+// A `local:` ref usually points at a NAS share. When that server is offline the
+// OS network stack can sit on a stat/read for tens of seconds, and since the
+// renderer awaits these over IPC the UI hangs for exactly that long. Bound every
+// probe: metadata calls get a short budget, the byte read a longer one (large
+// files over a slow-but-alive link are legitimate). A timeout resolves to the
+// same "unavailable" value as an error, so call sites need no new handling.
+const LOCAL_STAT_TIMEOUT = 5_000
+const LOCAL_READ_TIMEOUT = 60_000
+
+function withTimeout<T>(work: Promise<T>, ms: number, onTimeout: T): Promise<T> {
+  return new Promise<T>(resolve => {
+    const timer = setTimeout(() => resolve(onTimeout), ms)
+    const done = (v: T): void => { clearTimeout(timer); resolve(v) }
+    work.then(done, () => done(onTimeout))
+  })
+}
+
 ipcMain.handle('local:stat', async (_e, p: string): Promise<{ exists: boolean; size?: number; mtime?: number }> => {
-  try {
+  return withTimeout((async () => {
     const s = await stat(p)
     if (!s.isFile()) return { exists: false }
     return { exists: true, size: s.size, mtime: s.mtimeMs }
-  } catch { return { exists: false } }
+  })(), LOCAL_STAT_TIMEOUT, { exists: false })
 })
 
 ipcMain.handle('local:read', async (_e, p: string): Promise<{ bytes: Buffer; mime: string } | null> => {
-  try {
-    const s = await stat(p)
-    if (!s.isFile() || s.size > LOCAL_READ_MAX) return null
-    return { bytes: await readFile(p), mime: LOCAL_MIME[extname(p).toLowerCase()] ?? 'application/octet-stream' }
-  } catch { return null }
+  const meta = await withTimeout(stat(p).then(s => (s.isFile() && s.size <= LOCAL_READ_MAX ? s : null)), LOCAL_STAT_TIMEOUT, null)
+  if (!meta) return null
+  // AbortSignal actually cancels the read (unlike the stat race above, which can
+  // only stop waiting), so a dying transfer doesn't keep the handle open.
+  return withTimeout(
+    readFile(p, { signal: AbortSignal.timeout(LOCAL_READ_TIMEOUT) })
+      .then(bytes => ({ bytes, mime: LOCAL_MIME[extname(p).toLowerCase()] ?? 'application/octet-stream' })),
+    LOCAL_READ_TIMEOUT,
+    null,
+  )
 })
 
 // Open the ORIGINAL file in its OS default app (not a temp copy — edits land on
 // the server file itself). Returns '' on success, else a user-facing message.
 ipcMain.handle('local:open', async (_e, p: string): Promise<string> => {
   if (LOCAL_BLOCKED_EXTS.has(extname(p).toLowerCase())) return '実行可能ファイルは開けません'
-  try {
-    const s = await stat(p)
-    if (!s.isFile()) return 'ファイルが見つかりません'
-  } catch { return 'ファイルが見つかりません' }
+  // Same unreachable-NAS hazard as local:stat — bound the existence check.
+  const ok = await withTimeout(stat(p).then(s => s.isFile()), LOCAL_STAT_TIMEOUT, false)
+  if (!ok) return 'ファイルが見つかりません（サーバーに接続できない可能性があります）'
   return shell.openPath(p)
 })
 

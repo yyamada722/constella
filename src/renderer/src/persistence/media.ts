@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react'
 import { generateId } from '../utils'
 import { isRemote } from './runtime'
-import { isLocalRef, resolveLocalUrl } from '../utils/localFile'
+import { isLocalRef, resolveLocalUrl, localFileApi, releaseLocalUrl } from '../utils/localFile'
 
 const DB_NAME = 'constella_media'
 const OLD_DB_NAME = 'maind_set_media' // pre-rename store; migrated once on first open
@@ -220,25 +220,62 @@ export async function resolveMediaUrl(ref: string): Promise<string | null> {
 }
 
 /**
+ * Why a media ref has no URL. A bare `undefined` url cannot tell "still reading"
+ * apart from "will never resolve", so call sites used to render 読み込み中… forever
+ * whenever a `local:` file was gone or the client had no filesystem access.
+ *   - `loading`     — resolution in flight; a spinner/placeholder is correct.
+ *   - `unsupported` — browser/remote client that cannot read `local:` refs at all.
+ *   - `missing`     — the bytes could not be read (deleted, or server unreachable).
+ */
+export type MediaStatus = 'ready' | 'loading' | 'unsupported' | 'missing'
+
+export interface MediaState {
+  url?: string
+  status: MediaStatus
+}
+
+/**
  * Resolve a card URL for rendering. Pass-through for normal http/data/blob URLs
  * (incl. the bundled sample PDF); `idb:` refs are loaded from IndexedDB and
  * `local:` refs (files referenced in place on a server/local disk) are read via
  * Electron — both turned into a usable object URL.
  */
-export function useMediaUrl(ref: string | undefined | null): string | undefined {
-  const [url, setUrl] = useState<string | undefined>(() => (ref && !isMediaRef(ref) && !isLocalRef(ref) ? ref : undefined))
+export function useMediaState(ref: string | undefined | null): MediaState {
+  const initial = (): MediaState => {
+    if (!ref) return { status: 'missing' }
+    if (isLocalRef(ref)) return localFileApi() ? { status: 'loading' } : { status: 'unsupported' }
+    if (!isMediaRef(ref)) return { url: ref, status: 'ready' }
+    return { status: 'loading' }
+  }
+  const [state, setState] = useState<MediaState>(initial)
   useEffect(() => {
     let alive = true
-    if (!ref) { setUrl(undefined); return }
-    if (isLocalRef(ref)) {
-      setUrl(undefined)
-      resolveLocalUrl(ref).then(u => { if (alive) setUrl(u ?? undefined) })
-      return () => { alive = false }
+    const next = initial()
+    setState(next)
+    if (next.status !== 'loading') return
+    const local = isLocalRef(ref as string)
+    // A local: URL is retained for as long as this hook is mounted, so its byte-
+    // budgeted cache can't evict something that is currently on screen.
+    let retained = false
+    const resolve = local
+      ? resolveLocalUrl(ref as string, true).then(u => { retained = u != null; return u })
+      : resolveMediaUrl(ref as string)
+    resolve.then(u => {
+      if (!alive) return
+      setState(u ? { url: u, status: 'ready' } : { status: 'missing' })
+    })
+    return () => {
+      alive = false
+      if (retained) releaseLocalUrl(ref as string)
+      // Resolution still in flight: release once it lands, or the pin leaks.
+      else if (local) resolve.then(() => { if (retained) releaseLocalUrl(ref as string) })
     }
-    if (!isMediaRef(ref)) { setUrl(ref); return }
-    setUrl(undefined)
-    resolveMediaUrl(ref).then(u => { if (alive) setUrl(u ?? undefined) })
-    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ref])
-  return url
+  return state
+}
+
+/** URL-only view of {@link useMediaState}, for call sites with nothing to say about failure. */
+export function useMediaUrl(ref: string | undefined | null): string | undefined {
+  return useMediaState(ref).url
 }
