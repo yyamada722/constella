@@ -166,15 +166,19 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
             // urlTransform lets `local:` through for images; as a link destination it
             // must not become a plain <a target="_blank"> — the browser cannot follow
             // the scheme. Hand the path to the OS instead (no-op without the bridge).
+            // Rendered as a <button> because an <a> with no href is unreachable by
+            // keyboard, and this "link" is really an action.
             if (isLocalRef(href)) {
+              const path = localRefPath(decodeMdHref(href as string))
               return (
-                <a
-                  className="text-cyan-700 underline decoration-dotted cursor-pointer"
-                  title={localRefPath(decodeMdHref(href as string))}
-                  onClick={e => { e.preventDefault(); e.stopPropagation(); localFileApi()?.open(localRefPath(decodeMdHref(href as string))).catch(() => {}) }}
+                <button
+                  type="button"
+                  title={path}
+                  className="text-cyan-700 underline decoration-dotted cursor-pointer bg-transparent p-0 align-baseline"
+                  onClick={e => { e.preventDefault(); e.stopPropagation(); localFileApi()?.open(path).catch(() => {}) }}
                 >
                   {children}
-                </a>
+                </button>
               )
             }
             return <a href={href} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>{children}</a>

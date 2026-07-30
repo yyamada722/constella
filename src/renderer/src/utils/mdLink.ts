@@ -20,14 +20,33 @@ export function createMdLinkRe(): RegExp {
   return /\[([^\]\n]+)\]\((?:<([^<>\n]*)>|([^)\s]*))\)/g
 }
 
-/** Destination captured by {@link createMdLinkRe}, whichever form matched. */
-export function mdLinkHref(m: RegExpExecArray | RegExpMatchArray): string {
-  return m[2] ?? m[3] ?? ''
+// `<` and `>` are legal in POSIX filenames, and an angle-bracket destination
+// cannot carry them literally — the closing `>` would land early. Percent-escape
+// just those two (plus `%` itself, so the mapping stays reversible) and undo it
+// when parsing. Deliberately narrow: paths written before this encoding existed
+// are stored raw, and a broad decode would corrupt any that legitimately contain
+// a `%XX`-looking run.
+function encodeDest(dest: string): string {
+  // `%` first, so the escapes introduced below are not escaped again.
+  return dest.replace(/%/g, '%25').replace(/</g, '%3C').replace(/>/g, '%3E')
 }
 
-/** Wrap a destination in angle brackets when a bare one could not hold it. */
+function decodeDest(dest: string): string {
+  // One left-to-right pass, so "%253C" yields the literal "%3C" and not "<".
+  return dest.replace(/%(25|3C|3E)/g, (_, code: string) => (code === '25' ? '%' : code === '3C' ? '<' : '>'))
+}
+
+/** Destination captured by {@link createMdLinkRe}, whichever form matched. */
+export function mdLinkHref(m: RegExpExecArray | RegExpMatchArray): string {
+  const dest = m[2] ?? m[3] ?? ''
+  // Only our own schemes are decoded; an http URL's %3C is part of the URL.
+  return dest.startsWith('local:') ? decodeDest(dest) : dest
+}
+
+/** Escape what a destination can't hold, and bracket it when a bare one won't do. */
 export function mdLinkDest(dest: string): string {
-  return /[\s()<>]/.test(dest) ? `<${dest}>` : dest
+  const escaped = encodeDest(dest)
+  return /[\s()]/.test(escaped) ? `<${escaped}>` : escaped
 }
 
 /** Ready-to-insert markdown link with a destination that survives round-tripping. */

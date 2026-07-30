@@ -257,9 +257,13 @@ export function useMediaState(ref: string | undefined | null): MediaState {
     // A local: URL is retained for as long as this hook is mounted, so its byte-
     // budgeted cache can't evict something that is currently on screen.
     let retained = false
-    const resolve = local
+    // resolveLocalUrl swallows its own errors, but resolveMediaUrl (IndexedDB) can
+    // reject — without this catch that became an unhandled rejection and the card
+    // stayed on 読み込み中… forever.
+    const resolve = (local
       ? resolveLocalUrl(ref as string, true).then(u => { retained = u != null; return u })
       : resolveMediaUrl(ref as string)
+    ).catch(() => null)
     resolve.then(u => {
       if (!alive) return
       setState(u ? { url: u, status: 'ready' } : { status: 'missing' })

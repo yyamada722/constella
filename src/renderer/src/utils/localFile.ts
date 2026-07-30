@@ -92,10 +92,20 @@ const urlCache = new Map<string, CacheEntry>()
 let cachedBytes = 0
 let useCounter = 0
 
-function evictToBudget(): void {
+/**
+ * Revoke least-recently-used entries until back under budget.
+ *
+ * `keep` is the ref the current caller is about to return. Without it, a file
+ * that alone exceeds the budget would be the only eviction candidate right after
+ * being cached (refs still 0 for an unretained resolve) and the caller would be
+ * handed an already-revoked URL.
+ */
+function evictToBudget(keep?: string): void {
   if (cachedBytes <= URL_CACHE_BUDGET) return
   // Oldest-used first, skipping anything currently on screen.
-  const evictable = [...urlCache.entries()].filter(([, e]) => e.refs === 0).sort((a, b) => a[1].usedAt - b[1].usedAt)
+  const evictable = [...urlCache.entries()]
+    .filter(([ref, e]) => e.refs === 0 && ref !== keep)
+    .sort((a, b) => a[1].usedAt - b[1].usedAt)
   for (const [ref, e] of evictable) {
     if (cachedBytes <= URL_CACHE_BUDGET) break
     URL.revokeObjectURL(e.url)
@@ -130,11 +140,11 @@ export async function resolveLocalUrl(ref: string, retain = false): Promise<stri
   urlCache.set(ref, entry)
   cachedBytes += blob.size
   const url = pin(entry)
-  evictToBudget()
+  evictToBudget(ref)
   return url
 }
 
-/** Counterpart to {@link retainLocalUrl}; the entry becomes evictable at zero. */
+/** Drops one retain from {@link resolveLocalUrl}; the entry becomes evictable at zero. */
 export function releaseLocalUrl(ref: string): void {
   const e = urlCache.get(ref)
   if (!e) return

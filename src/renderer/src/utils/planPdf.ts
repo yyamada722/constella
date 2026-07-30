@@ -19,6 +19,7 @@ import { typeStyle, type Tone } from '../components/ItineraryView'
 import { getMediaBlob } from '../persistence/media'
 import { isLocalRef, localKind, getLocalBlob, localFileName } from './localFile'
 import { createMdLinkRe, mdLinkHref } from './mdLink'
+import { jpegOrientation } from './exif'
 import type { Plan } from '../types'
 
 /* ── preload bridge ── */
@@ -353,42 +354,6 @@ function buildTocHtml(planName: string, entries: TocEntry[]): string {
 /* ── 画像 → 埋め込み可能バイト列 ── */
 
 interface EmbeddableImage { kind: 'png' | 'jpg'; bytes: Uint8Array }
-
-/**
- * EXIF Orientation of a JPEG (1 = pixels already upright, which is also what we
- * return for anything we can't parse).
- */
-function jpegOrientation(bytes: Uint8Array): number {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  if (view.byteLength < 4 || view.getUint16(0) !== 0xffd8) return 1 // not a JPEG
-  let off = 2
-  while (off + 4 <= view.byteLength) {
-    const marker = view.getUint16(off)
-    if ((marker & 0xff00) !== 0xff00) return 1 // desynced — give up
-    if (marker === 0xffda) return 1 // start of scan; no EXIF before the pixels
-    const size = view.getUint16(off + 2)
-    if (marker === 0xffe1) {
-      // APP1 = "Exif\0\0" + a TIFF header whose IFD0 holds tag 0x0112.
-      const exif = off + 4
-      if (exif + 6 > view.byteLength || view.getUint32(exif) !== 0x45786966) return 1
-      const tiff = exif + 6
-      if (tiff + 8 > view.byteLength) return 1
-      const le = view.getUint16(tiff) === 0x4949
-      const ifd = tiff + view.getUint32(tiff + 4, le)
-      if (ifd + 2 > view.byteLength) return 1
-      const n = view.getUint16(ifd, le)
-      for (let i = 0; i < n; i++) {
-        const entry = ifd + 2 + i * 12
-        if (entry + 12 > view.byteLength) break
-        if (view.getUint16(entry, le) === 0x0112) return view.getUint16(entry + 8, le)
-      }
-      return 1
-    }
-    if (size < 2) return 1
-    off += 2 + size
-  }
-  return 1
-}
 
 async function toEmbeddableImage(blob: Blob): Promise<EmbeddableImage> {
   if (blob.type === 'image/jpeg') {

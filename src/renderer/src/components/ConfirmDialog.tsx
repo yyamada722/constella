@@ -6,7 +6,9 @@ import { useEffect, useRef, useState } from 'react'
 //
 // Mount <ConfirmHost /> once (App.tsx). confirmDialog() resolves true on 削除/OK,
 // false on cancel — which includes clicking the backdrop or pressing Escape, per
-// the app-wide "click outside to dismiss" convention. Enter confirms.
+// the app-wide "click outside to dismiss" convention. Enter activates the focused
+// button (the confirm one by default), so Tab-then-Enter cancels rather than
+// confirms.
 
 export interface ChoiceOption {
   label: string
@@ -99,22 +101,22 @@ export function ConfirmHost() {
         return
       }
 
-      // Focus somehow left the dialog — swallow everything rather than let it
-      // drive the page underneath.
-      if (!inside) {
+      if (e.key === 'Enter') {
+        // Activate whatever is focused rather than assuming "confirm". The focus
+        // trap above makes Tab-to-キャンセル a reachable state, and confirmDialog
+        // defaults to a destructive action — Enter there has to cancel, not delete.
+        // (Stopping propagation in the capture phase also stops the event reaching
+        // the button, so the native click never fires on its own.)
         e.stopPropagation(); e.preventDefault()
-        if (e.key === 'Enter') { if (!current.options) settle(true) }
+        const focused = document.activeElement as HTMLElement | null
+        if (focused && focusables().includes(focused)) focused.click()
+        else if (!current.options) settle(true) // focus adrift — keep "Enter confirms"
         return
       }
 
-      if (e.key === 'Enter') {
-        // Activate the focused control ourselves: stopping propagation here (in the
-        // capture phase) also stops the event reaching the button, so the native
-        // click would never happen.
-        e.stopPropagation(); e.preventDefault()
-        if (current.options) (document.activeElement as HTMLElement | null)?.click()
-        else settle(true)
-      }
+      // Focus somehow left the dialog — swallow the rest rather than let it drive
+      // the page underneath.
+      if (!inside) { e.stopPropagation(); e.preventDefault() }
     }
     // Capture phase so page-level Escape handlers (clear selection etc.) don't
     // also fire while the dialog is up.
