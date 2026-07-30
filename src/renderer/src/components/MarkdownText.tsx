@@ -4,12 +4,16 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { putMedia, useMediaUrl } from '../persistence/media'
 import { IMAGE_ACCEPT, normalizeImageBlob } from '../utils/image'
+import { isLocalRef, localFileApi, localRefPath } from '../utils/localFile'
+import { decodeMdHref } from '../utils/mdLink'
 import { useWikiLink } from './WikiLink'
 
 // Resolve idb: image refs (pasted images stored in IndexedDB) to a usable URL;
 // http/data URLs pass through. Used as the Markdown <img> renderer.
 function MdImage({ src, alt }: { src?: string; alt?: string }) {
-  const resolved = useMediaUrl(src)
+  // remark percent-encodes destinations, so a local: path with spaces needs
+  // decoding before the filesystem bridge sees it.
+  const resolved = useMediaUrl(isLocalRef(src) ? decodeMdHref(src as string) : src)
   if (!resolved) return null
   return <img src={resolved} alt={alt ?? ''} />
 }
@@ -155,10 +159,30 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
         remarkPlugins={[remarkGfm]}
         urlTransform={urlTransform}
         components={{
-          a: ({ href, children }) =>
-            href && href.startsWith('wiki:')
-              ? <a className="text-indigo-600 underline decoration-dotted cursor-pointer" onClick={e => { e.preventDefault(); e.stopPropagation(); onWiki(decodeURIComponent(href.slice(5))) }}>{children}</a>
-              : <a href={href} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>{children}</a>,
+          a: ({ href, children }) => {
+            if (href && href.startsWith('wiki:')) {
+              return <a className="text-indigo-600 underline decoration-dotted cursor-pointer" onClick={e => { e.preventDefault(); e.stopPropagation(); onWiki(decodeURIComponent(href.slice(5))) }}>{children}</a>
+            }
+            // urlTransform lets `local:` through for images; as a link destination it
+            // must not become a plain <a target="_blank"> — the browser cannot follow
+            // the scheme. Hand the path to the OS instead (no-op without the bridge).
+            // Rendered as a <button> because an <a> with no href is unreachable by
+            // keyboard, and this "link" is really an action.
+            if (isLocalRef(href)) {
+              const path = localRefPath(decodeMdHref(href as string))
+              return (
+                <button
+                  type="button"
+                  title={path}
+                  className="text-cyan-700 underline decoration-dotted cursor-pointer bg-transparent p-0 align-baseline"
+                  onClick={e => { e.preventDefault(); e.stopPropagation(); localFileApi()?.open(path).catch(() => {}) }}
+                >
+                  {children}
+                </button>
+              )
+            }
+            return <a href={href} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>{children}</a>
+          },
           img: MdImage,
         }}
       >

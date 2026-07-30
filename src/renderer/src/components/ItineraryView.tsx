@@ -12,9 +12,11 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { parseItinerary, formatPrice, formatDayLabel, type ItEvent, type ItBlock, type ItAlertLevel } from '../utils/itinerary'
-import { useMediaUrl, getMediaBlob } from '../persistence/media'
+import { useMediaState, getMediaBlob } from '../persistence/media'
 import { isLocalRef, localRefPath, localFileName, localKind, localFileApi, type LocalKind } from '../utils/localFile'
 import { PdfViewer } from './PdfViewer'
+import { MediaFallback } from './MediaFallback'
+import { createMdLinkRe, mdLinkHref } from '../utils/mdLink'
 
 const IS_ELECTRON = typeof window !== 'undefined' && !!(window as unknown as { api?: unknown }).api
 
@@ -109,13 +111,18 @@ function WebPreview({ url }: { url: string }) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   }
-  return <iframe src={url} className="w-full h-full border-none" sandbox="allow-scripts allow-same-origin allow-popups" />
+  // Browser preview fallback. `allow-scripts` without `allow-same-origin`: the two
+  // together would let a page from our own origin reach back into the app's
+  // storage and DOM, which defeats the sandbox — and these URLs come from user
+  // itinerary text, not a trusted allowlist. Pages that genuinely need their own
+  // origin (logins, most map embeds) can be opened externally instead.
+  return <iframe src={url} className="w-full h-full border-none" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-forms" referrerPolicy="no-referrer" />
 }
 
 function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => void }) {
   const [kind, setKind] = useState<LocalKind | 'web'>(() => guessKind(att))
   const isMedia = att.href.startsWith('idb:') || isLocalRef(att.href)
-  const src = useMediaUrl(isMedia || kind !== 'web' ? att.href : undefined)
+  const { url: src, status } = useMediaState(isMedia || kind !== 'web' ? att.href : undefined)
   const localApi = localFileApi()
 
   // idb: 添付は拡張子が無いことが多い → blob の MIME で種別を確定。既知の種別に
@@ -142,8 +149,8 @@ function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => v
     body = <div className="h-[420px]"><WebPreview url={att.href} /></div>
   } else if (!src) {
     body = (
-      <div className="h-24 flex items-center justify-center text-xs text-slate-400">
-        {isLocalRef(att.href) && !localApi ? 'この端末からはサーバー上のファイルを読めません' : '読み込み中…'}
+      <div className="h-24 flex items-center justify-center">
+        <MediaFallback status={status} refUrl={att.href} compact />
       </div>
     )
   } else if (kind === 'pdf') {
@@ -201,7 +208,9 @@ function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => v
 
 /* ── インラインテキスト描画（[label](href) リンク / word^ALIAS / **bold** / `code`） ── */
 
-const LINK_RE = /\[([^\]\n]+)\]\(([^)\s]+)\)/g
+// Both destination forms — see utils/mdLink for why paths with spaces need the
+// angle-bracket one.
+const LINK_RE = createMdLinkRe()
 
 function linkIcon(href: string): LucideIcon {
   if (isLocalRef(href)) return HardDrive
@@ -244,7 +253,7 @@ function renderRich(text: string, keyBase: string, onToggle: (att: Attachment) =
   while ((m = LINK_RE.exec(text))) {
     if (m.index > last) out.push(...renderPlain(text.slice(last, m.index), `${keyBase}-p${i}`))
     const label = m[1]
-    const href = m[2]
+    const href = mdLinkHref(m)
     const Icon = linkIcon(href)
     const isHttp = /^https?:/i.test(href)
     // ブラウザ（スマホ/LANリモート）の http リンクは実アンカーで新規タブに開く:

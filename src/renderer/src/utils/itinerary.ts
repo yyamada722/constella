@@ -292,7 +292,11 @@ const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土']
 export function formatDayLabel(date: string): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
   if (!m) return date
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-  if (Number.isNaN(d.getTime())) return date
+  const [y, mo, day] = [Number(m[1]), Number(m[2]), Number(m[3])]
+  const d = new Date(y, mo - 1, day)
+  // new Date() rolls out-of-range parts over instead of producing NaN, so a typo
+  // like 2026-13-45 would quietly render as a real (wrong) date. Compare the parts
+  // back to catch both that and impossible days such as 2026-02-30.
+  if (d.getFullYear() !== y || d.getMonth() !== mo - 1 || d.getDate() !== day) return date
   return `${d.getMonth() + 1}/${d.getDate()} (${WEEKDAY_JA[d.getDay()]})`
 }

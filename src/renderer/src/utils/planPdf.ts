@@ -18,6 +18,8 @@ import {
 import { typeStyle, type Tone } from '../components/ItineraryView'
 import { getMediaBlob } from '../persistence/media'
 import { isLocalRef, localKind, getLocalBlob, localFileName } from './localFile'
+import { createMdLinkRe, mdLinkHref } from './mdLink'
+import { jpegOrientation } from './exif'
 import type { Plan } from '../types'
 
 /* ── preload bridge ── */
@@ -50,7 +52,10 @@ const ZERO_MARGINS = { top: 0, bottom: 0, left: 0, right: 0 }
 
 /* ── 添付の収集 ── */
 
-const LINK_RE = /\[([^\]\n]+)\]\(([^)\s]+)\)/g
+// Same matcher the itinerary view uses, so an attachment that renders as a chip
+// is also the one that gets a 別紙 page (angle-bracket destinations included —
+// server paths routinely contain spaces).
+const LINK_RE = createMdLinkRe()
 
 interface PlanAttachment {
   href: string
@@ -70,7 +75,7 @@ async function collectAttachments(content: string): Promise<PlanAttachment[]> {
   const seen = new Map<string, PlanAttachment>()
   for (const m of content.matchAll(LINK_RE)) {
     const label = m[1]
-    const href = m[2]
+    const href = mdLinkHref(m)
     if (seen.has(href)) continue
     try {
       if (href.startsWith('idb:')) {
@@ -150,7 +155,7 @@ function richHtml(text: string, attNo: Map<string, number>): string {
   while ((m = LINK_RE.exec(text))) {
     if (m.index > last) out += plainHtml(text.slice(last, m.index))
     const label = m[1]
-    const href = m[2]
+    const href = mdLinkHref(m)
     const no = attNo.get(href)
     if (no != null) {
       out += `<span class="att">📎 ${escHtml(label)}<span class="attno">別紙${no}</span></span>`
@@ -351,14 +356,23 @@ function buildTocHtml(planName: string, entries: TocEntry[]): string {
 interface EmbeddableImage { kind: 'png' | 'jpg'; bytes: Uint8Array }
 
 async function toEmbeddableImage(blob: Blob): Promise<EmbeddableImage> {
-  if (blob.type === 'image/jpeg') return { kind: 'jpg', bytes: new Uint8Array(await blob.arrayBuffer()) }
-  if (blob.type === 'image/png') return { kind: 'png', bytes: new Uint8Array(await blob.arrayBuffer()) }
-  // webp / avif / bmp / gif / svg … → canvas 経由で PNG 化
+  if (blob.type === 'image/jpeg') {
+    const bytes = new Uint8Array(await blob.arrayBuffer())
+    // pdf-lib embeds the JPEG stream verbatim and a PDF image XObject has no
+    // notion of EXIF, so a portrait phone photo would come out rotated relative
+    // to the in-app preview. Only those take the slower re-encode below.
+    if (jpegOrientation(bytes) === 1) return { kind: 'jpg', bytes }
+  } else if (blob.type === 'image/png') {
+    return { kind: 'png', bytes: new Uint8Array(await blob.arrayBuffer()) }
+  }
+  // webp / avif / bmp / gif / svg / EXIF 回転付き JPEG … → canvas 経由で PNG 化
   let w = 0
   let h = 0
   let src: CanvasImageSource
   try {
-    const bmp = await createImageBitmap(blob)
+    // 'from-image' bakes the EXIF rotation into the bitmap (and reports the
+    // post-rotation width/height, so the page fit below stays correct).
+    const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' })
     w = bmp.width; h = bmp.height; src = bmp
   } catch {
     // createImageBitmap が拒否する形式 (寸法なし SVG 等) は <img> でデコード
@@ -461,7 +475,12 @@ export async function exportPlanPdf(plan: Plan): Promise<boolean> {
     try {
       if (att.kind === 'pdf') {
         const d = await PDFDocument.load(new Uint8Array(await att.blob.arrayBuffer()), { ignoreEncryption: true })
-        loaded.push({ att, pages: d.getPageCount(), doc: d })
+        // ignoreEncryption only suppresses pdf-lib's up-front rejection; it does
+        // not decrypt anything. Copying those page objects later either throws —
+        // taking the whole export down — or emits unreadable 別紙 pages, so treat
+        // an encrypted attachment as unavailable and leave it as 「—」 in the 目次.
+        if (d.isEncrypted) loaded.push({ att, pages: 0 })
+        else loaded.push({ att, pages: d.getPageCount(), doc: d })
       } else {
         loaded.push({ att, pages: 1, img: await toEmbeddableImage(att.blob) })
       }

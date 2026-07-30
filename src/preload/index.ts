@@ -71,7 +71,8 @@ contextBridge.exposeInMainWorld('api', {
     save: (bytes: Uint8Array, defaultName: string): Promise<boolean> => ipcRenderer.invoke('pdf:save', bytes, defaultName),
   },
   localFile: {
-    pick: (): Promise<string[] | null> => ipcRenderer.invoke('local:pick'),
+    // `kind` (image/pdf/video/audio) pre-selects the dialog's file filter.
+    pick: (kind?: string): Promise<string[] | null> => ipcRenderer.invoke('local:pick', kind),
     stat: (path: string): Promise<{ exists: boolean; size?: number; mtime?: number }> => ipcRenderer.invoke('local:stat', path),
     read: (path: string): Promise<{ bytes: Uint8Array; mime: string } | null> => ipcRenderer.invoke('local:read', path),
     open: (path: string): Promise<string> => ipcRenderer.invoke('local:open', path),

@@ -23,7 +23,8 @@ import { Editor, type CommandName } from './editor'
 import { renderMarkdown } from './markdown'
 import { renderMermaidIn } from './mermaid'
 import { putMedia, resolveMediaUrl } from '../../persistence/media'
-import { resolveLocalUrl } from '../../utils/localFile'
+import { resolveLocalUrl, releaseLocalUrl, isLocalRef, localRefPath, localFileApi } from '../../utils/localFile'
+import { decodeMdHref } from '../../utils/mdLink'
 import { IMAGE_ACCEPT, normalizeImageBlob } from '../../utils/image'
 import { useWikiLink } from '../WikiLink'
 
@@ -209,14 +210,31 @@ export function TypolMarkdown({
       resolveMediaUrl(src).then(url => { if (url) img.src = url })
     })
     // local: refs (server/NAS file references) resolve through Electron the same way.
+    // Retain each resolved URL for as long as this render is on screen so the
+    // byte-budgeted local cache can't revoke an <img> out from under us.
+    let live = true
+    const retained: string[] = []
     host.querySelectorAll<HTMLImageElement>('img[src^="local:"]').forEach(img => {
-      const src = img.getAttribute('src') ?? ''
-      resolveLocalUrl(src).then(url => { if (url) img.src = url })
+      // marked percent-encodes the destination, so a path with spaces arrives as
+      // local:C:%5C…%20… — decode before it reaches the filesystem bridge.
+      const ref = decodeMdHref(img.getAttribute('src') ?? '')
+      resolveLocalUrl(ref, true).then(url => {
+        if (!url) return
+        // Release immediately if this render was already torn down; the cleanup
+        // below has come and gone by then.
+        if (!live) { releaseLocalUrl(ref); return }
+        retained.push(ref)
+        img.src = url
+      })
     })
     void renderMermaidIn(host)
     host.querySelectorAll<HTMLAnchorElement>('a[href^="wiki:"]').forEach(a => {
       a.classList.add('wiki-link')
     })
+    return () => {
+      live = false
+      retained.forEach(releaseLocalUrl)
+    }
   }, [value, effectiveEditing])
 
   // Delegate clicks on wiki:/external links inside the preview.
@@ -231,6 +249,16 @@ export function TypolMarkdown({
         e.preventDefault()
         e.stopPropagation()
         onWikiRef.current?.(decodeURIComponent(href.slice(5)))
+        return
+      }
+      // The sanitizer lets `local:` through for image srcs, so notes can also hold
+      // [ticket](local:…) anchors. Following one would navigate this WebContents to
+      // an unhandled scheme — hand it to the OS instead (and do nothing where there
+      // is no filesystem bridge, rather than breaking the view).
+      if (isLocalRef(href)) {
+        e.preventDefault()
+        e.stopPropagation()
+        localFileApi()?.open(localRefPath(decodeMdHref(href))).catch(() => {})
         return
       }
       if (/^https?:\/\//i.test(href)) {
