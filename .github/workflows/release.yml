@@ -2,21 +2,69 @@ name: Release
 
 on:
   push:
+    # main にマージされたら package.json の version を見てリリース要否を判定する
+    branches: [main]
+    # タグを手で打った場合も従来どおり動く
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'draftリリースを作るタグ (例: v0.5.7)。空ならartifactの生成のみ'
+        description: 'リリースするタグ (例: v0.5.7)。空なら package.json の version を使う'
         required: false
         type: string
 
+permissions:
+  contents: read
+
+# リリースは途中でキャンセルしない。main への連続pushは直列化する
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      tag: ${{ steps.decide.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Decide whether to release
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          elif [ -n "${INPUT_TAG:-}" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+
+          # 同名のリリースが既にあるなら何もしない（version据え置きのmainマージ／再実行対策）
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag は既にリリース済みのためスキップします"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag をリリースします"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
   package:
     name: Package ${{ matrix.label }}
+    needs: check
+    if: needs.check.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
-    # パッケージするだけ。リリース作成は release ジョブ側の権限で行う
-    permissions:
-      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -71,11 +119,9 @@ jobs:
             release/latest*.yml
 
   release:
-    name: Draft GitHub Release
-    needs: package
+    name: Publish GitHub Release
+    needs: [check, package]
     runs-on: ubuntu-latest
-    # タグpush、または手動実行でタグを指定したときだけリリースを作る
-    if: github.event_name == 'push' || github.event.inputs.tag != ''
     permissions:
       contents: write
     steps:
@@ -83,18 +129,22 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create draft release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          # 手動実行では github.ref_name がブランチ名になるので入力を優先
-          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_TAG: ${{ needs.check.outputs.tag }}
         run: |
+          set -euo pipefail
           mapfile -t files < <(find artifacts -type f | sort)
-          printf 'release %s with %d file(s)\n' "$RELEASE_TAG" "${#files[@]}"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::成果物が1つも見つかりません"
+            exit 1
+          fi
+          printf 'publish %s with %d file(s)\n' "$RELEASE_TAG" "${#files[@]}"
+          # タグが未作成ならこのコミットに対して作られる
           gh release create "$RELEASE_TAG" \
             --target "$GITHUB_SHA" \
-            --draft \
             --title "$RELEASE_TAG" \
             --generate-notes \
             "${files[@]}"
