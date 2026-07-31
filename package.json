@@ -64,7 +64,9 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!out/types-node",
+      "!out/types-web"
     ],
     "mac": {
       "icon": "build/icon.icns",
