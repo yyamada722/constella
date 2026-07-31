@@ -4,11 +4,19 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'draftリリースを作るタグ (例: v0.5.7)。空ならartifactの生成のみ'
+        required: false
+        type: string
 
 jobs:
   package:
     name: Package ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    # パッケージするだけ。リリース作成は release ジョブ側の権限で行う
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +30,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -64,7 +74,8 @@ jobs:
     name: Draft GitHub Release
     needs: package
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # タグpush、または手動実行でタグを指定したときだけリリースを作る
+    if: github.event_name == 'push' || github.event.inputs.tag != ''
     permissions:
       contents: write
     steps:
@@ -76,9 +87,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          # 手動実行では github.ref_name がブランチ名になるので入力を優先
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          mapfile -t files < <(find artifacts -type f | sort)
+          printf 'release %s with %d file(s)\n' "$RELEASE_TAG" "${#files[@]}"
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
             --draft \
-            --title "${GITHUB_REF_NAME}" \
+            --title "$RELEASE_TAG" \
             --generate-notes \
-            $(find artifacts -type f | sort)
+            "${files[@]}"

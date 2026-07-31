@@ -7,6 +7,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# ビルドするだけなので読み取りのみ（リポジトリ既定の権限に依存させない）
+permissions:
+  contents: read
+
 # 同じPRに続けてpushしたら古いrunはキャンセル
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
@@ -27,6 +31,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 後続のビルドはgit認証を使わない。.git/config にトークンを残さない
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
