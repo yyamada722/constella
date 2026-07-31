@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同じPRに続けてpushしたら古いrunはキャンセル
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: macos-14
+            label: macOS (arm64)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # electron 本体 / electron-builder のダウンロードキャッシュ
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-electron-
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # PRでは --dir（未パッケージ）まで。インストーラ生成はリリース時のみ
+      - name: Build (unpacked)
+        run: npm run dist:dir
+        env:
+          # 未署名ビルド。macでキーチェーンを探しに行かせない
+          CSC_IDENTITY_AUTO_DISCOVERY: false

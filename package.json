@@ -9,6 +9,7 @@
     "gen:dark": "node scripts/gen-dark-css.mjs",
     "dev:preview": "vite --config vite.renderer.config.ts",
     "build": "electron-vite build",
+    "typecheck": "tsc -b",
     "preview": "electron-vite preview",
     "dist": "electron-vite build && electron-builder",
     "dist:dir": "electron-vite build && electron-builder --dir"
