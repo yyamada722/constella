@@ -141,9 +141,40 @@ jobs:
             exit 1
           fi
           printf 'publish %s with %d file(s)\n' "$RELEASE_TAG" "${#files[@]}"
+
+          # 未署名ビルドのため、OSのセキュリティ警告の回避手順をノート冒頭に載せる
+          # (--notes-file の内容の後ろに --generate-notes の自動生成分が続く)
+          notes="$(mktemp)"
+          cat > "$notes" <<'NOTES'
+          ## ⚠️ インストール時の注意
+
+          アプリは未署名のため、初回起動時に OS のセキュリティ警告が出ます。
+
+          ### macOS
+
+          「マルウェアが含まれていないことを検証できません」と表示され、そのままでは起動できません
+          （「ゴミ箱に入れる」しか選べない場合があります）。以下の手順で起動してください。
+
+          1. dmg を開き、Constella.app を `アプリケーション` フォルダへコピー
+          2. ターミナルで次を実行（ダウンロード時に付く quarantine 属性を外します）
+
+             ```
+             xattr -cr /Applications/Constella.app
+             ```
+
+          3. 通常どおり起動
+
+          ### Windows
+
+          SmartScreen の警告が出た場合は「詳細情報」→「実行」で起動できます。
+
+          ---
+          NOTES
+
           # タグが未作成ならこのコミットに対して作られる
           gh release create "$RELEASE_TAG" \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_TAG" \
+            --notes-file "$notes" \
             --generate-notes \
             "${files[@]}"
