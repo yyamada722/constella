@@ -108,6 +108,13 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # ad-hoc署名の封印が有効か検証。壊れているとApple Siliconで起動できない
+      - name: Verify mac code signature
+        if: runner.os == 'macOS'
+        run: |
+          app="$(ls -d release/mac*/Constella.app | head -1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -152,17 +159,19 @@ jobs:
 
           ### macOS
 
-          「マルウェアが含まれていないことを検証できません」と表示され、そのままでは起動できません
-          （「ゴミ箱に入れる」しか選べない場合があります）。以下の手順で起動してください。
+          初回起動時に「悪質なソフトウェアかどうかを確認できません」という警告が出ます。
 
           1. dmg を開き、Constella.app を `アプリケーション` フォルダへコピー
-          2. ターミナルで次を実行（ダウンロード時に付く quarantine 属性を外します）
+          2. 一度ダブルクリックして起動を試みる（警告ダイアログは閉じてOK）
+          3. システム設定 → プライバシーとセキュリティ を開き、下の方に出る
+             「"Constella" はブロックされました」の隣の **「このまま開く」** をクリック
+          4. 以後は通常どおり起動できます
 
-             ```
-             xattr -cr /Applications/Constella.app
-             ```
+          ターミナルが使える場合は、代わりに次の1行でも起動できるようになります:
 
-          3. 通常どおり起動
+          ```
+          xattr -cr /Applications/Constella.app
+          ```
 
           ### Windows
 
