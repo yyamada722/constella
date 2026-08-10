@@ -2122,6 +2122,28 @@ export default function CanvasPage() {
     minX = Math.floor(minX - pad); minY = Math.floor(minY - pad)
     const w = Math.ceil(maxX + pad - minX)
     const h = Math.ceil(maxY + pad - minY)
+    // メディア枠の位置は「非同期処理が始まる前」に同期的に測ってキャンバス座標へ
+    // 正規化しておく。toSvg は数秒かかることがあり、その間にユーザーがズーム/パン
+    // すると、後から古い zoom 値で換算した座標が距離に比例して大きくズレるため。
+    // スケールも state ではなく実 DOM の transform 行列（ground truth）から取る。
+    const layerRect = layer.getBoundingClientRect()
+    const mtx = new DOMMatrixReadOnly(getComputedStyle(layer).transform)
+    const layerScale = mtx.a || 1
+    const mediaBoxes: Array<{ card: CanvasCard; url: string; el: HTMLElement; x: number; y: number; w: number; h: number }> = []
+    for (const el of Array.from(layer.querySelectorAll<HTMLElement>('[data-media-box]'))) {
+      const card = tabCards.find(c => c.id === el.dataset.mediaBox)
+      if (!card?.url) continue
+      const r = el.getBoundingClientRect()
+      mediaBoxes.push({
+        card,
+        url: card.url,
+        el,
+        x: (r.left - layerRect.left) / layerScale - minX,
+        y: (r.top - layerRect.top) / layerScale - minY,
+        w: r.width / layerScale,
+        h: r.height / layerScale,
+      })
+    }
     setExportingShare(true)
     setShareProgress('スナップショットを生成中…')
     const unfreeze = freezeVideosForExport(layer)
@@ -2139,30 +2161,19 @@ export default function CanvasPage() {
         filter: node => !(node instanceof HTMLElement && node.dataset.exportIgnore === '1'),
       })
       // 動画/音声カードの位置に実プレイヤーを、YouTube/Vimeo/Web カードの位置に
-      // 外部リンクカードを重ねるためのオーバーレイを収集
-      const layerRect = layer.getBoundingClientRect()
-      const zoom = viewport.zoom
+      // 外部リンクカードを重ねるためのオーバーレイを収集（位置は事前測定済み）
       const overlays: ShareOverlay[] = []
       let skipped = 0
-      for (const el of Array.from(layer.querySelectorAll<HTMLElement>('[data-media-box]'))) {
-        const card = tabCards.find(c => c.id === el.dataset.mediaBox)
-        if (!card?.url) continue
-        const r = el.getBoundingClientRect()
-        const box = {
-          x: (r.left - layerRect.left) / zoom - minX,
-          y: (r.top - layerRect.top) / zoom - minY,
-          w: r.width / zoom,
-          h: r.height / zoom,
-        }
+      for (const { card, url, el, ...box } of mediaBoxes) {
         // YouTube/Vimeo/Web カード: file:// で開かれた共有 HTML では iframe 埋め込みが
         // 拒否される（YouTube の origin 制約 / 一般サイトの X-Frame-Options）ため、
         // サムネイル＋新しいタブで開くリンクカードにする。Electron なら webview の
         // 実画面キャプチャをサムネイルに使い、失敗時は YouTube 公式サムネへ。
-        const isEmbedCard = card.type === 'video' && videoEmbedUrl(card.url) != null
+        const isEmbedCard = card.type === 'video' && videoEmbedUrl(url) != null
         if (isEmbedCard || card.type === 'web') {
           let thumb: string | undefined
-          let href = card.url
-          let label = card.title || card.content || card.url
+          let href = url
+          let label = card.title || card.content || url
           const wv = el.querySelector('webview') as WebviewEl | null
           if (wv?.capturePage) {
             try { thumb = (await wv.capturePage()).toDataURL() } catch { /* ignore */ }
@@ -2180,16 +2191,16 @@ export default function CanvasPage() {
             } catch { /* ignore */ }
           }
           if (!thumb && isEmbedCard) {
-            const ref = parseEmbedRef(card.url)
+            const ref = parseEmbedRef(url)
             if (ref?.provider === 'yt') thumb = `https://i.ytimg.com/vi/${ref.id}/hqdefault.jpg`
           }
           overlays.push({ kind: 'link', ...box, href, label, thumb })
           continue
         }
         if (shareEmbedLimitMB === 0) continue // 埋め込まない設定（静止画のまま）
-        let blob = isMediaRef(card.url) ? await getMediaBlob(card.url) : isLocalRef(card.url) ? await getLocalBlob(card.url) : null
+        let blob = isMediaRef(url) ? await getMediaBlob(url) : isLocalRef(url) ? await getLocalBlob(url) : null
         if (!blob) continue
-        let mime = blob.type || guessMediaMime(card.content || card.url, card.type === 'audio' ? 'audio' : 'video')
+        let mime = blob.type || guessMediaMime(card.content || url, card.type === 'audio' ? 'audio' : 'video')
         const limitBytes = shareEmbedLimitMB * 1024 * 1024
         if (shareEmbedLimitMB !== -1 && blob.size > limitBytes) {
           // 上限超え: オプションが有効な動画は 720p/WebM に再エンコードして収める
@@ -2248,7 +2259,7 @@ export default function CanvasPage() {
       setExportingShare(false)
       setShareProgress(null)
     }
-  }, [activeTabId, exportingShare, tabCards, tabGroups, tabLabels, tabStrokes, viewport.zoom, state.canvasTabs, shareEmbedLimitMB, shareTranscode])
+  }, [activeTabId, exportingShare, tabCards, tabGroups, tabLabels, tabStrokes, tabArrows, cardsById, state.canvasTabs, shareEmbedLimitMB, shareTranscode])
 
   return (
     <div className="flex flex-col h-full">
