@@ -539,7 +539,12 @@ function historyReducer(h: History, action: HistoryAction): History {
   // View-only actions also break the coalesce chain — a navigation between two
   // typing bursts must sever their undo grouping so a later UNDO doesn't reach
   // past the navigation.
-  if (NO_HISTORY.has(action.type)) return { ...h, present, future: [], lastCommitAt: 0 }
+  // past のスナップショットにも同じビュー状態を適用する。さもないと、無関係な編集を
+  // UNDO した瞬間に古いビュー状態（Webカードの遷移前URL・PDFのページ・アクティブ
+  // プロジェクト）まで巻き戻ってしまう。
+  if (NO_HISTORY.has(action.type)) {
+    return { ...h, past: h.past.map(s => reducer(s, action)), present, future: [], lastCommitAt: 0 }
+  }
   const now = Date.now()
   if (COALESCABLE.has(action.type) && h.lastCommitAt && now - h.lastCommitAt < COALESCE_MS) {
     // coalesce: keep the same undo target, just advance the present

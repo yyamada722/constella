@@ -2111,6 +2111,12 @@ export default function CanvasPage() {
     tabGroups.forEach(g => acc(g.x, g.y, g.width, g.height))
     tabLabels.forEach(l => { const b = labelBox(l); acc(b.x, b.y, b.w, b.h) })
     tabStrokes.forEach(s => { for (let i = 0; i + 1 < s.points.length; i += 2) acc(s.points[i], s.points[i + 1]) })
+    tabArrows.forEach(a => {
+      const ends = resolveArrowEnds(a, cardsById)
+      acc(ends.x1, ends.y1)
+      acc(ends.x2, ends.y2)
+      a.points?.forEach(p => acc(p.x, p.y))
+    })
     if (!isFinite(minX)) return
     const pad = 60
     minX = Math.floor(minX - pad); minY = Math.floor(minY - pad)
@@ -3867,7 +3873,7 @@ export const WebFrame = forwardRef<WebFrameHandle, {
   // dom-ready 前に effectiveUrl が変わった場合、下の effect は throw ガードで
   // 早期 return したまま再実行されない。dom-ready 時に最新値でもう一度同期する。
   const effectiveUrlRef = useRef(effectiveUrl)
-  effectiveUrlRef.current = effectiveUrl
+  useEffect(() => { effectiveUrlRef.current = effectiveUrl }, [effectiveUrl])
   useEffect(() => {
     if (!IS_ELECTRON) return
     const wv = hostRef.current?.querySelector('webview') as (WebviewEl & { loadURL?: (u: string) => Promise<void> }) | null

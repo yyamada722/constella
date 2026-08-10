@@ -28,17 +28,30 @@ export function freezeVideosForExport(root: HTMLElement): () => void {
       ctx.fillRect(0, 0, canvas.width, canvas.height)
     }
     if (v.readyState >= 2 && v.videoWidth && v.videoHeight) {
-      const fit = style.objectFit === 'cover'
-        ? Math.max(w / v.videoWidth, h / v.videoHeight)
-        : style.objectFit === 'fill'
-          ? 0 // fill は素直にボックス全面へ
-          : Math.min(w / v.videoWidth, h / v.videoHeight) // contain（アプリの既定）
-      if (fit === 0) {
-        ctx.drawImage(v, 0, 0, canvas.width, canvas.height)
-      } else {
-        const dw = v.videoWidth * fit * scale
-        const dh = v.videoHeight * fit * scale
-        ctx.drawImage(v, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh)
+      // フレームは一旦別 canvas に描き、taint（CORS なしの外部 https 動画）を検出
+      // してからクリーンな場合だけ合成する。汚染 canvas を挿すと html-to-image の
+      // toDataURL が SecurityError になり書き出し全体が失敗するため。
+      const frame = document.createElement('canvas')
+      frame.width = canvas.width
+      frame.height = canvas.height
+      const fctx = frame.getContext('2d')
+      if (fctx) {
+        const fit = style.objectFit === 'cover'
+          ? Math.max(w / v.videoWidth, h / v.videoHeight)
+          : style.objectFit === 'fill'
+            ? 0 // fill は素直にボックス全面へ
+            : Math.min(w / v.videoWidth, h / v.videoHeight) // contain（アプリの既定）
+        if (fit === 0) {
+          fctx.drawImage(v, 0, 0, frame.width, frame.height)
+        } else {
+          const dw = v.videoWidth * fit * scale
+          const dh = v.videoHeight * fit * scale
+          fctx.drawImage(v, (frame.width - dw) / 2, (frame.height - dh) / 2, dw, dh)
+        }
+        try {
+          fctx.getImageData(0, 0, 1, 1) // taint なら throw
+          ctx.drawImage(frame, 0, 0)
+        } catch { /* クロスオリジン動画: フレームなし（背景のみ）にして書き出しを守る */ }
       }
     }
     canvas.style.position = 'absolute'
@@ -121,6 +134,9 @@ export async function transcodeVideoBlob(
       const dest = audioCtx.createMediaStreamDestination()
       src.connect(dest)
       dest.stream.getAudioTracks().forEach(t => stream.addTrack(t))
+      // 自動再生ポリシー下では suspended で生成されることがあり、そのままだと
+      // 無音トラックを録音してしまう。録画開始前に明示的に resume する。
+      await audioCtx.resume().catch(() => { /* ignore */ })
     } catch { /* 音声トラックなし等 */ }
     const audioBits = 96_000
     const videoBits = Math.min(2_500_000, Math.max(250_000, Math.floor((opts.targetBytes * 8 * 0.9) / dur) - audioBits))
@@ -214,10 +230,13 @@ export function buildShareHtml(opts: {
     if (o.kind === 'audio') {
       return `<audio controls preload="metadata" data-media="m${i}" data-mime="${escapeHtml(o.mime)}" style="${pos}"></audio>`
     }
-    // 動画: ブックマーク（ラベルスキップ）チップをプレイヤー下部に重ね、クリックでシーク
-    const chips = (o.marks ?? []).map(m =>
-      `<button data-seek="${m.t}" title="${escapeHtml(m.label)} へ移動">${escapeHtml(m.label)}</button>`
-    ).join('')
+    // 動画: ブックマーク（ラベルスキップ）チップをプレイヤー下部に重ね、クリックでシーク。
+    // time は数値へ強制してから埋め込む（インポートした不正データ経由の属性注入を防ぐ）。
+    const chips = (o.marks ?? []).map(m => {
+      const t = Number(m.t)
+      if (!Number.isFinite(t) || t < 0) return ''
+      return `<button data-seek="${t}" title="${escapeHtml(m.label)} へ移動">${escapeHtml(m.label)}</button>`
+    }).join('')
     return `<div class="mbox" style="${pos}">
     <video controls preload="metadata" data-media="m${i}" data-mime="${escapeHtml(o.mime)}"></video>
     ${chips ? `<div class="marks">${chips}</div>` : ''}
@@ -357,11 +376,18 @@ ${mediaBlocks.join('\n')}
   document.getElementById('zo').addEventListener('click', function () { zoomAt(vp.clientWidth / 2, vp.clientHeight / 2, 0.8); });
   document.getElementById('fit').addEventListener('click', fit);
   document.getElementById('one').addEventListener('click', function () { var f = 1 / z; zoomAt(vp.clientWidth / 2, vp.clientHeight / 2, f); });
-  // スナップショット内の入力欄は「見える・選択できる・でも編集不可」にする
-  document.querySelectorAll('#world svg input, #world svg textarea, #world svg select').forEach(function (el) {
-    el.setAttribute('readonly', '');
+  // スナップショット内の入力欄は「見える・選択できる・でも編集不可」にする。
+  // テキスト系は readonly のみ（disabled にするとフォーカス・選択・コピーもできなくなる）。
+  // readonly が効かない checkbox/radio 等と select は disabled で固定する。
+  document.querySelectorAll('#world svg input, #world svg textarea').forEach(function (el) {
+    var type = (el.getAttribute('type') || 'text').toLowerCase();
+    var textual = el.tagName.toLowerCase() === 'textarea' ||
+      ['text', 'search', 'url', 'tel', 'email', 'password', 'number', 'date', 'time', 'datetime-local', 'month', 'week'].indexOf(type) !== -1;
+    if (textual) { el.setAttribute('readonly', ''); el.setAttribute('tabindex', '-1'); }
+    else el.setAttribute('disabled', '');
+  });
+  document.querySelectorAll('#world svg select').forEach(function (el) {
     el.setAttribute('disabled', '');
-    el.setAttribute('tabindex', '-1');
   });
   document.querySelectorAll('#world svg [contenteditable]').forEach(function (el) {
     el.setAttribute('contenteditable', 'false');
