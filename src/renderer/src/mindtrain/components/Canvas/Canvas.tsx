@@ -8,6 +8,7 @@ import { renderStationShape } from './shapes';
 import { LABEL_DIRS, type LabelDir } from '../../types';
 import { putMedia, useMediaUrl } from '../../../persistence/media';
 import { IMAGE_ACCEPT, normalizeImageBlob } from '../../../utils/image';
+import { wheelZoomFactor } from '../../../utils/zoom';
 import styles from './Canvas.module.css';
 
 // Image annotation <image>: resolves `idb:` refs (images saved to the project
@@ -398,7 +399,7 @@ export function Canvas() {
       const sx = e.clientX - rect.left;
       const sy = e.clientY - rect.top;
       if (e.ctrlKey || e.metaKey) {
-        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        const factor = wheelZoomFactor(e);
         setVp((v) => {
           const newZoom = Math.min(4, Math.max(0.2, v.zoom * factor));
           const worldX = (sx - v.x) / v.zoom;

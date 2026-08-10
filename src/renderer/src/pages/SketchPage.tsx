@@ -4,6 +4,8 @@ import { Plus, Trash2, Pencil, Eraser, Undo2, Redo2, Eraser as ClearIcon, ZoomIn
 import { useApp } from '../store'
 import { Sketch, SketchStroke } from '../types'
 import { generateId } from '../utils'
+import { wheelZoomFactor } from '../utils/zoom'
+import ZoomSpeedControl from '../components/ZoomSpeedControl'
 
 const COLORS = ['#1e293b', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff']
 const WIDTHS = [2, 4, 8, 14]
@@ -208,8 +210,8 @@ export default function SketchPage() {
       const r = svg.getBoundingClientRect()
       const cx = e.clientX - r.left
       const cy = e.clientY - r.top
+      const factor = wheelZoomFactor(e)
       setViewport(v => {
-        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
         const nz = Math.max(0.1, Math.min(8, v.zoom * factor))
         // Keep the content point under the cursor stationary on screen.
         const ax = cx / v.zoom + v.x
@@ -427,7 +429,7 @@ export default function SketchPage() {
               </div>
               <div className="ml-auto flex items-center gap-1">
                 <button onClick={() => setViewport(v => ({ ...v, zoom: Math.max(0.1, v.zoom / 1.25) }))} title="縮小" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><ZoomOut size={16} /></button>
-                <span className="text-[10px] text-slate-500 w-10 text-center">{Math.round(viewport.zoom * 100)}%</span>
+                <ZoomSpeedControl zoom={viewport.zoom} className="text-[10px] text-slate-500 w-10 text-center rounded hover:bg-slate-100 py-0.5" />
                 <button onClick={() => setViewport(v => ({ ...v, zoom: Math.min(8, v.zoom * 1.25) }))} title="拡大" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><ZoomIn size={16} /></button>
                 <button onClick={fitToContent} title="全体表示" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><Maximize size={16} /></button>
                 <div className="w-px h-5 bg-slate-200 mx-1" />
