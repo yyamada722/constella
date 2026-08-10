@@ -3864,6 +3864,24 @@ export const WebFrame = forwardRef<WebFrameHandle, {
   // 異なる時だけ loadURL する。src 属性を毎レンダー再バインドすると、webview 内の
   // 遷移を onNavigate で card.url に書き戻した瞬間に同じページを再ロードしてしまう。
   const initialSrcRef = useRef(effectiveUrl || 'about:blank')
+  // dom-ready 前に effectiveUrl が変わった場合、下の effect は throw ガードで
+  // 早期 return したまま再実行されない。dom-ready 時に最新値でもう一度同期する。
+  const effectiveUrlRef = useRef(effectiveUrl)
+  effectiveUrlRef.current = effectiveUrl
+  useEffect(() => {
+    if (!IS_ELECTRON) return
+    const wv = hostRef.current?.querySelector('webview') as (WebviewEl & { loadURL?: (u: string) => Promise<void> }) | null
+    if (!wv) return
+    const syncUrl = () => {
+      let cur = ''
+      try { cur = wv.getURL?.() || '' } catch { return }
+      const want = effectiveUrlRef.current || 'about:blank'
+      if (!cur || cur === want) return
+      try { wv.loadURL?.(want)?.catch(() => { /* ignore */ }) } catch { /* ignore */ }
+    }
+    wv.addEventListener('dom-ready', syncUrl)
+    return () => wv.removeEventListener('dom-ready', syncUrl)
+  }, [])
   useEffect(() => {
     if (!IS_ELECTRON) return
     const wv = hostRef.current?.querySelector('webview') as (WebviewEl & { loadURL?: (u: string) => Promise<void> }) | null

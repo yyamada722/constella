@@ -145,6 +145,10 @@ export async function transcodeVideoBlob(
       else setTimeout(paint, 33)
     }
     v.onended = () => stopAll()
+    // デコードエラーやストールでは ended も onstop も来ず await done が永久待ちに
+    // なるため、エラーと経過時間の上限でも必ず録画を終了させる。
+    v.onerror = () => stopAll()
+    const deadline = setTimeout(stopAll, Math.ceil((dur + 15) * 1000))
     rec.start(1000)
     try {
       await v.play()
@@ -156,6 +160,7 @@ export async function transcodeVideoBlob(
     }
     paint()
     await done
+    clearTimeout(deadline)
     v.pause()
     const out = new Blob(chunks, { type: 'video/webm' })
     return out.size > 0 ? out : null
