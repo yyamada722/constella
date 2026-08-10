@@ -108,6 +108,13 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+      # ad-hoc署名の封印が有効か検証。壊れているとApple Siliconで起動できない
+      - name: Verify mac code signature
+        if: runner.os == 'macOS'
+        run: |
+          app="$(ls -d release/mac*/Constella.app | head -1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -115,7 +122,6 @@ jobs:
           path: |
             release/*.exe
             release/*.dmg
-            release/*.zip
             release/latest*.yml
 
   release:
@@ -142,9 +148,42 @@ jobs:
             exit 1
           fi
           printf 'publish %s with %d file(s)\n' "$RELEASE_TAG" "${#files[@]}"
+
+          # 未署名ビルドのため、OSのセキュリティ警告の回避手順をノート冒頭に載せる
+          # (--notes-file の内容の後ろに --generate-notes の自動生成分が続く)
+          notes="$(mktemp)"
+          cat > "$notes" <<'NOTES'
+          ## ⚠️ インストール時の注意
+
+          アプリは未署名のため、初回起動時に OS のセキュリティ警告が出ます。
+
+          ### macOS
+
+          初回起動時に「悪質なソフトウェアかどうかを確認できません」という警告が出ます。
+
+          1. dmg を開き、Constella.app を `アプリケーション` フォルダへコピー
+          2. 一度ダブルクリックして起動を試みる（警告ダイアログは閉じてOK）
+          3. システム設定 → プライバシーとセキュリティ を開き、下の方に出る
+             「"Constella" はブロックされました」の隣の **「このまま開く」** をクリック
+          4. 以後は通常どおり起動できます
+
+          ターミナルが使える場合は、代わりに次の1行でも起動できるようになります:
+
+          ```
+          xattr -cr /Applications/Constella.app
+          ```
+
+          ### Windows
+
+          SmartScreen の警告が出た場合は「詳細情報」→「実行」で起動できます。
+
+          ---
+          NOTES
+
           # タグが未作成ならこのコミットに対して作られる
           gh release create "$RELEASE_TAG" \
             --target "$GITHUB_SHA" \
             --title "$RELEASE_TAG" \
+            --notes-file "$notes" \
             --generate-notes \
             "${files[@]}"
