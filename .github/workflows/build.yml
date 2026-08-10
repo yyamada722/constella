@@ -64,3 +64,11 @@ jobs:
         env:
           # 未署名ビルド。macでキーチェーンを探しに行かせない
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # ad-hoc署名の封印が有効か検証。壊れているとApple Siliconで起動できない
+      - name: Verify mac code signature
+        if: runner.os == 'macOS'
+        run: |
+          app="$(ls -d release/mac*/Constella.app | head -1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app"
