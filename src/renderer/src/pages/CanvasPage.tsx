@@ -2129,20 +2129,30 @@ export default function CanvasPage() {
     const layerRect = layer.getBoundingClientRect()
     const mtx = new DOMMatrixReadOnly(getComputedStyle(layer).transform)
     const layerScale = mtx.a || 1
-    const mediaBoxes: Array<{ card: CanvasCard; url: string; el: HTMLElement; x: number; y: number; w: number; h: number }> = []
+    const toCanvasRect = (r: DOMRect) => ({
+      x: (r.left - layerRect.left) / layerScale - minX,
+      y: (r.top - layerRect.top) / layerScale - minY,
+      w: r.width / layerScale,
+      h: r.height / layerScale,
+    })
+    type MediaBoxEntry = {
+      card: CanvasCard; url: string; el: HTMLElement
+      x: number; y: number; w: number; h: number
+      // ブックマーク行（カード下部のチップ列）の位置。共有HTMLではこの位置に
+      // クリックでシークできるチップを重ねる。
+      marksBox?: { x: number; y: number; w: number; h: number }
+    }
+    const mediaBoxes: MediaBoxEntry[] = []
     for (const el of Array.from(layer.querySelectorAll<HTMLElement>('[data-media-box]'))) {
       const card = tabCards.find(c => c.id === el.dataset.mediaBox)
       if (!card?.url) continue
       const r = el.getBoundingClientRect()
-      mediaBoxes.push({
-        card,
-        url: card.url,
-        el,
-        x: (r.left - layerRect.left) / layerScale - minX,
-        y: (r.top - layerRect.top) / layerScale - minY,
-        w: r.width / layerScale,
-        h: r.height / layerScale,
-      })
+      let marksBox: MediaBoxEntry['marksBox']
+      if ((card.type === 'video' || card.type === 'audio') && (card.bookmarks?.length ?? 0) > 0) {
+        const marksEl = layer.querySelector<HTMLElement>(`[data-share-marks="${CSS.escape(card.id)}"]`)
+        if (marksEl) marksBox = toCanvasRect(marksEl.getBoundingClientRect())
+      }
+      mediaBoxes.push({ card, url: card.url, el, ...toCanvasRect(r), marksBox })
     }
     setExportingShare(true)
     setShareProgress('スナップショットを生成中…')
@@ -2164,7 +2174,7 @@ export default function CanvasPage() {
       // 外部リンクカードを重ねるためのオーバーレイを収集（位置は事前測定済み）
       const overlays: ShareOverlay[] = []
       let skipped = 0
-      for (const { card, url, el, ...box } of mediaBoxes) {
+      for (const { card, url, el, marksBox, ...box } of mediaBoxes) {
         // YouTube/Vimeo/Web カード: file:// で開かれた共有 HTML では iframe 埋め込みが
         // 拒否される（YouTube の origin 制約 / 一般サイトの X-Frame-Options）ため、
         // サムネイル＋新しいタブで開くリンクカードにする。Electron なら webview の
@@ -2223,10 +2233,19 @@ export default function CanvasPage() {
           fr.readAsDataURL(blob)
         })
         const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
-        const marks = card.type === 'video'
-          ? (card.bookmarks ?? []).slice().sort((a, b) => a.time - b.time).map(b => ({ t: b.time, label: b.label || fmtTimecode(b.time) }))
-          : undefined
-        overlays.push({ kind: card.type === 'audio' ? 'audio' : 'video', ...box, base64, mime, marks })
+        overlays.push({ kind: card.type === 'audio' ? 'audio' : 'video', ...box, base64, mime, cardId: card.id })
+        // ブックマークは、スナップショットに写っているカード下部のチップ行と同じ
+        // 位置にクリック可能なチップを重ねる（動画上に浮かせると視覚的にズレて見える）
+        if (marksBox && (card.bookmarks?.length ?? 0) > 0) {
+          overlays.push({
+            kind: 'marks',
+            ...marksBox,
+            cardId: card.id,
+            accent: card.type === 'audio' ? '#ea580c' : '#c026d3',
+            marks: (card.bookmarks ?? []).slice().sort((a, b) => a.time - b.time)
+              .map(b => ({ t: Number(b.time), time: fmtTimecode(Number(b.time) || 0), label: b.label ?? '' })),
+          })
+        }
       }
       const mod = (n: number) => ((n % 20) + 20) % 20
       const tabName = state.canvasTabs.find(t => t.id === activeTabId)?.name || 'canvas'
@@ -4375,7 +4394,7 @@ const BookmarkBar = memo(function BookmarkBar({ card, onUpdate, accent, getTime,
         </div>
       )}
       {sorted.length > 0 && (
-        <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+        <div className="flex items-center gap-1 overflow-x-auto pb-0.5" data-share-marks={card.id}>
           {sorted.map(b => {
             const link = shareUrl ? shareUrl(b.time) : null
             return (

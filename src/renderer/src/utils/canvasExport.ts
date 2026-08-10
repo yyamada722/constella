@@ -189,8 +189,11 @@ export async function transcodeVideoBlob(
 }
 
 export type ShareOverlay =
-  | { kind: 'video' | 'audio'; x: number; y: number; w: number; h: number; base64: string; mime: string; marks?: Array<{ t: number; label: string }> }
+  | { kind: 'video' | 'audio'; x: number; y: number; w: number; h: number; base64: string; mime: string; cardId?: string }
   | { kind: 'link'; x: number; y: number; w: number; h: number; href: string; label: string; thumb?: string }
+  // ブックマークチップ行 — スナップショット内のチップと同じ位置に重ね、クリックで
+  // cardId の動画/音声をシークする
+  | { kind: 'marks'; x: number; y: number; w: number; h: number; cardId: string; accent: string; marks: Array<{ t: number; time: string; label: string }> }
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -225,22 +228,22 @@ export function buildShareHtml(opts: {
     <span class="ext-inner"><span class="ext-play">▶</span><span class="ext-label">${escapeHtml(o.label)}</span><span class="ext-hint">新しいタブで開く ↗</span></span>
   </a>`
     }
+    if (o.kind === 'marks') {
+      // time は数値へ強制してから埋め込む（インポートした不正データ経由の属性注入を防ぐ）
+      const chips = o.marks.map(m => {
+        const t = Number(m.t)
+        if (!Number.isFinite(t) || t < 0) return ''
+        return `<button data-seek="${t}" title="${escapeHtml(m.time)}${m.label ? ' ' + escapeHtml(m.label) : ''} へ移動"><b style="color:${escapeHtml(o.accent)}">${escapeHtml(m.time)}</b>${m.label ? `<span>${escapeHtml(m.label)}</span>` : ''}</button>`
+      }).join('')
+      if (!chips) return ''
+      return `<div class="marks" data-for-card="${escapeHtml(o.cardId)}" style="${pos}">${chips}</div>`
+    }
     // 巨大 base64 は src 属性でなく text/plain スクリプトブロックに持たせ、閲覧時に Blob URL 化する
     mediaBlocks.push(`<script type="text/plain" data-media-id="m${i}">${o.base64}</script>`)
-    if (o.kind === 'audio') {
-      return `<audio controls preload="metadata" data-media="m${i}" data-mime="${escapeHtml(o.mime)}" style="${pos}"></audio>`
-    }
-    // 動画: ブックマーク（ラベルスキップ）チップをプレイヤー下部に重ね、クリックでシーク。
-    // time は数値へ強制してから埋め込む（インポートした不正データ経由の属性注入を防ぐ）。
-    const chips = (o.marks ?? []).map(m => {
-      const t = Number(m.t)
-      if (!Number.isFinite(t) || t < 0) return ''
-      return `<button data-seek="${t}" title="${escapeHtml(m.label)} へ移動">${escapeHtml(m.label)}</button>`
-    }).join('')
-    return `<div class="mbox" style="${pos}">
-    <video controls preload="metadata" data-media="m${i}" data-mime="${escapeHtml(o.mime)}"></video>
-    ${chips ? `<div class="marks">${chips}</div>` : ''}
-  </div>`
+    const tag = o.kind === 'audio' ? 'audio' : 'video'
+    const extra = o.kind === 'audio' ? '' : 'background:#000;object-fit:contain;'
+    const cardAttr = o.cardId ? ` data-card="${escapeHtml(o.cardId)}"` : ''
+    return `<${tag} controls preload="metadata" data-media="m${i}" data-mime="${escapeHtml(o.mime)}"${cardAttr} style="${pos}${extra}"></${tag}>`
   }).join('\n  ')
 
   return `<!doctype html>
@@ -264,14 +267,17 @@ export function buildShareHtml(opts: {
   #world > svg { position: absolute; left: 0; top: 0; }
   /* 左ドラッグはテキスト選択に使う（パンは右ドラッグ）。パン中だけ選択を止める。 */
   #vp.panning { user-select: none; }
-  .mbox video { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; object-fit: contain; }
-  .marks { position: absolute; left: 6px; right: 6px; bottom: 58px; display: flex; flex-wrap: wrap; gap: 4px; pointer-events: none; }
+  /* ブックマークチップ行 — スナップショットのチップ列の真上に重なる */
+  .marks { position: absolute; display: flex; align-items: center; gap: 4px; overflow: hidden; }
   .marks button {
-    pointer-events: auto; border: none; cursor: pointer; border-radius: 999px;
-    padding: 2px 8px; font-size: 10px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    background: rgba(15,23,42,.72); color: #fff;
+    display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0;
+    border: none; cursor: pointer; border-radius: 4px; padding: 2px 6px; font-size: 10px;
+    background: ${dark ? 'rgba(148,163,184,.25)' : '#f1f5f9'}; color: ${dark ? '#cbd5e1' : '#475569'};
+    max-width: 150px; white-space: nowrap;
   }
-  .marks button:hover { background: rgba(79,70,229,.85); }
+  .marks button span { overflow: hidden; text-overflow: ellipsis; }
+  .marks button b { font-variant-numeric: tabular-nums; }
+  .marks button:hover { background: ${dark ? 'rgba(148,163,184,.4)' : '#e2e8f0'}; }
   a.ext { display: block; background-color: #0f172a; border-radius: 0 0 10px 10px; overflow: hidden; text-decoration: none; }
   a.ext .ext-inner {
     position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
@@ -392,13 +398,14 @@ ${mediaBlocks.join('\n')}
   document.querySelectorAll('#world svg [contenteditable]').forEach(function (el) {
     el.setAttribute('contenteditable', 'false');
   });
-  // 動画ブックマーク（ラベルスキップ）チップ: クリックで同じカードの動画をシーク
+  // ブックマークチップ: クリックで同じカードの動画/音声をシークして再生
   document.querySelectorAll('.marks button').forEach(function (b) {
     b.addEventListener('click', function () {
-      var v = b.closest('.mbox').querySelector('video');
-      if (!v) return;
-      v.currentTime = parseFloat(b.getAttribute('data-seek')) || 0;
-      v.play().catch(function () {});
+      var cardId = b.closest('.marks').getAttribute('data-for-card');
+      var m = document.querySelector('video[data-card="' + cardId + '"], audio[data-card="' + cardId + '"]');
+      if (!m) return;
+      m.currentTime = parseFloat(b.getAttribute('data-seek')) || 0;
+      m.play().catch(function () {});
     });
   });
   window.addEventListener('resize', fit);
