@@ -80,7 +80,8 @@ export type Action =
   | { type: 'DELETE_AI_CONVERSATION'; payload: string }
   | { type: 'ADD_CANVAS_CARD'; payload: CanvasCard }
   | { type: 'UPDATE_CANVAS_CARD'; payload: CanvasCard }
-  | { type: 'SET_CANVAS_CARD_VIEW'; payload: { id: string; pdf: CanvasCard['pdf'] } }
+  // View-only card state (undo履歴に乗せない): PDFのページ/表示モード、Webカードの現在URL/タイトル
+  | { type: 'SET_CANVAS_CARD_VIEW'; payload: { id: string; pdf?: CanvasCard['pdf']; url?: string; title?: string } }
   | { type: 'DELETE_CANVAS_CARD'; payload: string }
   | { type: 'MOVE_CANVAS_CARD'; payload: { id: string; x: number; y: number } }
   | { type: 'RESIZE_CANVAS_CARD'; payload: { id: string; width: number; height: number } }
@@ -412,8 +413,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, canvasCards: [...state.canvasCards, action.payload] }
     case 'UPDATE_CANVAS_CARD':
       return { ...state, canvasCards: state.canvasCards.map(c => c.id === action.payload.id ? action.payload : c) }
-    case 'SET_CANVAS_CARD_VIEW':
-      return { ...state, canvasCards: state.canvasCards.map(c => c.id === action.payload.id ? { ...c, pdf: action.payload.pdf } : c) }
+    case 'SET_CANVAS_CARD_VIEW': {
+      const { id, ...patch } = action.payload
+      return { ...state, canvasCards: state.canvasCards.map(c => c.id === id ? { ...c, ...patch } : c) }
+    }
     case 'DELETE_CANVAS_CARD':
       // Also drop arrows that used this card as an endpoint — DELETE_CANVAS_TAB
       // already cascades arrows/groups/strokes/labels, but the per-card delete

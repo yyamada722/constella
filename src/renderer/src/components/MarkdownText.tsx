@@ -321,7 +321,7 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
       onMouseDown={e => e.stopPropagation()}
       onDoubleClick={() => { if (!readOnly && !controlled) setEditingState(true) }}
       title={readOnly || controlled ? undefined : 'ダブルクリックで編集'}
-      className={`md-content overflow-auto ${base} ${extraClass ?? ''}`}
+      className={`md-content overflow-auto select-text ${base} ${extraClass ?? ''}`}
     >
       {rendered}
     </div>
