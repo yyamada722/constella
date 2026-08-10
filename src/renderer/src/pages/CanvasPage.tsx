@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2 } from 'lucide-react'
 import { useApp } from '../store'
 import { CanvasCard, CanvasTab, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
 import { generateId } from '../utils'
@@ -11,7 +11,8 @@ import { ImageCropper } from '../components/ImageCropper'
 import { ClippedImage } from '../components/ClippedImage'
 import { putMedia, deleteMedia, isMediaRef, useMediaUrl, useMediaState, getMediaBlob, resolveMediaUrl } from '../persistence/media'
 import { MediaFallback } from '../components/MediaFallback'
-import { isLocalRef, localRefPath, localFileApi, localFileName, localKind, toLocalRef, type LocalKind } from '../utils/localFile'
+import { isLocalRef, localRefPath, localFileApi, localFileName, localKind, toLocalRef, getLocalBlob, type LocalKind } from '../utils/localFile'
+import { freezeVideosForExport, buildShareHtml, guessMediaMime, hideExportOnlyUi, transcodeVideoBlob, type ShareOverlay } from '../utils/canvasExport'
 import { alertDialog } from '../components/ConfirmDialog'
 import { IMAGE_ACCEPT, isImageFile, normalizeImageBlob } from '../utils/image'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
@@ -553,6 +554,8 @@ const LABEL_SIZES = [14, 20, 28]
 export default function CanvasPage() {
   const { state, dispatch, undo, redo, canUndo, canRedo } = useApp()
   const canvasRef = useRef<HTMLDivElement>(null)
+  // 変換レイヤー（translate+scale の掛かった div）。共有HTML書き出しで全域スナップショットを撮るのに使う。
+  const layerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   const dragDepthRef = useRef(0)
   const viewportRef = useRef({ x: 0, y: 0, zoom: 1 })
@@ -1628,7 +1631,13 @@ export default function CanvasPage() {
         return
       }
       if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); return }
-      if (mod && (e.key === 'c' || e.key === 'C')) { e.preventDefault(); copyCards(); return }
+      if (mod && (e.key === 'c' || e.key === 'C')) {
+        // 本文テキストを範囲選択中はネイティブのテキストコピーを優先する
+        // （ここで preventDefault するとカード内テキストが一切コピーできない）。
+        const sel = window.getSelection()
+        if (sel && !sel.isCollapsed && sel.toString().trim()) return
+        e.preventDefault(); copyCards(); return
+      }
       // Ctrl+V is handled by the native 'paste' event listener (so clipboard image
       // data is available); preventing it here would suppress that event.
       if (!locked && (selectedIds.length > 0 || selectedLabelIds.length > 0) && e.key.startsWith('Arrow')) {
@@ -2027,6 +2036,10 @@ export default function CanvasPage() {
     const el = canvasRef.current
     if (!el) return
     const { toPng } = await import('html-to-image')
+    // html-to-image は <video> を要素ボックスへ引き伸ばして描く（object-fit 無視）ので、
+    // 正しいアスペクトで合成した canvas を重ねてから撮る。
+    const unfreeze = freezeVideosForExport(el)
+    const unhide = hideExportOnlyUi()
     try {
       const dataUrl = await toPng(el, {
         pixelRatio: 2,
@@ -2038,8 +2051,234 @@ export default function CanvasPage() {
       a.href = dataUrl
       a.download = `constella-${tabName}.png`
       a.click()
-    } catch { /* ignore */ }
+    } catch { /* ignore */ } finally { unfreeze(); unhide() }
   }, [state.canvasTabs, activeTabId])
+
+  // 共有用HTML書き出し — Constella を持たない相手にも、単一の .html ファイルだけで
+  // キャンバス全域をパン/ズーム付きでそのまま見せられる。動画/音声は埋め込み再生可。
+  const [exportingShare, setExportingShare] = useState(false)
+  const [shareMenuOpen, setShareMenuOpen] = useState(false)
+  // 動画・音声の埋め込み上限（MB）。-1=無制限、0=埋め込まない（静止画のみ）。
+  const [shareEmbedLimitMB, setShareEmbedLimitMB] = useState<number>(() => {
+    const v = Number(localStorage.getItem('constella.shareEmbedLimitMB'))
+    return Number.isFinite(v) && (v === -1 || v >= 0) ? v : 150
+  })
+  const shareMenuRef = usePopoverDismiss<HTMLDivElement>(shareMenuOpen, () => setShareMenuOpen(false))
+  const setShareLimit = (v: number) => {
+    setShareEmbedLimitMB(v)
+    localStorage.setItem('constella.shareEmbedLimitMB', String(v))
+  }
+  // 上限超の動画を 720p/WebM に再エンコードして埋め込むか（実時間かかる）
+  const [shareTranscode, setShareTranscode] = useState(() => localStorage.getItem('constella.shareTranscode') === '1')
+  const toggleShareTranscode = () => {
+    setShareTranscode(v => { localStorage.setItem('constella.shareTranscode', v ? '0' : '1'); return !v })
+  }
+  // 書き出し進捗（再エンコードは長いのでトーストで見せる）
+  const [shareProgress, setShareProgress] = useState<string | null>(null)
+  // 容量シミュレーション: メニューを開いたら現在タブの動画/音声サイズを集計
+  const [shareSizes, setShareSizes] = useState<Array<{ id: string; title: string; size: number }> | null>(null)
+  useEffect(() => {
+    if (!shareMenuOpen) { setShareSizes(null); return }
+    let alive = true
+    ;(async () => {
+      const items: Array<{ id: string; title: string; size: number }> = []
+      for (const c of tabCards) {
+        if ((c.type !== 'video' && c.type !== 'audio') || !c.url) continue
+        if (c.type === 'video' && videoEmbedUrl(c.url)) continue // YouTube等はリンク化なのでゼロ
+        let size = 0
+        try {
+          if (isMediaRef(c.url)) size = (await getMediaBlob(c.url))?.size ?? 0
+          else if (isLocalRef(c.url)) size = (await localFileApi()?.stat(localRefPath(c.url)))?.size ?? 0
+        } catch { /* ignore */ }
+        if (size > 0) items.push({ id: c.id, title: c.title || c.content || '(無題)', size })
+      }
+      if (alive) setShareSizes(items)
+    })()
+    return () => { alive = false }
+  }, [shareMenuOpen, tabCards])
+  const exportShareHtml = useCallback(async () => {
+    const layer = layerRef.current
+    if (!layer || !activeTabId || exportingShare) return
+    // 全コンテンツ（カード/グループ/ラベル/ペン線）のバウンディングボックス
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    const acc = (x: number, y: number, w = 0, h = 0) => {
+      if (x < minX) minX = x
+      if (y < minY) minY = y
+      if (x + w > maxX) maxX = x + w
+      if (y + h > maxY) maxY = y + h
+    }
+    tabCards.forEach(c => acc(c.x, c.y, c.width, c.height))
+    tabGroups.forEach(g => acc(g.x, g.y, g.width, g.height))
+    tabLabels.forEach(l => { const b = labelBox(l); acc(b.x, b.y, b.w, b.h) })
+    tabStrokes.forEach(s => { for (let i = 0; i + 1 < s.points.length; i += 2) acc(s.points[i], s.points[i + 1]) })
+    tabArrows.forEach(a => {
+      const ends = resolveArrowEnds(a, cardsById)
+      acc(ends.x1, ends.y1)
+      acc(ends.x2, ends.y2)
+      a.points?.forEach(p => acc(p.x, p.y))
+    })
+    if (!isFinite(minX)) return
+    const pad = 60
+    minX = Math.floor(minX - pad); minY = Math.floor(minY - pad)
+    const w = Math.ceil(maxX + pad - minX)
+    const h = Math.ceil(maxY + pad - minY)
+    // メディア枠の位置は「非同期処理が始まる前」に同期的に測ってキャンバス座標へ
+    // 正規化しておく。toSvg は数秒かかることがあり、その間にユーザーがズーム/パン
+    // すると、後から古い zoom 値で換算した座標が距離に比例して大きくズレるため。
+    // スケールも state ではなく実 DOM の transform 行列（ground truth）から取る。
+    const layerRect = layer.getBoundingClientRect()
+    const mtx = new DOMMatrixReadOnly(getComputedStyle(layer).transform)
+    const layerScale = mtx.a || 1
+    const toCanvasRect = (r: DOMRect) => ({
+      x: (r.left - layerRect.left) / layerScale - minX,
+      y: (r.top - layerRect.top) / layerScale - minY,
+      w: r.width / layerScale,
+      h: r.height / layerScale,
+    })
+    type MediaBoxEntry = {
+      card: CanvasCard; url: string; el: HTMLElement
+      x: number; y: number; w: number; h: number
+      // ブックマーク行（カード下部のチップ列）の位置。共有HTMLではこの位置に
+      // クリックでシークできるチップを重ねる。
+      marksBox?: { x: number; y: number; w: number; h: number }
+    }
+    const mediaBoxes: MediaBoxEntry[] = []
+    for (const el of Array.from(layer.querySelectorAll<HTMLElement>('[data-media-box]'))) {
+      const card = tabCards.find(c => c.id === el.dataset.mediaBox)
+      if (!card?.url) continue
+      const r = el.getBoundingClientRect()
+      let marksBox: MediaBoxEntry['marksBox']
+      if ((card.type === 'video' || card.type === 'audio') && (card.bookmarks?.length ?? 0) > 0) {
+        const marksEl = layer.querySelector<HTMLElement>(`[data-share-marks="${CSS.escape(card.id)}"]`)
+        if (marksEl) marksBox = toCanvasRect(marksEl.getBoundingClientRect())
+      }
+      mediaBoxes.push({ card, url: card.url, el, ...toCanvasRect(r), marksBox })
+    }
+    setExportingShare(true)
+    setShareProgress('スナップショットを生成中…')
+    const unfreeze = freezeVideosForExport(layer)
+    const unhide = hideExportOnlyUi()
+    try {
+      const { toSvg } = await import('html-to-image')
+      // レイヤーを translate(-minX,-minY) zoom1 に差し替えたクローンで全域を撮る。
+      // 背景は透過のまま（ビューア側でドットグリッドを敷く）。フォントは埋め込まず
+      // 閲覧側のシステムフォントにフォールバック（日本語フォント同梱は数十MBになるため）。
+      const snapshot = await toSvg(layer, {
+        width: w,
+        height: h,
+        style: { transform: `translate(${-minX}px, ${-minY}px) scale(1)`, transformOrigin: '0 0', width: `${w}px`, height: `${h}px` },
+        skipFonts: true,
+        filter: node => !(node instanceof HTMLElement && node.dataset.exportIgnore === '1'),
+      })
+      // 動画/音声カードの位置に実プレイヤーを、YouTube/Vimeo/Web カードの位置に
+      // 外部リンクカードを重ねるためのオーバーレイを収集（位置は事前測定済み）
+      const overlays: ShareOverlay[] = []
+      let skipped = 0
+      for (const { card, url, el, marksBox, ...box } of mediaBoxes) {
+        // YouTube/Vimeo/Web カード: file:// で開かれた共有 HTML では iframe 埋め込みが
+        // 拒否される（YouTube の origin 制約 / 一般サイトの X-Frame-Options）ため、
+        // サムネイル＋新しいタブで開くリンクカードにする。Electron なら webview の
+        // 実画面キャプチャをサムネイルに使い、失敗時は YouTube 公式サムネへ。
+        const isEmbedCard = card.type === 'video' && videoEmbedUrl(url) != null
+        if (isEmbedCard || card.type === 'web') {
+          let thumb: string | undefined
+          let href = url
+          let label = card.title || card.content || url
+          const wv = el.querySelector('webview') as WebviewEl | null
+          if (wv?.capturePage) {
+            try { thumb = (await wv.capturePage()).toDataURL() } catch { /* ignore */ }
+          }
+          if (!isEmbedCard && wv) {
+            // Web カードは webview 内で別ページへ遷移していても card.url が初期 URL の
+            // ままなので、リンク先は現在表示中のページにする。埋め込み動画カードは
+            // webview の URL がローカルラッパー(127.0.0.1)なので card.url のまま。
+            try {
+              const live = wv.getURL?.() || ''
+              if (/^https?:\/\//.test(live) && !/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(live)) {
+                href = live
+                label = wv.getTitle?.() || card.title || live
+              }
+            } catch { /* ignore */ }
+          }
+          if (!thumb && isEmbedCard) {
+            const ref = parseEmbedRef(url)
+            if (ref?.provider === 'yt') thumb = `https://i.ytimg.com/vi/${ref.id}/hqdefault.jpg`
+          }
+          overlays.push({ kind: 'link', ...box, href, label, thumb })
+          continue
+        }
+        if (shareEmbedLimitMB === 0) continue // 埋め込まない設定（静止画のまま）
+        let blob = isMediaRef(url) ? await getMediaBlob(url) : isLocalRef(url) ? await getLocalBlob(url) : null
+        if (!blob) continue
+        let mime = blob.type || guessMediaMime(card.content || url, card.type === 'audio' ? 'audio' : 'video')
+        const limitBytes = shareEmbedLimitMB * 1024 * 1024
+        if (shareEmbedLimitMB !== -1 && blob.size > limitBytes) {
+          // 上限超え: オプションが有効な動画は 720p/WebM に再エンコードして収める
+          const title = card.title || card.content || '動画'
+          if (!shareTranscode || card.type !== 'video') { skipped++; continue }
+          setShareProgress(`動画を再エンコード中… ${title}`)
+          const out = await transcodeVideoBlob(blob, {
+            targetBytes: limitBytes,
+            onProgress: r => setShareProgress(`動画を再エンコード中 ${Math.round(r * 100)}% — ${title}`),
+          })
+          if (!out || out.size > limitBytes) { skipped++; continue }
+          blob = out
+          mime = 'video/webm'
+        }
+        setShareProgress('メディアを埋め込み中…')
+        const dataUrl = await new Promise<string>((res, rej) => {
+          const fr = new FileReader()
+          fr.onload = () => res(fr.result as string)
+          fr.onerror = () => rej(fr.error)
+          fr.readAsDataURL(blob)
+        })
+        const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+        overlays.push({ kind: card.type === 'audio' ? 'audio' : 'video', ...box, base64, mime, cardId: card.id })
+        // ブックマークは、スナップショットに写っているカード下部のチップ行と同じ
+        // 位置にクリック可能なチップを重ねる（動画上に浮かせると視覚的にズレて見える）
+        if (marksBox && (card.bookmarks?.length ?? 0) > 0) {
+          overlays.push({
+            kind: 'marks',
+            ...marksBox,
+            cardId: card.id,
+            accent: card.type === 'audio' ? '#ea580c' : '#c026d3',
+            marks: (card.bookmarks ?? []).slice().sort((a, b) => a.time - b.time)
+              .map(b => ({ t: Number(b.time), time: fmtTimecode(Number(b.time) || 0), label: b.label ?? '' })),
+          })
+        }
+      }
+      const mod = (n: number) => ((n % 20) + 20) % 20
+      const tabName = state.canvasTabs.find(t => t.id === activeTabId)?.name || 'canvas'
+      // toSvg の data URL から生 SVG を取り出してインライン埋め込み（テキスト選択可能に）
+      const rawSvg = decodeURIComponent(snapshot.slice(snapshot.indexOf(',') + 1))
+      const html = buildShareHtml({
+        title: tabName,
+        width: w,
+        height: h,
+        snapshotSvg: rawSvg,
+        dark: document.documentElement.classList.contains('dark'),
+        gridOffsetX: mod(-minX - 10),
+        gridOffsetY: mod(-minY - 10),
+        overlays,
+      })
+      const blob = new Blob([html], { type: 'text/html' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `constella-${tabName.replace(/[\\/:*?"<>|]/g, '_')}-share.html`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      if (skipped) await alertDialog(`${skipped}件のメディアが埋め込み上限（${shareEmbedLimitMB}MB）を超えるためスキップしました（静止画のまま書き出されています）。上限は共有ボタンのメニューで変更できます。`)
+    } catch (e) {
+      console.warn('share html export failed', e)
+      await alertDialog('共有用HTMLの書き出しに失敗しました。')
+    } finally {
+      unfreeze()
+      unhide()
+      setExportingShare(false)
+      setShareProgress(null)
+    }
+  }, [activeTabId, exportingShare, tabCards, tabGroups, tabLabels, tabStrokes, tabArrows, cardsById, state.canvasTabs, shareEmbedLimitMB, shareTranscode])
 
   return (
     <div className="flex flex-col h-full">
@@ -2464,6 +2703,83 @@ export default function CanvasPage() {
               <button onClick={() => setViewport(v => ({ ...v, zoom: Math.min(v.zoom * 1.25, 5) }))} className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><ZoomIn size={16} /></button>
               <button onClick={fitToScreen} className="p-1.5 rounded hover:bg-slate-100 text-slate-600 ml-1" title="全体表示"><Maximize size={16} /></button>
               <button onClick={exportImage} className="p-1.5 rounded hover:bg-slate-100 text-slate-600" title="表示中のキャンバスをPNG書き出し"><ImageDown size={16} /></button>
+              <div className="relative" ref={shareMenuRef}>
+                <button
+                  onClick={() => setShareMenuOpen(v => !v)}
+                  disabled={exportingShare}
+                  className={`p-1.5 rounded transition-colors ${exportingShare ? 'text-indigo-400 animate-pulse' : shareMenuOpen ? 'bg-indigo-500/15 text-indigo-600' : 'hover:bg-slate-100 text-slate-600'}`}
+                  title="共有用HTMLを書き出し（Constellaがない人もブラウザでそのまま閲覧・動画再生できます）"
+                >
+                  <Share2 size={16} />
+                </button>
+                {shareMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-40 w-64 p-3 rounded-lg border border-slate-200 bg-white shadow-lg">
+                    <div className="text-[11px] font-medium text-slate-500 mb-1.5">動画・音声の埋め込み上限</div>
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {[
+                        { v: 50, label: '50MB' },
+                        { v: 150, label: '150MB' },
+                        { v: 300, label: '300MB' },
+                        { v: 500, label: '500MB' },
+                        { v: -1, label: '無制限' },
+                        { v: 0, label: '埋め込まない' },
+                      ].map(o => (
+                        <button
+                          key={o.v}
+                          onClick={() => setShareLimit(o.v)}
+                          className={`px-2 py-1 rounded text-[11px] border transition-colors ${
+                            shareEmbedLimitMB === o.v
+                              ? 'border-indigo-400 bg-indigo-500/10 text-indigo-600'
+                              : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'
+                          }`}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                    {/* 容量シミュレーション */}
+                    {(() => {
+                      const fmtMB = (n: number) => n >= 1024 * 1024 * 1024 ? `${(n / (1024 * 1024 * 1024)).toFixed(2)}GB` : `${(n / (1024 * 1024)).toFixed(1)}MB`
+                      if (shareSizes === null) return <p className="text-[10px] text-slate-400 mb-2">容量を計算中…</p>
+                      const limit = shareEmbedLimitMB * 1024 * 1024
+                      const over = shareEmbedLimitMB > 0 ? shareSizes.filter(s => s.size > limit) : []
+                      const embedded = shareEmbedLimitMB === 0 ? [] : shareSizes.filter(s => shareEmbedLimitMB === -1 || s.size <= limit)
+                      const total = embedded.reduce((a, s) => a + s.size, 0)
+                      // base64 で約 1.33 倍 + スナップショット分
+                      const est = Math.round(total * 1.34)
+                      return (
+                        <div className="text-[10px] text-slate-500 leading-relaxed mb-2 space-y-0.5">
+                          <div>
+                            メディア {shareSizes.length}件 / 埋め込み {embedded.length}件（{fmtMB(total)}）
+                            → 書き出し後 約<span className="font-semibold text-slate-700">{fmtMB(est)}</span>+α
+                          </div>
+                          {over.length > 0 && (
+                            <div className="text-amber-600">
+                              上限超 {over.length}件: {over.map(o => `${o.title}（${fmtMB(o.size)}）`).join('、')}
+                              {!shareTranscode && ' → 静止画になります'}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+                    <label className={`flex items-start gap-1.5 mb-2 cursor-pointer ${shareEmbedLimitMB === 0 || shareEmbedLimitMB === -1 ? 'opacity-40 pointer-events-none' : ''}`}>
+                      <input type="checkbox" checked={shareTranscode} onChange={toggleShareTranscode} className="mt-0.5 accent-indigo-500" />
+                      <span className="text-[10px] text-slate-500 leading-relaxed">
+                        上限を超えた動画を縮小して埋め込む（720p/WebM再エンコード。動画の長さぶん時間がかかります）
+                      </span>
+                    </label>
+                    <p className="text-[10px] text-slate-400 leading-relaxed mb-2">
+                      YouTube/Webカードはサムネイル付きリンクになります。
+                    </p>
+                    <button
+                      onClick={() => { setShareMenuOpen(false); exportShareHtml() }}
+                      className="w-full px-3 py-1.5 rounded bg-indigo-500 text-white text-xs hover:bg-indigo-600 transition-colors"
+                    >
+                      共有用HTMLを書き出し
+                    </button>
+                  </div>
+                )}
+              </div>
               <button onClick={() => {
                 // Export the current tab's state (cards/arrows/groups/strokes/labels) as JSON.
                 const tabId = activeTabId
@@ -2608,6 +2924,7 @@ export default function CanvasPage() {
             />
           )}
           <div
+            ref={layerRef}
             data-canvas-bg="1"
             // While the pen/eraser/arrow tool is active, mark the whole card layer
             // click-through (see index.css .canvas-drawing) so the gesture — not a
@@ -2851,6 +3168,11 @@ export default function CanvasPage() {
             </div>
           )}
 
+          {shareProgress && (
+            <div data-export-ignore="1" className="absolute bottom-4 left-1/2 -translate-x-1/2 z-40 px-3.5 py-1.5 rounded-full bg-slate-800/90 text-white text-xs shadow-lg pointer-events-none whitespace-nowrap">
+              {shareProgress}
+            </div>
+          )}
           {showMinimap && canvasSize.w > 0 && (
             // Bottom-right minimap is offset above the global floating AI/同期 buttons (App.tsx) so they don't overlap.
             <div className="absolute bottom-20 right-3 z-10" data-export-ignore="1">
@@ -3438,6 +3760,7 @@ type WebviewEl = HTMLElement & {
   goForward?: () => void
   reload?: () => void
   stop?: () => void
+  capturePage?: () => Promise<{ toDataURL(): string }>
 }
 
 // Translate well-known sharing/edit URLs into embeddable equivalents so iframe
@@ -3573,11 +3896,46 @@ export const WebFrame = forwardRef<WebFrameHandle, {
       wv.removeEventListener('did-fail-load', onStop)
     }
   }, [])
+  // Electron: src 属性は初回マウント時のみ使い、以降の url prop 変更は現在ページと
+  // 異なる時だけ loadURL する。src 属性を毎レンダー再バインドすると、webview 内の
+  // 遷移を onNavigate で card.url に書き戻した瞬間に同じページを再ロードしてしまう。
+  const initialSrcRef = useRef(effectiveUrl || 'about:blank')
+  // dom-ready 前に effectiveUrl が変わった場合、下の effect は throw ガードで
+  // 早期 return したまま再実行されない。dom-ready 時に最新値でもう一度同期する。
+  const effectiveUrlRef = useRef(effectiveUrl)
+  useEffect(() => { effectiveUrlRef.current = effectiveUrl }, [effectiveUrl])
+  useEffect(() => {
+    if (!IS_ELECTRON) return
+    const wv = hostRef.current?.querySelector('webview') as (WebviewEl & { loadURL?: (u: string) => Promise<void> }) | null
+    if (!wv) return
+    const syncUrl = () => {
+      let cur = ''
+      try { cur = wv.getURL?.() || '' } catch { return }
+      const want = effectiveUrlRef.current || 'about:blank'
+      if (!cur || cur === want) return
+      try { wv.loadURL?.(want)?.catch(() => { /* ignore */ }) } catch { /* ignore */ }
+    }
+    wv.addEventListener('dom-ready', syncUrl)
+    return () => wv.removeEventListener('dom-ready', syncUrl)
+  }, [])
+  useEffect(() => {
+    if (!IS_ELECTRON) return
+    const wv = hostRef.current?.querySelector('webview') as (WebviewEl & { loadURL?: (u: string) => Promise<void> }) | null
+    if (!wv) return
+    // dom-ready 前の webview はメソッド呼び出しで throw する（初回マウント直後は
+    // 必ずこの状態）。その間の初回ロードは src 属性が担うので黙って抜ける。
+    let cur = ''
+    try { cur = wv.getURL?.() || '' } catch { return }
+    if (!cur) return
+    const want = effectiveUrl || 'about:blank'
+    if (cur === want) return
+    try { wv.loadURL?.(want)?.catch(() => { /* ignore */ }) } catch { /* ignore */ }
+  }, [effectiveUrl])
   if (IS_ELECTRON) {
     return (
       <div ref={hostRef} className={`relative overflow-hidden ${className ?? ''}`} style={style}>
         {createElement('webview', {
-          src: effectiveUrl || 'about:blank',
+          src: initialSrcRef.current,
           style: { position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' },
         })}
       </div>
@@ -3866,7 +4224,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
       style={fixedHeight ? { height: fixedHeight } : undefined}
       onMouseDown={e => e.stopPropagation()}
     >
-      <div className="group relative flex-1 min-h-0 bg-black">
+      <div className="group relative flex-1 min-h-0 bg-black" data-media-box={card.id}>
         {embed ? (
           // In Electron, a <webview> loads the embed as a top-level page (like a
           // browser tab), so YouTube/Vimeo videos that reject iframe embedding from
@@ -3918,6 +4276,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
             <button
               onClick={captureFrame}
               disabled={capturing}
+              data-export-hide="1"
               title="今のフレームを画像カードに書き出します（YouTubeは再生中に押すとUIなしで撮れます）"
               className="self-start flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border border-fuchsia-500/40 text-fuchsia-600 hover:bg-fuchsia-50 disabled:opacity-30 transition-colors"
             >
@@ -4002,7 +4361,7 @@ const BookmarkBar = memo(function BookmarkBar({ card, onUpdate, accent, getTime,
   return (
     <div className="shrink-0 flex flex-col gap-1" onMouseDown={e => e.stopPropagation()}>
       {!locked && (
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" data-export-hide="1">
           {canCapture && (
             <button
               onClick={addCurrent}
@@ -4035,7 +4394,7 @@ const BookmarkBar = memo(function BookmarkBar({ card, onUpdate, accent, getTime,
         </div>
       )}
       {sorted.length > 0 && (
-        <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+        <div className="flex items-center gap-1 overflow-x-auto pb-0.5" data-share-marks={card.id}>
           {sorted.map(b => {
             const link = shareUrl ? shareUrl(b.time) : null
             return (
@@ -4197,7 +4556,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
           />
         ))}
       </div>
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-2 shrink-0" data-media-box={card.id}>
         <button
           onClick={() => wsRef.current?.playPause()}
           disabled={!ready}
@@ -4614,7 +4973,9 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
 
   return (
     <div
-      className={`absolute rounded-xl border shadow-lg backdrop-blur-sm transition-shadow flex flex-col ${theme.bg} ${theme.border} ${isSelected ? 'ring-2 ring-indigo-500 shadow-indigo-500/20' : 'hover:shadow-xl'}`}
+      // shadow-lg + backdrop-blur-sm だと重なった隣のカードに影とブラーが大きく
+      // かかって「にじみ」に見えるため、影は小さめ・ブラーなしに抑える。
+      className={`absolute rounded-xl border shadow-md transition-shadow flex flex-col ${theme.bg} ${theme.border} ${isSelected ? 'ring-2 ring-indigo-500 shadow-indigo-500/20' : 'hover:shadow-lg'}`}
       style={{ left: card.x, top: card.y, width: card.width, height: card.height }}
       onMouseDown={e => { if (e.button === 0) { e.stopPropagation(); onSelect(e.shiftKey) } }}
       onContextMenu={onContextMenu}
@@ -4755,12 +5116,28 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                 ) : null
               })()}
             </div>
-            <WebFrame
-              url={card.url || ''}
-              title={card.title || 'Web page'}
-              embedMode
-              className="flex-1 min-h-0 w-full border-none bg-white rounded-b-xl"
-            />
+            <div className="flex-1 min-h-0 relative" data-media-box={card.id}>
+              <WebFrame
+                url={card.url || ''}
+                title={card.title || 'Web page'}
+                embedMode
+                className="absolute inset-0 w-full h-full border-none bg-white rounded-b-xl"
+                onNavigate={(u, t) => {
+                  // webview 内の遷移をカードへ書き戻して永続化する（undo履歴なし）。
+                  // これがないと再起動時に card.url の初期URL（例: Google検索）へ戻ってしまう。
+                  if (locked) return
+                  if (!u || !/^https?:\/\//.test(u)) return
+                  // 初期ロード（embed用に変換されたURL）は書き戻さない — 元の共有URLを保つ
+                  if (u === card.url || u === toEmbedUrl(card.url || '')) return
+                  // ローカルの埋め込みラッパー(127.0.0.1)は共有不能なURLなので保存しない
+                  if (/^https?:\/\/(127\.0\.0\.1|localhost)[:/]/.test(u)) return
+                  dispatch({
+                    type: 'SET_CANVAS_CARD_VIEW',
+                    payload: { id: card.id, url: u, ...(card.title || !t ? {} : { title: t }) },
+                  })
+                }}
+              />
+            </div>
           </div>
         ) : card.type === 'pdf' ? (
           <PdfCardBody card={card} onUpdate={onUpdate} locked={locked} />
