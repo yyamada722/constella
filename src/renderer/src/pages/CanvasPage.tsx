@@ -16,6 +16,8 @@ import { freezeVideosForExport, buildShareHtml, guessMediaMime, hideExportOnlyUi
 import { alertDialog } from '../components/ConfirmDialog'
 import { IMAGE_ACCEPT, isImageFile, normalizeImageBlob } from '../utils/image'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
+import { wheelZoomFactor } from '../utils/zoom'
+import ZoomSpeedControl from '../components/ZoomSpeedControl'
 import WaveSurfer from 'wavesurfer.js'
 
 const cardTypes = {
@@ -774,7 +776,7 @@ export default function CanvasPage() {
       // two-finger trackpad swipe — pans the board (Figma/Miro-style), so the
       // MacBook trackpad can move the canvas instead of only zooming it.
       if (e.ctrlKey || e.metaKey) {
-        const factor = e.deltaY > 0 ? 0.92 : 1.08
+        const factor = wheelZoomFactor(e)
         setViewport(v => {
           const newZoom = Math.min(Math.max(v.zoom * factor, 0.1), 5)
           const wx = (mx - v.x) / v.zoom
@@ -2699,7 +2701,7 @@ export default function CanvasPage() {
               </button>
               <div className="w-px h-5 bg-slate-200 mx-1" />
               <button onClick={() => setViewport(v => ({ ...v, zoom: Math.max(v.zoom * 0.8, 0.1) }))} className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><ZoomOut size={16} /></button>
-              <span className="text-xs text-slate-500 w-12 text-center">{Math.round(viewport.zoom * 100)}%</span>
+              <ZoomSpeedControl zoom={viewport.zoom} />
               <button onClick={() => setViewport(v => ({ ...v, zoom: Math.min(v.zoom * 1.25, 5) }))} className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><ZoomIn size={16} /></button>
               <button onClick={fitToScreen} className="p-1.5 rounded hover:bg-slate-100 text-slate-600 ml-1" title="全体表示"><Maximize size={16} /></button>
               <button onClick={exportImage} className="p-1.5 rounded hover:bg-slate-100 text-slate-600" title="表示中のキャンバスをPNG書き出し"><ImageDown size={16} /></button>

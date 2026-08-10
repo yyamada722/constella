@@ -19,6 +19,8 @@ import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
 import { IMAGE_ACCEPT, isImageFile, normalizeImageBlob } from '../utils/image'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
+import { wheelZoomFactor } from '../utils/zoom'
+import ZoomSpeedControl from '../components/ZoomSpeedControl'
 
 const NODE_W = 200
 const NODE_H = 104 // taller row leaves space for the month picker + timing chips
@@ -558,7 +560,7 @@ export default function FlowPage() {
       e.preventDefault()
       const rect = el.getBoundingClientRect()
       if (e.ctrlKey || e.metaKey) {
-        const factor = e.deltaY > 0 ? 0.92 : 1.08
+        const factor = wheelZoomFactor(e)
         setViewport(v => {
           const zoom = Math.max(0.2, Math.min(3, v.zoom * factor))
           const mx = e.clientX - rect.left, my = e.clientY - rect.top
@@ -819,7 +821,7 @@ export default function FlowPage() {
                   </div>
                 )}
                 <button onClick={() => setViewport(v => ({ ...v, zoom: Math.max(0.2, v.zoom / 1.25) }))} title="縮小" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><ZoomOut size={16} /></button>
-                <span className="text-[10px] text-slate-500 w-10 text-center">{Math.round(viewport.zoom * 100)}%</span>
+                <ZoomSpeedControl zoom={viewport.zoom} className="text-[10px] text-slate-500 w-10 text-center rounded hover:bg-slate-100 py-0.5" />
                 <button onClick={() => setViewport(v => ({ ...v, zoom: Math.min(3, v.zoom * 1.25) }))} title="拡大" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><ZoomIn size={16} /></button>
                 <button onClick={fitToContent} title="全体表示" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><Maximize size={16} /></button>
                 <div className="w-px h-5 bg-slate-200 mx-1" />
