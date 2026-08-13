@@ -798,6 +798,13 @@ export default function CanvasPage() {
     return m
   }, [state.canvasCards])
 
+  // Live task-id index — the terminal layer checks every card per render, so
+  // an O(projects×tasks) scan per card would eat the frame budget on pan/zoom.
+  const liveTaskIds = useMemo(
+    () => new Set(state.projects.flatMap(p => p.tasks.map(t => t.id))),
+    [state.projects]
+  )
+
   function addBoard() {
     if (!activeProjectId) return
     const board: CanvasBoard = { id: generateId(), projectId: activeProjectId, name: '新しいボード', createdAt: new Date().toISOString() }
@@ -843,6 +850,9 @@ export default function CanvasPage() {
 
   function jumpToTab(tabId: string) {
     if (tabId === activeTabId) return
+    // Pasted/duplicated link cards can carry a refTabId from another master
+    // project — refuse instead of bouncing through the tab-guard effect.
+    if (!projectTabs.some(t => t.id === tabId)) { showNotice('リンク先は別プロジェクトのキャンバスです'); return }
     const from = activeTabId
     setJumpStack(prev => [...prev, from])
     activateTab(tabId)
@@ -1262,12 +1272,12 @@ export default function CanvasPage() {
     }
   }, [dispatch, toCanvas, tabCards, tabLabels, applyBrush, nearestPort])
 
-  // 矢印 → 実タスク親子化: an arrow between two LIVE task-ref cards writes the
-  // real parent-child relation (from = 親, to = 子), the same metaphor the
-  // タスク下書き conversion uses. Same board only; cycles and self-links are
-  // refused (the arrow itself stays either way — it's still a valid drawing).
-  // Deleting the arrow deliberately does NOT unparent: cleaning up the canvas
-  // must never silently rewrite task structure.
+  // タスク端子 → 実タスク親子化: dragging the 端子 between two LIVE task-ref
+  // cards writes the real parent-child relation (from = 親, to = 子). Invoked
+  // ONLY by the terminal gesture — plain arrow-tool arrows and endpoint
+  // re-drags are pure drawings and never touch task data. Same board only;
+  // cycles and self-links are refused. Deleting the arrow deliberately does
+  // NOT unparent: cleaning up the canvas must never rewrite task structure.
   const projectsRef = useRef(state.projects)
   projectsRef.current = state.projects
   // Returns true when the relation holds after the call (newly set, or already
@@ -1373,7 +1383,6 @@ export default function CanvasPage() {
           createdAt: new Date().toISOString(),
         }
         dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
-        if (!isTaskLink) parentLinkByArrow(arrow.fromCardId, arrow.toCardId)
         setSelectedArrowId(arrow.id)
         setTool('select')
       }
@@ -1405,11 +1414,10 @@ export default function CanvasPage() {
         const upd = d.kind === 'arrow-p1'
           ? { fromCardId: card?.id, fromPort: snap && card ? snap.dir : undefined }
           : { toCardId: card?.id, toPort: snap && card ? snap.dir : undefined }
-        const next = { ...arrow, ...upd }
-        dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: next })
-        // Re-docking an endpoint onto a task card counts as drawing the
-        // relation anew (the old relation is left untouched — see above).
-        parentLinkByArrow(next.fromCardId, next.toCardId)
+        // Endpoint re-docking is geometry only — parent-child relations are
+        // written EXCLUSIVELY by the タスク端子 gesture, so tidying up old
+        // decorative arrows can never silently rewrite the task tree.
+        dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...arrow, ...upd } })
       }
     }
     dragRef.current = null
@@ -1810,8 +1818,10 @@ export default function CanvasPage() {
         if (e.key === 'Escape') { ae.blur(); return }
         // Tab / Enter inside a タスク下書き title commits the title (blur) and
         // falls THROUGH to the extend branches below (Tab=子 / Enter=兄弟) —
-        // Flow-page style keyboard chaining without mouse round-trips.
-        if ((e.key === 'Tab' || (e.key === 'Enter' && !e.isComposing)) && ae.dataset.draftTitle) ae.blur()
+        // Flow-page style keyboard chaining without mouse round-trips. The
+        // keyCode 229 check mirrors the input's own IME guard (line ~221).
+        const composing = e.isComposing || e.keyCode === 229
+        if ((e.key === 'Tab' || (e.key === 'Enter' && !composing)) && ae.dataset.draftTitle) ae.blur()
         else return
       }
       const mod = e.ctrlKey || e.metaKey
@@ -1892,7 +1902,7 @@ export default function CanvasPage() {
       // SIBLING right below it. If the source has a parent (a draft/task card
       // with an arrow into it), the sibling hangs off the same parent with the
       // same emerald task line.
-      if (!locked && e.key === 'Enter' && !e.isComposing && selectedIds.length === 1 && !editingLabelId && !editingArrowId) {
+      if (!locked && e.key === 'Enter' && !e.isComposing && e.keyCode !== 229 && selectedIds.length === 1 && !editingLabelId && !editingArrowId) {
         const src = tabCardsRef.current.find(c => c.id === selectedIds[0])
         if (!src || src.type !== 'taskDraft') return
         e.preventDefault()
@@ -2127,11 +2137,17 @@ export default function CanvasPage() {
     // "TODO" is unreadable on the minimap and in canvas search.
     const taskTitleById = new Map(state.projects.flatMap(p => p.tasks.map(t => [t.id, t.title] as const)))
     const cfg = cardTypes.todo
-    dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...card, refTaskId: taskIds[0], title: taskTitleById.get(taskIds[0]) || card.title } })
+    // An UNLINKED picker card absorbs the first task; a card that already
+    // mirrors a task keeps its link — every checked task becomes a new card.
+    let rest = taskIds
+    if (!card.refTaskId) {
+      dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...card, refTaskId: taskIds[0], title: taskTitleById.get(taskIds[0]) || card.title } })
+      rest = taskIds.slice(1)
+    }
     const gap = 16
     const perRow = 3
     const newIds: string[] = []
-    taskIds.slice(1).forEach((taskId, i) => {
+    rest.forEach((taskId, i) => {
       const col = i % perRow
       const row = Math.floor(i / perRow)
       const nc: CanvasCard = {
@@ -2263,7 +2279,9 @@ export default function CanvasPage() {
     dispatch({ type: 'ADD_CANVAS_TAB', payload: tab })
     setActiveTabId(tab.id)
     setEditingTabId(tab.id)
-    setEditingTabInTitle(false)
+    // Sidebar collapsed → its edit input can't mount; host the rename in the
+    // title bar instead (the new tab just became active, so it's rendered).
+    setEditingTabInTitle(panelCollapsed)
     setViewport({ x: 0, y: 0, zoom: 1 })
     if (boardId) setClosedBoards(prev => { if (!prev.has(boardId)) return prev; const next = new Set(prev); next.delete(boardId); return next })
   }
@@ -2563,7 +2581,7 @@ export default function CanvasPage() {
           value={tab.name}
           onChange={e => dispatch({ type: 'UPDATE_CANVAS_TAB', payload: { ...tab, name: e.target.value } })}
           onBlur={() => setEditingTabId(null)}
-          onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingTabId(null) } }}
+          onKeyDown={e => { if (e.nativeEvent.isComposing || e.keyCode === 229) return; if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingTabId(null) } }}
           onClick={e => e.stopPropagation()}
           className="flex-1 min-w-0 bg-transparent border-none outline-none text-xs text-slate-800"
         />
@@ -2626,7 +2644,7 @@ export default function CanvasPage() {
                           value={board.name}
                           onChange={e => dispatch({ type: 'UPDATE_CANVAS_BOARD', payload: { ...board, name: e.target.value } })}
                           onBlur={() => setEditingBoardId(null)}
-                          onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingBoardId(null) } }}
+                          onKeyDown={e => { if (e.nativeEvent.isComposing || e.keyCode === 229) return; if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingBoardId(null) } }}
                           onClick={e => e.stopPropagation()}
                           className="flex-1 min-w-0 bg-transparent border-none outline-none text-xs font-medium text-slate-800"
                         />
@@ -2683,7 +2701,7 @@ export default function CanvasPage() {
           <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-slate-200 bg-white shrink-0">
             {board ? (
               <>
-                {board.color && <span className={`w-2 h-2 rounded-full shrink-0 ${BOARD_COLOR_CLASSES[board.color].dot}`} />}
+                {board.color && BOARD_COLOR_CLASSES[board.color] && <span className={`w-2 h-2 rounded-full shrink-0 ${BOARD_COLOR_CLASSES[board.color].dot}`} />}
                 <span className="text-xs text-slate-400 truncate max-w-[160px]">{board.name}</span>
                 <ChevronRight size={12} className="text-slate-300 shrink-0" />
               </>
@@ -2700,7 +2718,7 @@ export default function CanvasPage() {
                 value={tab.name}
                 onChange={e => dispatch({ type: 'UPDATE_CANVAS_TAB', payload: { ...tab, name: e.target.value } })}
                 onBlur={() => setEditingTabId(null)}
-                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingTabId(null) } }}
+                onKeyDown={e => { if (e.nativeEvent.isComposing || e.keyCode === 229) return; if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingTabId(null) } }}
                 className="text-sm font-semibold bg-transparent border-b border-indigo-300 outline-none text-slate-800 min-w-0"
               />
             ) : (
@@ -3300,9 +3318,14 @@ export default function CanvasPage() {
             } : {}),
           }}
           // Native drag of a text selection / image / link hijacks the mouse
-          // (no more mousemove events) and leaves pan/drag "dead" — the canvas
-          // has no legitimate in-page drag sources, so kill dragstart wholesale.
-          onDragStartCapture={e => e.preventDefault()}
+          // (no more mousemove events) and leaves pan/drag "dead". Kill those,
+          // but let explicit draggable elements (the sequence card's frame
+          // reorder rows) keep their native DnD.
+          onDragStartCapture={e => {
+            const t = e.target as HTMLElement
+            if (t.closest?.('[draggable="true"]')) return
+            e.preventDefault()
+          }}
           // A stray cross-card text selection (started inside some card body)
           // also blocks gestures; clear it on the next press anywhere outside
           // an editable field so one click always restores a workable canvas.
@@ -3522,7 +3545,7 @@ export default function CanvasPage() {
                 Hidden mid-drag: the generic snap-port layer takes over then. */}
             {!canvasLocked && tool === 'select' && !isDragging && (
               <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
-                {tabCards.filter(c => c.type === 'taskDraft' || (c.refTaskId && state.projects.some(p => p.tasks.some(t => t.id === c.refTaskId)))).map(c => {
+                {tabCards.filter(c => c.type === 'taskDraft' || (c.refTaskId && liveTaskIds.has(c.refTaskId))).map(c => {
                   const p = portPoint(c, 's')
                   return (
                     <g
@@ -3646,6 +3669,7 @@ export default function CanvasPage() {
                 card={card}
                 onUpdate={updates => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...card, ...updates } })}
                 onDelete={() => setConfirmDelete({ message: `「${card.title || cardTypes[card.type].label}」を削除します。元に戻すには Ctrl+Z。`, run: () => dispatch({ type: 'DELETE_CANVAS_CARD', payload: card.id }) })}
+                onJumpTab={jumpToTab}
               />
             ))}
           </div>
@@ -6082,11 +6106,14 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
 
 /* ── List card ── */
 
-const ListCardComponent = memo(function ListCardComponent({ card, onUpdate, onDelete }: {
+const ListCardComponent = memo(function ListCardComponent({ card, onUpdate, onDelete, onJumpTab }: {
   card: CanvasCard
   onUpdate: (updates: Partial<CanvasCard>) => void
   onDelete: () => void
+  onJumpTab?: (tabId: string) => void
 }) {
+  const { state: listState } = useApp()
+  const linkedTabForList = card.type === 'canvasLink' && card.refTabId ? listState.canvasTabs.find(t => t.id === card.refTabId) : undefined
   const cfg = cardTypes[card.type]
   const theme = (card.color && COLOR_THEMES[card.color]) || cfg
   const Icon = cfg.icon
@@ -6234,6 +6261,23 @@ const ListCardComponent = memo(function ListCardComponent({ card, onUpdate, onDe
               </div>
             )
           })()
+        ) : card.type === 'canvasLink' ? (
+          <div className="flex items-center gap-2 text-xs text-slate-600">
+            <LayoutGrid size={13} className="text-indigo-500 shrink-0" />
+            {linkedTabForList ? (
+              <>
+                <span className="truncate">{linkedTabForList.name}</span>
+                {onJumpTab && (
+                  <button
+                    onClick={() => onJumpTab(linkedTabForList.id)}
+                    className="ml-auto text-[10px] px-2 py-0.5 rounded bg-indigo-500 text-white hover:bg-indigo-600 flex items-center gap-1 shrink-0"
+                  ><ArrowUpRight size={10} /> 開く</button>
+                )}
+              </>
+            ) : (
+              <span className="text-slate-400">{card.refTabId ? 'リンク先が見つかりません' : 'リンク先未選択（キャンバス表示で設定）'}</span>
+            )}
+          </div>
         ) : (
           <MarkdownText
             value={card.content}

@@ -222,7 +222,7 @@ function reducer(state: AppState, action: Action): AppState {
         aiConversations: state.aiConversations.filter(c => c.masterProjectId !== mid),
         canvasBoards: state.canvasBoards.filter(b => b.projectId !== mid),
         canvasTabs: state.canvasTabs.filter(t => t.projectId !== mid),
-        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)),
+        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)).map(c => c.refTabId && removedTabs.has(c.refTabId) ? { ...c, refTabId: undefined } : c),
         canvasArrows: state.canvasArrows.filter(a => !removedTabs.has(a.tabId)),
         canvasGroups: state.canvasGroups.filter(g => !removedTabs.has(g.tabId)),
         canvasStrokes: state.canvasStrokes.filter(s => !removedTabs.has(s.tabId)),
@@ -448,9 +448,17 @@ function reducer(state: AppState, action: Action): AppState {
     case 'ADD_CANVAS_TAB':
       return { ...state, canvasTabs: [...state.canvasTabs, action.payload] }
     case 'UPDATE_CANVAS_TAB':
-      return { ...state, canvasTabs: state.canvasTabs.map(t => t.id === action.payload.id ? action.payload : t) }
+      // canvasLink card titles mirror the tab name (they're read by search and
+      // the AI context) — keep them in sync when a tab is renamed.
+      return {
+        ...state,
+        canvasTabs: state.canvasTabs.map(t => t.id === action.payload.id ? action.payload : t),
+        canvasCards: state.canvasCards.map(c => c.type === 'canvasLink' && c.refTabId === action.payload.id && c.title !== action.payload.name ? { ...c, title: action.payload.name } : c),
+      }
     case 'DELETE_CANVAS_TAB':
-      return { ...state, canvasTabs: state.canvasTabs.filter(t => t.id !== action.payload), canvasCards: state.canvasCards.filter(c => c.tabId !== action.payload), canvasArrows: state.canvasArrows.filter(a => a.tabId !== action.payload), canvasGroups: state.canvasGroups.filter(g => g.tabId !== action.payload), canvasStrokes: state.canvasStrokes.filter(s => s.tabId !== action.payload), canvasLabels: state.canvasLabels.filter(l => l.tabId !== action.payload) }
+      // Cascade the tab's own content, and clear canvasLink references from
+      // OTHER tabs' cards (same idiom as the refNoteId/refTaskId cascades).
+      return { ...state, canvasTabs: state.canvasTabs.filter(t => t.id !== action.payload), canvasCards: state.canvasCards.filter(c => c.tabId !== action.payload).map(c => c.refTabId === action.payload ? { ...c, refTabId: undefined } : c), canvasArrows: state.canvasArrows.filter(a => a.tabId !== action.payload), canvasGroups: state.canvasGroups.filter(g => g.tabId !== action.payload), canvasStrokes: state.canvasStrokes.filter(s => s.tabId !== action.payload), canvasLabels: state.canvasLabels.filter(l => l.tabId !== action.payload) }
     case 'ADD_CANVAS_BOARD':
       return { ...state, canvasBoards: [...state.canvasBoards, action.payload] }
     case 'UPDATE_CANVAS_BOARD':
