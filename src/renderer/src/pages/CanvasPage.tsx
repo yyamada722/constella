@@ -42,6 +42,10 @@ const cardTypes = {
   shape: { label: 'シェイプ', icon: Shapes, bg: 'bg-white', border: 'border-slate-300', text: 'text-slate-500', header: 'bg-slate-50', defaultWidth: 200, defaultHeight: 120 },
 } as const
 
+// Stable empty array so cards WITHOUT the picker open don't re-render (memo)
+// every time the checked set changes in the one card that has it open.
+const EMPTY_IDS: string[] = []
+
 /* ── 構成図シェイプ ── */
 
 const SHAPE_KINDS: { key: ShapeKind; label: string }[] = [
@@ -339,6 +343,10 @@ const PEN_COLORS = ['#1e293b', '#ef4444', '#3b82f6', '#16a34a', '#eab308']
 const PEN_WIDTHS = [2, 4, 8]
 // Arrow palette: indigo default first (so it doubles as "reset to default"), then the pen colors.
 const ARROW_DEFAULT_COLOR = '#6366f1'
+// タスク親子付けライン — drawn from a task terminal; visually distinct from
+// ordinary arrows (emerald, thicker) so structure edges read differently.
+const TASK_LINK_COLOR = '#10b981'
+const TASK_LINK_WIDTH = 3
 const ARROW_COLORS = [ARROW_DEFAULT_COLOR, '#1e293b', '#ef4444', '#3b82f6', '#16a34a', '#eab308']
 const ARROW_DEFAULT_WIDTH = 2
 const ARROW_WIDTHS = [2, 3.5, 6]
@@ -582,8 +590,24 @@ export default function CanvasPage() {
   const [detachOpenCardId, setDetachOpenCardId] = useState<string | null>(null)
   const [pickerTab, setPickerTab] = useState<'existing' | 'new'>('existing')
   const [pickerSearch, setPickerSearch] = useState('')
+  // Multi-select in the task picker — checked ids place as a batch (first one
+  // links into the open card, the rest fan out below it as new todo cards).
+  const [pickerChecked, setPickerChecked] = useState<string[]>([])
+  const handlePickerCheck = useCallback((ids: string[], checked: boolean) => {
+    setPickerChecked(prev => checked
+      ? [...prev, ...ids.filter(id => !prev.includes(id))]
+      : prev.filter(id => !ids.includes(id)))
+  }, [])
   // Deletion is gated behind a confirmation modal (no more accidental one-click deletes).
   const [confirmDelete, setConfirmDelete] = useState<{ message: string; run: () => void } | null>(null)
+  // Transient bottom-center notice (arrow→parent-child feedback etc.).
+  const [notice, setNotice] = useState<string | null>(null)
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showNotice = useCallback((msg: string) => {
+    if (noticeTimer.current) clearTimeout(noticeTimer.current)
+    setNotice(msg)
+    noticeTimer.current = setTimeout(() => setNotice(null), 3600)
+  }, [])
   const clipboardRef = useRef<CanvasCard[]>([])
   // True while the most recent copy was an in-app card copy (no window blur since),
   // so Ctrl+V prefers pasting cards over a stale image left in the OS clipboard.
@@ -1137,6 +1161,42 @@ export default function CanvasPage() {
     }
   }, [dispatch, toCanvas, tabCards, tabLabels, applyBrush, nearestPort])
 
+  // 矢印 → 実タスク親子化: an arrow between two LIVE task-ref cards writes the
+  // real parent-child relation (from = 親, to = 子), the same metaphor the
+  // タスク下書き conversion uses. Same board only; cycles and self-links are
+  // refused (the arrow itself stays either way — it's still a valid drawing).
+  // Deleting the arrow deliberately does NOT unparent: cleaning up the canvas
+  // must never silently rewrite task structure.
+  const projectsRef = useRef(state.projects)
+  projectsRef.current = state.projects
+  // Returns true when the relation holds after the call (newly set, or already
+  // in place) — the タスク端子 gesture uses this to decide whether its line
+  // deserves to exist at all.
+  const parentLinkByArrow = useCallback((fromCardId?: string, toCardId?: string): boolean => {
+    if (!fromCardId || !toCardId || fromCardId === toCardId) return false
+    const cards = tabCardsRef.current
+    const fromTaskId = cards.find(c => c.id === fromCardId)?.refTaskId
+    const toTaskId = cards.find(c => c.id === toCardId)?.refTaskId
+    if (!fromTaskId || !toTaskId || fromTaskId === toTaskId) return false
+    const projects = projectsRef.current
+    const fromBoard = projects.find(p => p.tasks.some(t => t.id === fromTaskId))
+    const toBoard = projects.find(p => p.tasks.some(t => t.id === toTaskId))
+    if (!fromBoard || !toBoard) return false
+    if (fromBoard.id !== toBoard.id) { showNotice('別ボードのタスクなので親子化できません'); return false }
+    const byId = new Map(toBoard.tasks.map(t => [t.id, t]))
+    const child = byId.get(toTaskId)!
+    if (child.parentId === fromTaskId) return true
+    // Cycle guard: the new parent must not be a descendant of the child.
+    const seen = new Set<string>()
+    for (let p = byId.get(fromTaskId); p?.parentId && !seen.has(p.id); p = byId.get(p.parentId)) {
+      seen.add(p.id)
+      if (p.parentId === toTaskId) { showNotice('循環になるため親子化できません'); return false }
+    }
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: toBoard.id, task: { ...child, parentId: fromTaskId } } })
+    showNotice(`「${child.title || '無題'}」を「${byId.get(fromTaskId)?.title || '無題'}」の子タスクにしました（Ctrl+Zで取消）`)
+    return true
+  }, [dispatch, showNotice])
+
   const handleMouseUp = useCallback(() => {
     setSnapPort(null)
     // Commit the pen stroke / eraser edit that was driven through handleMouseMove
@@ -1170,8 +1230,11 @@ export default function CanvasPage() {
     if (drawArrowRef.current) {
       const a = drawArrowRef.current
       const fromSnap = drawArrowFromRef.current
+      const isTaskLink = taskLinkDragRef.current
       drawArrowRef.current = null
       drawArrowFromRef.current = null
+      taskLinkDragRef.current = false
+      setTaskLinkDrag(false)
       setDrawArrow(null)
       setIsDragging(false)
       const len = Math.hypot(a.x2 - a.x1, a.y2 - a.y1)
@@ -1181,14 +1244,21 @@ export default function CanvasPage() {
         const toSnap = nearestPort(a.x2, a.y2, PORT_SNAP_SCREEN / viewportRef.current.zoom)
         const fromCard = fromSnap ? tabCardsRef.current.find(c => c.id === fromSnap.cardId) : cardAtPoint(a.x1, a.y1)
         const toCard = toSnap ? toSnap.card : cardAtPoint(a.x2, a.y2)
+        // タスク親子付けライン is not a free drawing: it exists only when the
+        // parent-child relation actually holds. Released on empty canvas, a
+        // non-task card, another board's task, or a would-be cycle → nothing
+        // remains (parentLinkByArrow shows the reason as a notice).
+        if (isTaskLink && !parentLinkByArrow(fromCard?.id, toCard?.id)) return
         const arrow: CanvasArrow = {
           id: generateId(), tabId: activeTabId, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2,
           fromCardId: fromCard?.id, toCardId: toCard?.id,
           fromPort: fromSnap && fromCard ? fromSnap.dir : undefined,
           toPort: toSnap && toCard ? toSnap.dir : undefined,
+          ...(isTaskLink ? { color: TASK_LINK_COLOR, width: TASK_LINK_WIDTH } : {}),
           createdAt: new Date().toISOString(),
         }
         dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
+        if (!isTaskLink) parentLinkByArrow(arrow.fromCardId, arrow.toCardId)
         setSelectedArrowId(arrow.id)
         setTool('select')
       }
@@ -1220,12 +1290,16 @@ export default function CanvasPage() {
         const upd = d.kind === 'arrow-p1'
           ? { fromCardId: card?.id, fromPort: snap && card ? snap.dir : undefined }
           : { toCardId: card?.id, toPort: snap && card ? snap.dir : undefined }
-        dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...arrow, ...upd } })
+        const next = { ...arrow, ...upd }
+        dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: next })
+        // Re-docking an endpoint onto a task card counts as drawing the
+        // relation anew (the old relation is left untouched — see above).
+        parentLinkByArrow(next.fromCardId, next.toCardId)
       }
     }
     dragRef.current = null
     setIsDragging(false)
-  }, [dispatch, activeTabId, cardAtPoint, penColor, penWidth, nearestPort])
+  }, [dispatch, activeTabId, cardAtPoint, penColor, penWidth, nearestPort, parentLinkByArrow])
   handleMouseUpRef.current = handleMouseUp
 
   const handleArrowEndDown = useCallback((e: React.MouseEvent, arrow: CanvasArrow, which: 'p1' | 'p2') => {
@@ -1238,12 +1312,18 @@ export default function CanvasPage() {
 
   // Start drawing an arrow FROM a hover port (select tool) — same flow as the
   // arrow tool: handleMouseMove tracks the head, handleMouseUp commits.
-  const handlePortDown = useCallback((e: React.MouseEvent, card: CanvasCard, dir: PortDir) => {
+  // `taskLink` marks the gesture as a タスク親子付けライン (started from a task
+  // terminal): it commits ONLY onto another task card and styles differently.
+  const taskLinkDragRef = useRef(false)
+  const [taskLinkDrag, setTaskLinkDrag] = useState(false)
+  const handlePortDown = useCallback((e: React.MouseEvent, card: CanvasCard, dir: PortDir, taskLink = false) => {
     if (e.button !== 0 || canvasLockedRef.current) return
     e.stopPropagation()
     e.preventDefault()
     const p = portPoint(card, dir)
     drawArrowFromRef.current = { cardId: card.id, dir }
+    taskLinkDragRef.current = taskLink
+    setTaskLinkDrag(taskLink)
     const a = { x1: p.x, y1: p.y, x2: p.x, y2: p.y }
     drawArrowRef.current = a
     setDrawArrow(a)
@@ -1654,7 +1734,7 @@ export default function CanvasPage() {
         tabLabelsRef.current.forEach(l => { if (lsel.has(l.id)) dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: l.x + nx, y: l.y + ny } }) })
         return
       }
-      if (e.key === 'Escape') { setTool('select'); setSelectedIds([]); setSelectedArrowId(null); setEditingArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setEditingLabelId(null); setShowAddMenu(false); setContextMenu(null); setConvertOpen(false) }
+      if (e.key === 'Escape') { setTool('select'); setSelectedIds([]); setSelectedArrowId(null); setEditingArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setEditingLabelId(null); setShowAddMenu(false); setContextMenu(null); setConvertOpen(false); setPickerOpenCardId(null); setDetachOpenCardId(null); setPickerChecked([]) }
       if (!locked && (e.key === 'Delete' || e.key === 'Backspace')) {
         if (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedArrowId || selectedGroupId) {
           e.preventDefault()
@@ -1888,6 +1968,37 @@ export default function CanvasPage() {
     dispatch({ type: 'ADD_CANVAS_CARD', payload: card })
     setSelectedIds([card.id])
     setShowAddMenu(false)
+  }
+
+  // 一括配置 — the first checked task links into the picker's own card; every
+  // additional task becomes a new todo card, fanned out in a grid below it
+  // (3 per row) so a burst of 10 doesn't stack into an invisible pile.
+  function bulkPlaceTaskCards(card: CanvasCard, taskIds: string[]) {
+    if (taskIds.length === 0) return
+    // Card titles mirror the linked task's name — a wall of cards all headed
+    // "TODO" is unreadable on the minimap and in canvas search.
+    const taskTitleById = new Map(state.projects.flatMap(p => p.tasks.map(t => [t.id, t.title] as const)))
+    const cfg = cardTypes.todo
+    dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...card, refTaskId: taskIds[0], title: taskTitleById.get(taskIds[0]) || card.title } })
+    const gap = 16
+    const perRow = 3
+    const newIds: string[] = []
+    taskIds.slice(1).forEach((taskId, i) => {
+      const col = i % perRow
+      const row = Math.floor(i / perRow)
+      const nc: CanvasCard = {
+        id: generateId(), tabId: activeTabId, type: 'todo', title: taskTitleById.get(taskId) || cfg.label, content: '',
+        refTaskId: taskId,
+        x: card.x + col * (cfg.defaultWidth + gap),
+        y: card.y + card.height + gap + row * (cfg.defaultHeight + gap),
+        width: cfg.defaultWidth, height: cfg.defaultHeight, createdAt: new Date().toISOString(),
+      }
+      dispatch({ type: 'ADD_CANVAS_CARD', payload: nc })
+      newIds.push(nc.id)
+    })
+    setSelectedIds([card.id, ...newIds])
+    setPickerOpenCardId(null)
+    setPickerChecked([])
   }
 
   // Shape cards skip addCard: they start with an EMPTY title (the label is
@@ -2903,6 +3014,19 @@ export default function CanvasPage() {
               backgroundPosition: `${viewport.x - 10 * viewport.zoom}px ${viewport.y - 10 * viewport.zoom}px`,
             } : {}),
           }}
+          // Native drag of a text selection / image / link hijacks the mouse
+          // (no more mousemove events) and leaves pan/drag "dead" — the canvas
+          // has no legitimate in-page drag sources, so kill dragstart wholesale.
+          onDragStartCapture={e => e.preventDefault()}
+          // A stray cross-card text selection (started inside some card body)
+          // also blocks gestures; clear it on the next press anywhere outside
+          // an editable field so one click always restores a workable canvas.
+          onMouseDownCapture={e => {
+            const t = e.target as HTMLElement
+            if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return
+            const sel = window.getSelection()
+            if (sel && !sel.isCollapsed) sel.removeAllRanges()
+          }}
           onMouseDown={handleBgMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -3002,7 +3126,9 @@ export default function CanvasPage() {
               {drawArrow && (
                 <line
                   x1={drawArrow.x1} y1={drawArrow.y1} x2={drawArrow.x2} y2={drawArrow.y2}
-                  stroke="#6366f1" strokeWidth={2} strokeDasharray="5 4" markerEnd="url(#arrowhead)"
+                  stroke={taskLinkDrag ? TASK_LINK_COLOR : '#6366f1'}
+                  strokeWidth={taskLinkDrag ? TASK_LINK_WIDTH : 2}
+                  strokeDasharray="5 4" markerEnd="url(#arrowhead)"
                 />
               )}
             </svg>
@@ -3054,12 +3180,15 @@ export default function CanvasPage() {
                 detachOpen={detachOpenCardId === card.id}
                 pickerTab={pickerTab}
                 pickerSearch={pickerSearch}
-                onOpenPicker={() => { setPickerOpenCardId(card.id); setDetachOpenCardId(null); setPickerTab('existing'); setPickerSearch('') }}
-                onClosePicker={() => setPickerOpenCardId(null)}
+                onOpenPicker={() => { setPickerOpenCardId(card.id); setDetachOpenCardId(null); setPickerTab('existing'); setPickerSearch(''); setPickerChecked([]) }}
+                onClosePicker={() => { setPickerOpenCardId(null); setPickerChecked([]) }}
                 onOpenDetach={() => { setDetachOpenCardId(card.id); setPickerOpenCardId(null) }}
                 onCloseDetach={() => setDetachOpenCardId(null)}
                 onPickerTab={setPickerTab}
                 onPickerSearch={setPickerSearch}
+                pickerChecked={pickerOpenCardId === card.id ? pickerChecked : EMPTY_IDS}
+                onPickerCheck={handlePickerCheck}
+                onBulkLink={taskIds => bulkPlaceTaskCards(card, taskIds)}
               />
             ))}
 
@@ -3099,6 +3228,41 @@ export default function CanvasPage() {
                 </svg>
               )
             })()}
+
+            {/* タスク親子付け端子 — live task-ref cards carry a persistent
+                bottom-center terminal. Dragging it starts a normal arrow whose
+                drop target becomes このタスクの子 (parentLinkByArrow on mouseup).
+                Hidden mid-drag: the generic snap-port layer takes over then. */}
+            {!canvasLocked && tool === 'select' && !isDragging && (
+              <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
+                {tabCards.filter(c => c.refTaskId && state.projects.some(p => p.tasks.some(t => t.id === c.refTaskId))).map(c => {
+                  const p = portPoint(c, 's')
+                  return (
+                    <g
+                      key={`task-port-${c.id}`}
+                      style={{ pointerEvents: 'auto', cursor: 'crosshair' }}
+                      onMouseDown={e => handlePortDown(e, c, 's', true)}
+                    >
+                      <title>ドラッグして別のタスクカードへ — このタスクの子として親子付け</title>
+                      {/* generous invisible hit area so the small dot is easy to grab */}
+                      <circle cx={p.x} cy={p.y} r={11 / viewport.zoom} fill="transparent" />
+                      <circle
+                        cx={p.x} cy={p.y} r={5 / viewport.zoom}
+                        fill="#10b981" stroke="var(--handle-fill)" strokeWidth={1.6 / viewport.zoom}
+                      />
+                      <line
+                        x1={p.x} y1={p.y - 2.1 / viewport.zoom} x2={p.x} y2={p.y + 2.1 / viewport.zoom}
+                        stroke="var(--handle-fill)" strokeWidth={1.2 / viewport.zoom} strokeLinecap="round"
+                      />
+                      <line
+                        x1={p.x - 2.1 / viewport.zoom} y1={p.y} x2={p.x + 2.1 / viewport.zoom} y2={p.y}
+                        stroke="var(--handle-fill)" strokeWidth={1.2 / viewport.zoom} strokeLinecap="round"
+                      />
+                    </g>
+                  )
+                })}
+              </svg>
+            )}
 
             {/* Pen strokes (top layer, over cards) */}
             <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
@@ -3350,6 +3514,12 @@ export default function CanvasPage() {
           </>
         )
       })()}
+
+      {notice && (
+        <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-[55] bg-slate-800 text-white text-xs rounded-full px-4 py-2 shadow-lg pointer-events-none max-w-[80%] truncate">
+          {notice}
+        </div>
+      )}
 
       {confirmDelete && (
         <div
@@ -4851,7 +5021,7 @@ const Minimap = memo(function Minimap({ cards, groups, viewport, canvasW, canvas
 
 /* ── Canvas card ── */
 
-const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked, isSelected, onHeaderDown, onResizeDown, onUpdate, onSelect, onContextMenu, onPortHover, pickerOpen, detachOpen, pickerTab, pickerSearch, onOpenPicker, onClosePicker, onOpenDetach, onCloseDetach, onPickerTab, onPickerSearch }: {
+const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked, isSelected, onHeaderDown, onResizeDown, onUpdate, onSelect, onContextMenu, onPortHover, pickerOpen, detachOpen, pickerTab, pickerSearch, onOpenPicker, onClosePicker, onOpenDetach, onCloseDetach, onPickerTab, onPickerSearch, pickerChecked, onPickerCheck, onBulkLink }: {
   card: CanvasCard
   viewLocked?: boolean
   isSelected: boolean
@@ -4871,6 +5041,9 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
   onCloseDetach: () => void
   onPickerTab: (t: 'existing' | 'new') => void
   onPickerSearch: (s: string) => void
+  pickerChecked: string[]
+  onPickerCheck: (ids: string[], checked: boolean) => void
+  onBulkLink: (taskIds: string[]) => void
 }) {
   // Linked source data (Note/Task) is sourced from the live store so edits propagate.
   const { state, dispatch } = useApp()
@@ -4879,7 +5052,19 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
   const linkedSketch = card.refSketchId ? state.sketches.find(s => s.id === card.refSketchId) : undefined
   const isRefBroken = (!!card.refNoteId && !linkedNote) || (!!card.refTaskId && !linkedTask) || (!!card.refSketchId && !linkedSketch)
   const cfg = cardTypes[card.type]
-  const theme = (card.color && COLOR_THEMES[card.color]) || cfg
+  // Live task cards: a neutral white card with a 5px status stripe down the
+  // left edge — same grammar as the board-color stripes in the Gantt. Canvas
+  // status palette (user-picked): 未着手=emerald, 進行中=amber, 完了=blue.
+  // An explicit user-picked card color keeps its themed frame; the stripe
+  // still shows so status always reads.
+  const taskStatus = linkedTask?.status
+  const statusTheme = linkedTask && !card.color
+    ? { bg: 'bg-white', border: 'border-slate-200', text: 'text-slate-500', header: 'bg-slate-50' }
+    : undefined
+  const statusStripe = linkedTask
+    ? (taskStatus === 'done' ? '#3b82f6' : taskStatus === 'in-progress' ? '#f59e0b' : '#10b981')
+    : undefined
+  const theme = statusTheme ?? ((card.color && COLOR_THEMES[card.color]) || cfg)
   const Icon = cfg.icon
   const locked = !!(card.locked || viewLocked)
   const hasSource = !!card.url && (SOURCE_CARD_TYPES as readonly string[]).includes(card.type)
@@ -4982,6 +5167,12 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
       onMouseDown={e => { if (e.button === 0) { e.stopPropagation(); onSelect(e.shiftKey) } }}
       onContextMenu={onContextMenu}
     >
+      {statusStripe && (
+        <div
+          className="absolute left-0 top-0 bottom-0 w-[5px] rounded-l-xl pointer-events-none"
+          style={{ background: statusStripe }}
+        />
+      )}
       <div
         className={`px-2.5 py-1.5 rounded-t-xl border-b ${theme.border} ${theme.header} flex items-center gap-1.5 select-none shrink-0`}
         style={{ cursor: 'grab' }}
@@ -5020,6 +5211,9 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
           >
             {card.title || cfg.label}
           </span>
+        )}
+        {taskStatus === 'in-progress' && (
+          <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" title="進行中" />
         )}
         {hasSource && (
           <button
@@ -5183,7 +5377,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
           <div className="flex-1 min-h-0 flex flex-col">
             <div className="px-3 py-1 border-b border-slate-200/60 flex items-center gap-1 text-[10px] text-slate-500 shrink-0">
               <Link2 size={10} className="text-indigo-400 shrink-0" />
-              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${linkedTask.status === 'done' ? 'bg-emerald-500' : linkedTask.status === 'in-progress' ? 'bg-amber-500' : 'bg-slate-400'}`} />
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${linkedTask.status === 'done' ? 'bg-blue-500' : linkedTask.status === 'in-progress' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
               <span className="truncate flex-1" title={linkedTask.title}>{linkedTask.title || '(無題)'}</span>
               {!locked && (
                 <button
@@ -5206,7 +5400,13 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                   dispatch({ type: 'UPDATE_TASK', payload: { projectId: board.id, task: { ...linkedTask, status: e.target.value as Task['status'] } } })
                 }}
                 disabled={locked}
-                className="bg-slate-50 border border-slate-200 rounded px-1 py-0.5 text-[10px]"
+                className={`rounded-full px-2 py-0.5 text-[10px] border cursor-pointer font-medium ${
+                  linkedTask.status === 'done'
+                    ? 'bg-blue-500 text-white border-blue-600'
+                    : linkedTask.status === 'in-progress'
+                      ? 'bg-amber-400 text-white border-amber-500'
+                      : 'bg-emerald-500 text-white border-emerald-600'
+                }`}
               >
                 <option value="todo">未着手</option>
                 <option value="in-progress">進行中</option>
@@ -5298,6 +5498,11 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                   onClick={() => onPickerTab('new')}
                 >新規作成</button>
               )}
+              <button
+                className="ml-auto p-0.5 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                onClick={onClosePicker}
+                title="閉じる (Esc)"
+              ><X size={12} /></button>
             </div>
             {(pickerTab === 'existing' || card.type === 'sketch') ? (
               <>
@@ -5335,22 +5540,48 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                             onClick={() => { onUpdate({ refNoteId: n.id }); onClosePicker() }}
                           >{n.title || '(無題)'}</button>
                         ))
-                    : state.projects
-                        .filter(p => p.masterProjectId === state.activeMasterProjectId)
-                        .flatMap(p => p.tasks.map(t => ({ t, p })))
-                        .filter(({ t }) => !pickerSearch || (t.title || '').toLowerCase().includes(pickerSearch.toLowerCase()))
-                        .map(({ t, p }) => (
-                          <button
-                            key={t.id}
-                            className="w-full text-left px-1.5 py-1 hover:bg-slate-50 rounded text-xs text-slate-700 truncate flex items-center gap-1"
-                            onClick={() => { onUpdate({ refTaskId: t.id }); onClosePicker() }}
-                            title={`${p.name} / ${t.title || '(無題)'}`}
-                          >
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.status === 'done' ? 'bg-emerald-500' : t.status === 'in-progress' ? 'bg-amber-500' : 'bg-slate-400'}`} />
-                            <span className="truncate">{t.title || '(無題)'}</span>
-                            <span className="ml-auto text-[9px] text-slate-400 shrink-0 truncate max-w-[80px]">{p.name}</span>
-                          </button>
-                        ))
+                    : (() => {
+                        const items = state.projects
+                          .filter(p => p.masterProjectId === state.activeMasterProjectId)
+                          .flatMap(p => p.tasks.map(t => ({ t, p })))
+                          .filter(({ t }) => !pickerSearch || (t.title || '').toLowerCase().includes(pickerSearch.toLowerCase()))
+                        const allChecked = items.length > 0 && items.every(({ t }) => pickerChecked.includes(t.id))
+                        return (
+                          <>
+                            {items.length > 1 && (
+                              <button
+                                className="w-full text-left px-1.5 py-0.5 text-[10px] text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded"
+                                onClick={() => onPickerCheck(items.map(({ t }) => t.id), !allChecked)}
+                              >{allChecked ? 'すべて解除' : 'すべて選択'}</button>
+                            )}
+                            {items.map(({ t, p }) => (
+                              <div key={t.id} className="flex items-center gap-1 px-1.5 py-1 hover:bg-slate-50 rounded">
+                                <input
+                                  type="checkbox"
+                                  checked={pickerChecked.includes(t.id)}
+                                  onChange={e => onPickerCheck([t.id], e.target.checked)}
+                                  className="shrink-0 accent-emerald-500 cursor-pointer"
+                                  title="チェックして一括配置"
+                                />
+                                <button
+                                  className="flex-1 min-w-0 text-left text-xs text-slate-700 truncate flex items-center gap-1"
+                                  onClick={() => {
+                                    // With checks active, row click just toggles too — a stray
+                                    // click shouldn't silently discard the batch selection.
+                                    if (pickerChecked.length > 0) { onPickerCheck([t.id], !pickerChecked.includes(t.id)); return }
+                                    onUpdate({ refTaskId: t.id, title: t.title || card.title }); onClosePicker()
+                                  }}
+                                  title={`${p.name} / ${t.title || '(無題)'}`}
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.status === 'done' ? 'bg-blue-500' : t.status === 'in-progress' ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+                                  <span className="truncate">{t.title || '(無題)'}</span>
+                                  <span className="ml-auto text-[9px] text-slate-400 shrink-0 truncate max-w-[80px]">{p.name}</span>
+                                </button>
+                              </div>
+                            ))}
+                          </>
+                        )
+                      })()
                   }
                   {((card.type === 'note' && state.notes.filter(n => n.masterProjectId === state.activeMasterProjectId).length === 0) ||
                     (card.type === 'sketch' && state.sketches.filter(s => s.masterProjectId === state.activeMasterProjectId).length === 0) ||
@@ -5358,6 +5589,12 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                     <div className="px-1.5 py-2 text-[10px] text-slate-400 text-center">候補がありません</div>
                   )}
                 </div>
+                {card.type === 'todo' && pickerChecked.length > 0 && (
+                  <button
+                    className="mt-1.5 w-full text-xs px-2 py-1.5 bg-emerald-500 text-white rounded hover:bg-emerald-600"
+                    onClick={() => onBulkLink(pickerChecked)}
+                  >選択した {pickerChecked.length} 件を一括配置</button>
+                )}
               </>
             ) : (
               <div className="flex flex-col gap-1">
@@ -5385,7 +5622,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                       if (!targetBoard) return
                       const newTask: Task = { id: newId, title, description: '', status: 'todo', tags: [], createdAt: now }
                       dispatch({ type: 'ADD_TASK', payload: { projectId: targetBoard.id, task: newTask } })
-                      onUpdate({ refTaskId: newId })
+                      onUpdate({ refTaskId: newId, title })
                     }
                     onClosePicker()
                   }}
