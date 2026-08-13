@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useEffect, useMemo, useState, useRef, useCallback, ReactNode } from 'react'
-import { Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Flow, Plan, PlanFolder, TimelineBand } from './types'
+import { Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Flow, Plan, PlanFolder, TimelineBand } from './types'
 import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNotice } from './persistence/db'
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
@@ -24,6 +24,7 @@ export interface AppState {
   planFolders: PlanFolder[]
   timelineBands: TimelineBand[]
   aiConversations: AIConversation[]
+  canvasBoards: CanvasBoard[]
   canvasTabs: CanvasTab[]
   canvasCards: CanvasCard[]
   canvasArrows: CanvasArrow[]
@@ -90,6 +91,9 @@ export type Action =
   | { type: 'ADD_CANVAS_TAB'; payload: CanvasTab }
   | { type: 'UPDATE_CANVAS_TAB'; payload: CanvasTab }
   | { type: 'DELETE_CANVAS_TAB'; payload: string }
+  | { type: 'ADD_CANVAS_BOARD'; payload: CanvasBoard }
+  | { type: 'UPDATE_CANVAS_BOARD'; payload: CanvasBoard }
+  | { type: 'DELETE_CANVAS_BOARD'; payload: string }
   | { type: 'ADD_CANVAS_ARROW'; payload: CanvasArrow }
   | { type: 'UPDATE_CANVAS_ARROW'; payload: CanvasArrow }
   | { type: 'DELETE_CANVAS_ARROW'; payload: string }
@@ -155,6 +159,7 @@ const initialState: AppState = {
   planFolders: [],
   timelineBands: [],
   aiConversations: [],
+  canvasBoards: [],
   canvasTabs: [
     { id: 'tab1', projectId: 'master-default', name: '設計', createdAt: now },
     { id: 'tab2', projectId: 'master-default', name: 'タスク', createdAt: now },
@@ -215,8 +220,9 @@ function reducer(state: AppState, action: Action): AppState {
         // timelineBands are GLOBAL personal-schedule spans shown in every project's
         // Gantt, so they intentionally survive a master-project deletion.
         aiConversations: state.aiConversations.filter(c => c.masterProjectId !== mid),
+        canvasBoards: state.canvasBoards.filter(b => b.projectId !== mid),
         canvasTabs: state.canvasTabs.filter(t => t.projectId !== mid),
-        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)),
+        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)).map(c => c.refTabId && removedTabs.has(c.refTabId) ? { ...c, refTabId: undefined } : c),
         canvasArrows: state.canvasArrows.filter(a => !removedTabs.has(a.tabId)),
         canvasGroups: state.canvasGroups.filter(g => !removedTabs.has(g.tabId)),
         canvasStrokes: state.canvasStrokes.filter(s => !removedTabs.has(s.tabId)),
@@ -442,9 +448,28 @@ function reducer(state: AppState, action: Action): AppState {
     case 'ADD_CANVAS_TAB':
       return { ...state, canvasTabs: [...state.canvasTabs, action.payload] }
     case 'UPDATE_CANVAS_TAB':
-      return { ...state, canvasTabs: state.canvasTabs.map(t => t.id === action.payload.id ? action.payload : t) }
+      // canvasLink card titles mirror the tab name (they're read by search and
+      // the AI context) — keep them in sync when a tab is renamed.
+      return {
+        ...state,
+        canvasTabs: state.canvasTabs.map(t => t.id === action.payload.id ? action.payload : t),
+        canvasCards: state.canvasCards.map(c => c.type === 'canvasLink' && c.refTabId === action.payload.id && c.title !== action.payload.name ? { ...c, title: action.payload.name } : c),
+      }
     case 'DELETE_CANVAS_TAB':
-      return { ...state, canvasTabs: state.canvasTabs.filter(t => t.id !== action.payload), canvasCards: state.canvasCards.filter(c => c.tabId !== action.payload), canvasArrows: state.canvasArrows.filter(a => a.tabId !== action.payload), canvasGroups: state.canvasGroups.filter(g => g.tabId !== action.payload), canvasStrokes: state.canvasStrokes.filter(s => s.tabId !== action.payload), canvasLabels: state.canvasLabels.filter(l => l.tabId !== action.payload) }
+      // Cascade the tab's own content, and clear canvasLink references from
+      // OTHER tabs' cards (same idiom as the refNoteId/refTaskId cascades).
+      return { ...state, canvasTabs: state.canvasTabs.filter(t => t.id !== action.payload), canvasCards: state.canvasCards.filter(c => c.tabId !== action.payload).map(c => c.refTabId === action.payload ? { ...c, refTabId: undefined } : c), canvasArrows: state.canvasArrows.filter(a => a.tabId !== action.payload), canvasGroups: state.canvasGroups.filter(g => g.tabId !== action.payload), canvasStrokes: state.canvasStrokes.filter(s => s.tabId !== action.payload), canvasLabels: state.canvasLabels.filter(l => l.tabId !== action.payload) }
+    case 'ADD_CANVAS_BOARD':
+      return { ...state, canvasBoards: [...state.canvasBoards, action.payload] }
+    case 'UPDATE_CANVAS_BOARD':
+      return { ...state, canvasBoards: state.canvasBoards.map(b => b.id === action.payload.id ? action.payload : b) }
+    case 'DELETE_CANVAS_BOARD':
+      // Board only — its tabs (and their content) survive, dropping back to 未分類.
+      return {
+        ...state,
+        canvasBoards: state.canvasBoards.filter(b => b.id !== action.payload),
+        canvasTabs: state.canvasTabs.map(t => t.boardId === action.payload ? { ...t, boardId: undefined } : t),
+      }
     case 'ADD_CANVAS_ARROW':
       return { ...state, canvasArrows: [...state.canvasArrows, action.payload] }
     case 'UPDATE_CANVAS_ARROW':
@@ -483,7 +508,7 @@ const COALESCE_MS = 500
 const COALESCABLE = new Set<Action['type']>([
   'MOVE_CANVAS_CARD', 'RESIZE_CANVAS_CARD', 'UPDATE_CANVAS_CARD',
   'UPDATE_CANVAS_ARROW', 'UPDATE_CANVAS_GROUP', 'UPDATE_CANVAS_LABEL',
-  'UPDATE_NOTE', 'UPDATE_PROJECT', 'UPDATE_RESEARCH', 'UPDATE_TASK', 'UPDATE_CANVAS_TAB',
+  'UPDATE_NOTE', 'UPDATE_PROJECT', 'UPDATE_RESEARCH', 'UPDATE_TASK', 'UPDATE_CANVAS_TAB', 'UPDATE_CANVAS_BOARD',
   'UPDATE_MASTER_PROJECT',
   // Flow node drags / title typing produce many UPDATE_FLOW dispatches — one undo step.
   'UPDATE_FLOW',
@@ -621,16 +646,21 @@ function normalizeMasterProjects(s: AppState): AppState {
   const planFolders = fixScope(s.planFolders ?? [])
   const timelineBands = fixScope(s.timelineBands ?? [])
   const aiConversations = fixScope(s.aiConversations)
-  // Canvas categories (tabs) carry the owning master id in `projectId`.
+  // Canvas categories (tabs) and boards carry the owning master id in `projectId`.
   const canvasTabs = s.canvasTabs.map(t => {
     if (!t.projectId || !ids.has(t.projectId)) { changed = true; return { ...t, projectId: fallback } }
     return t
+  })
+  if (!s.canvasBoards) changed = true // pre-board snapshots: materialize the field
+  const canvasBoards = (s.canvasBoards ?? []).map(b => {
+    if (!b.projectId || !ids.has(b.projectId)) { changed = true; return { ...b, projectId: fallback } }
+    return b
   })
   let activeMasterProjectId = s.activeMasterProjectId
   if (!activeMasterProjectId || !ids.has(activeMasterProjectId)) { changed = true; activeMasterProjectId = fallback }
 
   if (!changed) return s
-  return { ...s, masterProjects, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, planFolders, timelineBands, aiConversations, canvasTabs, activeMasterProjectId }
+  return { ...s, masterProjects, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, planFolders, timelineBands, aiConversations, canvasTabs, canvasBoards, activeMasterProjectId }
 }
 
 const AppContext = createContext<{

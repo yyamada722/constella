@@ -67,9 +67,20 @@ export interface Project {
   color?: BoardColor // optional board accent colour — falls back to a palette-rotated default by index
 }
 
+// キャンバスボード — 大カテゴリー。タブ (CanvasTab) を小カテゴリーとして束ねる。
+// Same idiom as note folders: tabs with no boardId sit in a virtual 未分類 group.
+export interface CanvasBoard {
+  id: string
+  projectId: string // owning master project id
+  name: string
+  color?: BoardColor
+  createdAt: string
+}
+
 export interface CanvasTab {
   id: string
   projectId: string // owning master project id (a category lives directly under a master project)
+  boardId?: string // owning canvas board (大カテゴリー); undefined = 未分類
   name: string
   createdAt: string
 }
@@ -249,7 +260,7 @@ export type ShapeKind = 'rect' | 'roundRect' | 'ellipse' | 'diamond' | 'triangle
 export interface CanvasCard {
   id: string
   tabId: string
-  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft' | 'shape' | 'sketch'
+  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft' | 'shape' | 'sketch' | 'canvasLink'
   title: string
   content: string
   url?: string
@@ -264,6 +275,7 @@ export interface CanvasCard {
   refNoteId?: string // when set on a 'note' card, the card mirrors this Note (live read/write)
   refTaskId?: string // when set on a 'todo' card, the card mirrors this Task (live read/write)
   refSketchId?: string // when set on a 'sketch' card, the card live-mirrors this Sketch (read-only on canvas)
+  refTabId?: string // when set on a 'canvasLink' card, the card is a shortcut to that canvas tab
   draftWhen?: DraftWhen // 'taskDraft' cards: rough target timing, converted to endDate on タスク化
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
 
