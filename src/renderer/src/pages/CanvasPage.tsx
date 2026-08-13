@@ -1,8 +1,10 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2 } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, FolderPlus } from 'lucide-react'
 import { useApp } from '../store'
-import { CanvasCard, CanvasTab, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
+import { CanvasCard, CanvasTab, CanvasBoard, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
+import { FolderColorSwatch } from '../components/FolderColorSwatch'
+import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
 import { PdfViewer } from '../components/PdfViewer'
@@ -37,6 +39,8 @@ const cardTypes = {
   // タスク下書き — a lightweight planning sticky. Scatter these, wire parent→child
   // with arrows, then タスク化 converts the whole flow into real tasks.
   taskDraft: { label: 'タスク下書き', icon: ListTodo, bg: 'bg-yellow-50', border: 'border-yellow-400 border-dashed', text: 'text-yellow-700', header: 'bg-yellow-100/60', defaultWidth: 210, defaultHeight: 112 },
+  // キャンバスリンク — 別キャンバス(タブ)へのショートカット。クリックでジャンプ。
+  canvasLink: { label: 'キャンバスリンク', icon: LayoutGrid, bg: 'bg-indigo-50', border: 'border-indigo-300', text: 'text-indigo-600', header: 'bg-indigo-100/60', defaultWidth: 240, defaultHeight: 190 },
   // 構成図シェイプ — headerless outlined figure; which figure is card.shape.
   // Excluded from the generic add menus (they get a dedicated shape grid instead).
   shape: { label: 'シェイプ', icon: Shapes, bg: 'bg-white', border: 'border-slate-300', text: 'text-slate-500', header: 'bg-slate-50', defaultWidth: 200, defaultHeight: 120 },
@@ -238,7 +242,7 @@ const TaskDraftCardBody = memo(function TaskDraftCardBody({ card, onUpdate, onSe
         ))}
       </div>
       <div className="text-[9px] text-slate-400 truncate">
-        {card.draftWhen ? `期日目安 ${draftWhenToEndDate(card.draftWhen)}` : '期日チップは任意 / 矢印で 親→子'}
+        {card.draftWhen ? `期日目安 ${draftWhenToEndDate(card.draftWhen)}` : 'Tab=子 / Enter=兄弟 / 下端子で親子付け'}
       </div>
     </div>
   )
@@ -623,6 +627,10 @@ export default function CanvasPage() {
   const activeProjectId = state.activeMasterProjectId
   const [activeTabId, setActiveTabId] = useState<string>(state.canvasTabs[0]?.id ?? '')
   const [editingTabId, setEditingTabId] = useState<string | null>(null)
+  // Where the tab-name edit input lives — sidebar row or the title bar. Both
+  // render the same tab; without this, TWO autoFocus inputs mount at once and
+  // the loser's blur instantly cancels the edit.
+  const [editingTabInTitle, setEditingTabInTitle] = useState(false)
   const [tool, setTool] = useState<'select' | 'arrow' | 'group' | 'pen' | 'eraser' | 'label' | 'taskdraft'>('select')
   const [selectedArrowId, setSelectedArrowId] = useState<string | null>(null)
   const [editingArrowId, setEditingArrowId] = useState<string | null>(null)
@@ -766,6 +774,99 @@ export default function CanvasPage() {
       setActiveTabId(projectTabs[0]?.id ?? '')
     }
   }, [projectTabs, activeTabId])
+
+  // ── ボード側パネル — 大カテゴリー(ボード) > 小カテゴリー(タブ) の2段管理 ──
+  const projectBoards = useMemo(
+    () => state.canvasBoards.filter(b => b.projectId === activeProjectId),
+    [state.canvasBoards, activeProjectId]
+  )
+  const [panelCollapsed, setPanelCollapsed] = useState(() => {
+    try { return localStorage.getItem('constella.canvasBoards.collapsed') === '1' } catch { return false }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.canvasBoards.collapsed', panelCollapsed ? '1' : '0') } catch { /* ignore */ }
+  }, [panelCollapsed])
+  const [editingBoardId, setEditingBoardId] = useState<string | null>(null)
+  const [closedBoards, setClosedBoards] = useState<Set<string>>(new Set())
+  // Native DnD: dragging a tab row over a board header re-parents it on drop.
+  const [draggingTabId, setDraggingTabId] = useState<string | null>(null)
+  const [tabDragOverBoard, setTabDragOverBoard] = useState<string | null>(null) // board id, or '__none__' = 未分類
+  // Cards per tab — count badge in the sidebar rows.
+  const cardCountByTab = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const c of state.canvasCards) m.set(c.tabId, (m.get(c.tabId) ?? 0) + 1)
+    return m
+  }, [state.canvasCards])
+
+  function addBoard() {
+    if (!activeProjectId) return
+    const board: CanvasBoard = { id: generateId(), projectId: activeProjectId, name: '新しいボード', createdAt: new Date().toISOString() }
+    dispatch({ type: 'ADD_CANVAS_BOARD', payload: board })
+    setEditingBoardId(board.id)
+  }
+
+  function deleteBoard(board: CanvasBoard) {
+    const n = projectTabs.filter(t => t.boardId === board.id).length
+    setConfirmDelete({
+      message: `ボード「${board.name}」を削除します。${n ? `中のカテゴリー${n}個は未分類へ移動します。` : ''}元に戻すには Ctrl+Z。`,
+      run: () => dispatch({ type: 'DELETE_CANVAS_BOARD', payload: board.id }),
+    })
+  }
+
+  function dropTabOnBoard(e: React.DragEvent, boardId: string | undefined) {
+    const id = e.dataTransfer.getData('text/constella-canvas-tab')
+    setTabDragOverBoard(null)
+    setDraggingTabId(null)
+    if (!id) return
+    e.preventDefault()
+    const tab = state.canvasTabs.find(t => t.id === id)
+    if (tab && tab.boardId !== boardId) dispatch({ type: 'UPDATE_CANVAS_TAB', payload: { ...tab, boardId } })
+  }
+
+  // ── キャンバスリンクのジャンプ履歴 ──
+  // リンクカード経由の移動だけ元キャンバスを積む（A→B→C と辿ってもチェーンで
+  // 戻れる）。サイドバーからの手動切替は「移動し直した」扱いで履歴を捨てる。
+  const [jumpStack, setJumpStack] = useState<string[]>([])
+  useEffect(() => { setJumpStack([]) }, [activeProjectId])
+
+  function activateTab(tabId: string) {
+    setActiveTabId(tabId)
+    setViewport({ x: 0, y: 0, zoom: 1 })
+    setSelectedIds([])
+  }
+
+  function selectTab(tabId: string) {
+    if (tabId === activeTabId) return
+    setJumpStack([])
+    activateTab(tabId)
+  }
+
+  function jumpToTab(tabId: string) {
+    if (tabId === activeTabId) return
+    const from = activeTabId
+    setJumpStack(prev => [...prev, from])
+    activateTab(tabId)
+  }
+
+  function jumpBack() {
+    const next = [...jumpStack]
+    let target: string | undefined
+    while (next.length) {
+      const id = next.pop()!
+      if (projectTabs.some(t => t.id === id)) { target = id; break }
+    }
+    setJumpStack(next)
+    if (target) activateTab(target)
+  }
+
+  // Deepest surviving return target — drives the 戻る chip in the title bar.
+  const jumpBackTab = (() => {
+    for (let i = jumpStack.length - 1; i >= 0; i--) {
+      const t = projectTabs.find(x => x.id === jumpStack[i])
+      if (t) return t
+    }
+    return undefined
+  })()
 
   useEffect(() => {
     if (viewMode !== 'canvas') return
@@ -1245,10 +1346,24 @@ export default function CanvasPage() {
         const fromCard = fromSnap ? tabCardsRef.current.find(c => c.id === fromSnap.cardId) : cardAtPoint(a.x1, a.y1)
         const toCard = toSnap ? toSnap.card : cardAtPoint(a.x2, a.y2)
         // タスク親子付けライン is not a free drawing: it exists only when the
-        // parent-child relation actually holds. Released on empty canvas, a
-        // non-task card, another board's task, or a would-be cycle → nothing
-        // remains (parentLinkByArrow shows the reason as a notice).
-        if (isTaskLink && !parentLinkByArrow(fromCard?.id, toCard?.id)) return
+        // relation holds. live→live writes parentId immediately; 下書き lines
+        // (下書き/既存タスク → 下書き) stay as arrows and are realized at
+        // タスク化 (performDraftConversion reads arrow endpoints). Anything
+        // else — empty canvas, non-task cards, reversed draft direction,
+        // cross-board, cycles — evaporates with a notice.
+        if (isTaskLink) {
+          if (!fromCard || !toCard || fromCard.id === toCard.id) return
+          const fromDraft = fromCard.type === 'taskDraft'
+          const toDraft = toCard.type === 'taskDraft'
+          if (toDraft && (fromDraft || fromCard.refTaskId)) {
+            showNotice('「タスク化」すると 親 → 子 として登録されます')
+          } else if (!fromDraft && !toDraft) {
+            if (!parentLinkByArrow(fromCard.id, toCard.id)) return
+          } else {
+            showNotice('下書きの親子は「下書き / 既存タスク → 下書き」の向きだけ結べます')
+            return
+          }
+        }
         const arrow: CanvasArrow = {
           id: generateId(), tabId: activeTabId, x1: a.x1, y1: a.y1, x2: a.x2, y2: a.y2,
           fromCardId: fromCard?.id, toCardId: toCard?.id,
@@ -1299,7 +1414,7 @@ export default function CanvasPage() {
     }
     dragRef.current = null
     setIsDragging(false)
-  }, [dispatch, activeTabId, cardAtPoint, penColor, penWidth, nearestPort, parentLinkByArrow])
+  }, [dispatch, activeTabId, cardAtPoint, penColor, penWidth, nearestPort, parentLinkByArrow, showNotice])
   handleMouseUpRef.current = handleMouseUp
 
   const handleArrowEndDown = useCallback((e: React.MouseEvent, arrow: CanvasArrow, which: 'p1' | 'p2') => {
@@ -1693,10 +1808,10 @@ export default function CanvasPage() {
         // Escape blurs whatever input is focused so the NEXT Escape reaches the
         // canvas-level handler (exit tool / clear selection).
         if (e.key === 'Escape') { ae.blur(); return }
-        // Tab inside a タスク下書き title commits the title (blur) and falls
-        // THROUGH to the Tab-to-extend branch below — this is what makes
-        // type→Tab→type→Tab task-tree sketching work without mouse round-trips.
-        if (e.key === 'Tab' && ae.dataset.draftTitle) ae.blur()
+        // Tab / Enter inside a タスク下書き title commits the title (blur) and
+        // falls THROUGH to the extend branches below (Tab=子 / Enter=兄弟) —
+        // Flow-page style keyboard chaining without mouse round-trips.
+        if ((e.key === 'Tab' || (e.key === 'Enter' && !e.isComposing)) && ae.dataset.draftTitle) ae.blur()
         else return
       }
       const mod = e.ctrlKey || e.metaKey
@@ -1764,10 +1879,43 @@ export default function CanvasPage() {
           x1: src.x + src.width, y1: src.y + src.height / 2,
           x2: newCard.x, y2: newCard.y + newCard.height / 2,
           fromCardId: src.id, toCardId: newCard.id,
+          // Draft chains are task-parent lines — same emerald as the 端子 gesture.
+          ...(extendDraft ? { color: TASK_LINK_COLOR, width: TASK_LINK_WIDTH } : {}),
           createdAt: new Date().toISOString(),
         }
         dispatch({ type: 'ADD_CANVAS_CARD', payload: newCard })
         dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
+        setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+        return
+      }
+      // Enter-to-extend (Flow parity): from a selected 下書き, Enter spawns a
+      // SIBLING right below it. If the source has a parent (a draft/task card
+      // with an arrow into it), the sibling hangs off the same parent with the
+      // same emerald task line.
+      if (!locked && e.key === 'Enter' && !e.isComposing && selectedIds.length === 1 && !editingLabelId && !editingArrowId) {
+        const src = tabCardsRef.current.find(c => c.id === selectedIds[0])
+        if (!src || src.type !== 'taskDraft') return
+        e.preventDefault()
+        const GAP = 24
+        const newCard: CanvasCard = {
+          id: generateId(), tabId: activeTabId, type: 'taskDraft', title: '', content: '',
+          x: src.x, y: src.y + src.height + GAP,
+          width: src.width, height: src.height, createdAt: new Date().toISOString(),
+        }
+        dispatch({ type: 'ADD_CANVAS_CARD', payload: newCard })
+        const pArrow = tabArrowsRef.current.find(a => a.toCardId === src.id && a.fromCardId)
+        const parent = pArrow ? tabCardsRef.current.find(c => c.id === pArrow.fromCardId) : undefined
+        if (parent && (parent.type === 'taskDraft' || parent.refTaskId)) {
+          const arrow: CanvasArrow = {
+            id: generateId(), tabId: activeTabId,
+            x1: parent.x + parent.width, y1: parent.y + parent.height / 2,
+            x2: newCard.x, y2: newCard.y + newCard.height / 2,
+            fromCardId: parent.id, toCardId: newCard.id,
+            color: TASK_LINK_COLOR, width: TASK_LINK_WIDTH,
+            createdAt: new Date().toISOString(),
+          }
+          dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
+        }
         setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
       }
     }
@@ -2109,13 +2257,15 @@ export default function CanvasPage() {
     setConvertNewBoardName('')
   }
 
-  function addTab() {
+  function addTab(boardId?: string) {
     if (!activeProjectId) return
-    const tab: CanvasTab = { id: generateId(), projectId: activeProjectId, name: '新しいカテゴリー', createdAt: new Date().toISOString() }
+    const tab: CanvasTab = { id: generateId(), projectId: activeProjectId, boardId, name: '新しいカテゴリー', createdAt: new Date().toISOString() }
     dispatch({ type: 'ADD_CANVAS_TAB', payload: tab })
     setActiveTabId(tab.id)
     setEditingTabId(tab.id)
+    setEditingTabInTitle(false)
     setViewport({ x: 0, y: 0, zoom: 1 })
+    if (boardId) setClosedBoards(prev => { if (!prev.has(boardId)) return prev; const next = new Set(prev); next.delete(boardId); return next })
   }
 
   function deleteTab(tabId: string) {
@@ -2393,51 +2543,186 @@ export default function CanvasPage() {
     }
   }, [activeTabId, exportingShare, tabCards, tabGroups, tabLabels, tabStrokes, tabArrows, cardsById, state.canvasTabs, shareEmbedLimitMB, shareTranscode])
 
+  // Sidebar row for one canvas tab (小カテゴリー). Draggable onto board headers.
+  const renderTabRow = (tab: CanvasTab) => (
+    <div
+      key={tab.id}
+      draggable={editingTabId !== tab.id}
+      onDragStart={e => { e.dataTransfer.setData('text/constella-canvas-tab', tab.id); e.dataTransfer.effectAllowed = 'move'; setDraggingTabId(tab.id) }}
+      onDragEnd={() => { setDraggingTabId(null); setTabDragOverBoard(null) }}
+      className={`group flex items-center gap-1.5 pl-7 pr-2 py-1 cursor-pointer text-xs ${
+        activeTabId === tab.id ? 'bg-indigo-100/70 text-indigo-700 font-medium' : 'text-slate-600 hover:bg-slate-100'
+      }`}
+      onClick={() => selectTab(tab.id)}
+    >
+      <LayoutGrid size={11} className={activeTabId === tab.id ? 'text-indigo-500 shrink-0' : 'text-slate-400 shrink-0'} />
+      {editingTabId === tab.id && !editingTabInTitle ? (
+        <input
+          autoFocus
+          type="text"
+          value={tab.name}
+          onChange={e => dispatch({ type: 'UPDATE_CANVAS_TAB', payload: { ...tab, name: e.target.value } })}
+          onBlur={() => setEditingTabId(null)}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingTabId(null) } }}
+          onClick={e => e.stopPropagation()}
+          className="flex-1 min-w-0 bg-transparent border-none outline-none text-xs text-slate-800"
+        />
+      ) : (
+        <span className="flex-1 min-w-0 truncate" onDoubleClick={e => { e.stopPropagation(); setEditingTabId(tab.id); setEditingTabInTitle(false) }} title="ダブルクリックで名前を編集">{tab.name}</span>
+      )}
+      <span className="text-[10px] text-slate-400 shrink-0">{cardCountByTab.get(tab.id) ?? 0}</span>
+      {projectTabs.length > 1 && (
+        <button
+          onClick={e => { e.stopPropagation(); deleteTab(tab.id) }}
+          className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-rose-500 transition-all shrink-0"
+        >
+          <X size={11} />
+        </button>
+      )}
+    </div>
+  )
+
+  const unassignedTabs = projectTabs.filter(t => !t.boardId || !projectBoards.some(b => b.id === t.boardId))
+
   return (
-    <div className="flex flex-col h-full">
-      {/* Category bar — each category is a separate canvas under the active master project */}
-      <div className="flex items-center gap-0 px-2 pt-2 bg-slate-100 shrink-0 border-b border-slate-200">
-        <div className="flex items-center gap-0 overflow-x-auto min-w-0">
-        {projectTabs.map(tab => (
-          <div
-            key={tab.id}
-            className={`group flex items-center gap-1 px-3 py-1.5 text-sm cursor-pointer border-b-2 transition-colors shrink-0 ${
-              activeTabId === tab.id
-                ? 'border-indigo-400 text-slate-800'
-                : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-400'
-            }`}
-            onClick={() => { setActiveTabId(tab.id); setViewport({ x: 0, y: 0, zoom: 1 }) }}
-          >
-            {editingTabId === tab.id ? (
+    <div className="flex h-full">
+      {/* ボードパネル — 大カテゴリー(ボード) > 小カテゴリー(タブ)。ノートのフォルダー欄と同じ文法 */}
+      <div className={`${panelCollapsed ? 'w-10' : 'w-56'} shrink-0 border-r border-slate-200 bg-slate-50 flex flex-col transition-[width] duration-150`}>
+        {panelCollapsed ? (
+          <button
+            onClick={() => setPanelCollapsed(false)}
+            className="p-2.5 text-slate-400 hover:text-slate-700 transition-colors"
+            title="ボードパネルを開く"
+          ><PanelLeftOpen size={16} /></button>
+        ) : (
+          <>
+            <div className="flex items-center gap-0.5 px-2 py-2 border-b border-slate-200 shrink-0">
+              <span className="text-xs font-semibold text-slate-600 flex-1 select-none">ボード</span>
+              <button onClick={addBoard} className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100" title="ボードを追加"><FolderPlus size={14} /></button>
+              <button onClick={() => addTab()} className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100" title="カテゴリーを追加（未分類）"><Plus size={14} /></button>
+              <button onClick={() => setPanelCollapsed(true)} className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100" title="パネルを畳む"><PanelLeftClose size={14} /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto py-1">
+              {projectBoards.map(board => {
+                const tabs = projectTabs.filter(t => t.boardId === board.id)
+                const closed = closedBoards.has(board.id)
+                return (
+                  <div key={board.id}>
+                    <div
+                      className={`group flex items-center gap-1 px-2 py-1.5 cursor-pointer hover:bg-slate-100 ${
+                        tabDragOverBoard === board.id ? 'bg-indigo-50 ring-1 ring-inset ring-indigo-300' : ''
+                      }`}
+                      onClick={() => setClosedBoards(prev => { const next = new Set(prev); if (next.has(board.id)) next.delete(board.id); else next.add(board.id); return next })}
+                      onDragOver={e => { if (draggingTabId) { e.preventDefault(); setTabDragOverBoard(board.id) } }}
+                      onDragLeave={() => setTabDragOverBoard(cur => (cur === board.id ? null : cur))}
+                      onDrop={e => dropTabOnBoard(e, board.id)}
+                    >
+                      <ChevronRight size={12} className={`text-slate-400 shrink-0 transition-transform ${closed ? '' : 'rotate-90'}`} />
+                      <FolderColorSwatch value={board.color} onChange={c => dispatch({ type: 'UPDATE_CANVAS_BOARD', payload: { ...board, color: c } })} className="shrink-0" />
+                      {editingBoardId === board.id ? (
+                        <input
+                          autoFocus
+                          type="text"
+                          value={board.name}
+                          onChange={e => dispatch({ type: 'UPDATE_CANVAS_BOARD', payload: { ...board, name: e.target.value } })}
+                          onBlur={() => setEditingBoardId(null)}
+                          onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingBoardId(null) } }}
+                          onClick={e => e.stopPropagation()}
+                          className="flex-1 min-w-0 bg-transparent border-none outline-none text-xs font-medium text-slate-800"
+                        />
+                      ) : (
+                        <span
+                          className="flex-1 min-w-0 truncate text-xs font-medium text-slate-700 select-none"
+                          onDoubleClick={e => { e.stopPropagation(); setEditingBoardId(board.id) }}
+                          title="ダブルクリックで名前を編集"
+                        >{board.name}</span>
+                      )}
+                      <span className="text-[10px] text-slate-400 shrink-0">{tabs.length}</span>
+                      <button
+                        onClick={e => { e.stopPropagation(); addTab(board.id) }}
+                        className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-indigo-600 transition-all shrink-0"
+                        title="このボードにカテゴリーを追加"
+                      ><Plus size={12} /></button>
+                      <button
+                        onClick={e => { e.stopPropagation(); deleteBoard(board) }}
+                        className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-rose-500 transition-all shrink-0"
+                        title="ボードを削除（中のカテゴリーは未分類へ）"
+                      ><X size={12} /></button>
+                    </div>
+                    {!closed && tabs.map(renderTabRow)}
+                    {!closed && tabs.length === 0 && (
+                      <div className="pl-9 pr-2 py-1 text-[10px] text-slate-400 select-none">カテゴリーなし — ＋で追加</div>
+                    )}
+                  </div>
+                )
+              })}
+              {(unassignedTabs.length > 0 || projectBoards.length > 0) && (
+                <div
+                  className={`flex items-center gap-1 px-2 py-1.5 mt-1 ${tabDragOverBoard === '__none__' ? 'bg-indigo-50 ring-1 ring-inset ring-indigo-300' : ''}`}
+                  onDragOver={e => { if (draggingTabId) { e.preventDefault(); setTabDragOverBoard('__none__') } }}
+                  onDragLeave={() => setTabDragOverBoard(cur => (cur === '__none__' ? null : cur))}
+                  onDrop={e => dropTabOnBoard(e, undefined)}
+                >
+                  <span className="text-[10px] text-slate-400 font-medium flex-1 select-none">未分類</span>
+                  <span className="text-[10px] text-slate-400">{unassignedTabs.length}</span>
+                </div>
+              )}
+              {unassignedTabs.map(renderTabRow)}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex flex-col flex-1 min-w-0">
+      {/* キャンバスタイトル — ボード名 > タブ名。タブバー廃止後の現在地表示 */}
+      {activeTabId && (() => {
+        const tab = projectTabs.find(t => t.id === activeTabId)
+        if (!tab) return null
+        const board = tab.boardId ? projectBoards.find(b => b.id === tab.boardId) : undefined
+        return (
+          <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-slate-200 bg-white shrink-0">
+            {board ? (
+              <>
+                {board.color && <span className={`w-2 h-2 rounded-full shrink-0 ${BOARD_COLOR_CLASSES[board.color].dot}`} />}
+                <span className="text-xs text-slate-400 truncate max-w-[160px]">{board.name}</span>
+                <ChevronRight size={12} className="text-slate-300 shrink-0" />
+              </>
+            ) : (
+              <>
+                <span className="text-xs text-slate-400">未分類</span>
+                <ChevronRight size={12} className="text-slate-300 shrink-0" />
+              </>
+            )}
+            {editingTabId === tab.id && editingTabInTitle ? (
               <input
                 autoFocus
                 type="text"
                 value={tab.name}
                 onChange={e => dispatch({ type: 'UPDATE_CANVAS_TAB', payload: { ...tab, name: e.target.value } })}
                 onBlur={() => setEditingTabId(null)}
-                onKeyDown={e => { if (e.key === 'Enter') setEditingTabId(null) }}
-                onClick={e => e.stopPropagation()}
-                className="bg-transparent border-none outline-none text-sm text-slate-800 w-24"
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') { e.stopPropagation(); setEditingTabId(null) } }}
+                className="text-sm font-semibold bg-transparent border-b border-indigo-300 outline-none text-slate-800 min-w-0"
               />
             ) : (
-              <span onDoubleClick={e => { e.stopPropagation(); setEditingTabId(tab.id) }}>{tab.name}</span>
+              <span
+                className="text-sm font-semibold text-slate-800 truncate cursor-text select-none"
+                onDoubleClick={() => { setEditingTabId(tab.id); setEditingTabInTitle(true) }}
+                title="ダブルクリックで名前を編集"
+              >{tab.name}</span>
             )}
-            {projectTabs.length > 1 && (
+            {jumpBackTab && (
               <button
-                onClick={e => { e.stopPropagation(); deleteTab(tab.id) }}
-                className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-rose-500 transition-all"
+                onClick={jumpBack}
+                className="ml-2 flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 hover:bg-indigo-100 hover:text-indigo-700 hover:border-indigo-200 transition-colors shrink-0 max-w-[220px]"
+                title={`「${jumpBackTab.name}」に戻る`}
               >
-                <X size={12} />
+                <CornerDownLeft size={11} className="shrink-0" />
+                <span className="truncate">{jumpBackTab.name}に戻る</span>
               </button>
             )}
           </div>
-        ))}
-        <button onClick={addTab} className="p-1.5 text-slate-400 hover:text-slate-800 transition-colors shrink-0" title="カテゴリー追加">
-          <Plus size={14} />
-        </button>
-        </div>
-      </div>
-
+        )
+      })()}
       {/* Toolbar */}
       <div className="h-11 flex items-center justify-between px-4 border-b border-slate-200 bg-slate-50 shrink-0 z-10">
         <div className="flex items-center gap-2">
@@ -2531,7 +2816,7 @@ export default function CanvasPage() {
               </button>
               <button
                 onClick={() => setTool(t => t === 'taskdraft' ? 'select' : 'taskdraft')}
-                title="タスク下書きをばらまく（クリックで連続配置 / Escで終了）— 矢印で 親→子 をつなぎ「タスク化」で一括登録"
+                title="タスク下書きをばらまく（クリックで連続配置 / Escで終了）— Tab=子・Enter=兄弟・下端子ドラッグで親子付け、「タスク化」で一括登録"
                 className={`p-1.5 rounded transition-colors ${tool === 'taskdraft' ? 'bg-yellow-500/20 text-yellow-700' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}
               >
                 <ListTodo size={16} />
@@ -2996,7 +3281,7 @@ export default function CanvasPage() {
 
       {!activeTabId ? (
         <div className="flex-1 flex items-center justify-center">
-          <button onClick={addTab} className="px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-600 text-sm hover:bg-indigo-500/20">カテゴリーを作成</button>
+          <button onClick={() => addTab()} className="px-4 py-2 rounded-lg bg-indigo-500/10 text-indigo-600 text-sm hover:bg-indigo-500/20">カテゴリーを作成</button>
         </div>
       ) : viewMode === 'canvas' ? (
         /* Canvas view */
@@ -3189,6 +3474,7 @@ export default function CanvasPage() {
                 pickerChecked={pickerOpenCardId === card.id ? pickerChecked : EMPTY_IDS}
                 onPickerCheck={handlePickerCheck}
                 onBulkLink={taskIds => bulkPlaceTaskCards(card, taskIds)}
+                onJumpTab={jumpToTab}
               />
             ))}
 
@@ -3229,13 +3515,14 @@ export default function CanvasPage() {
               )
             })()}
 
-            {/* タスク親子付け端子 — live task-ref cards carry a persistent
-                bottom-center terminal. Dragging it starts a normal arrow whose
-                drop target becomes このタスクの子 (parentLinkByArrow on mouseup).
+            {/* タスク親子付け端子 — live task-ref cards AND 下書き (taskDraft)
+                cards carry a persistent bottom-center terminal. Dragging it
+                starts a normal arrow whose drop target becomes このタスクの子
+                (live: parentLinkByArrow now / draft: realized at タスク化).
                 Hidden mid-drag: the generic snap-port layer takes over then. */}
             {!canvasLocked && tool === 'select' && !isDragging && (
               <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
-                {tabCards.filter(c => c.refTaskId && state.projects.some(p => p.tasks.some(t => t.id === c.refTaskId))).map(c => {
+                {tabCards.filter(c => c.type === 'taskDraft' || (c.refTaskId && state.projects.some(p => p.tasks.some(t => t.id === c.refTaskId)))).map(c => {
                   const p = portPoint(c, 's')
                   return (
                     <g
@@ -3548,6 +3835,7 @@ export default function CanvasPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }
@@ -5019,9 +5307,39 @@ const Minimap = memo(function Minimap({ cards, groups, viewport, canvasW, canvas
   )
 })
 
+/* ── キャンバスリンクのミニマッププレビュー ──
+   Read-only bird's-eye of the TARGET tab's cards/groups, scaled to whatever
+   box the card body gives it (viewBox does the math). Same visual grammar as
+   the corner minimap so it reads as "a canvas", not just a labeled card. */
+
+const CanvasLinkPreview = memo(function CanvasLinkPreview({ cards, groups }: {
+  cards: CanvasCard[]
+  groups: CanvasGroup[]
+}) {
+  if (cards.length === 0 && groups.length === 0) {
+    return <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">（空のキャンバス）</div>
+  }
+  const PAD = 60
+  const minX = Math.min(...cards.map(c => c.x), ...groups.map(g => g.x)) - PAD
+  const minY = Math.min(...cards.map(c => c.y), ...groups.map(g => g.y)) - PAD
+  const maxX = Math.max(...cards.map(c => c.x + c.width), ...groups.map(g => g.x + g.width)) + PAD
+  const maxY = Math.max(...cards.map(c => c.y + c.height), ...groups.map(g => g.y + g.height)) + PAD
+  return (
+    <svg className="w-full h-full block" viewBox={`${minX} ${minY} ${Math.max(1, maxX - minX)} ${Math.max(1, maxY - minY)}`} preserveAspectRatio="xMidYMid meet">
+      {groups.map(g => (
+        <rect key={g.id} x={g.x} y={g.y} width={g.width} height={g.height} fill="none" stroke="#cbd5e1" strokeWidth={1.2} vectorEffect="non-scaling-stroke" rx={8} />
+      ))}
+      {cards.map(c => (
+        <rect key={c.id} x={c.x} y={c.y} width={c.width} height={c.height} rx={6}
+          fill={c.color && COLOR_THEMES[c.color] ? COLOR_THEMES[c.color].dot : '#94a3b8'} fillOpacity={0.7} />
+      ))}
+    </svg>
+  )
+})
+
 /* ── Canvas card ── */
 
-const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked, isSelected, onHeaderDown, onResizeDown, onUpdate, onSelect, onContextMenu, onPortHover, pickerOpen, detachOpen, pickerTab, pickerSearch, onOpenPicker, onClosePicker, onOpenDetach, onCloseDetach, onPickerTab, onPickerSearch, pickerChecked, onPickerCheck, onBulkLink }: {
+const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked, isSelected, onHeaderDown, onResizeDown, onUpdate, onSelect, onContextMenu, onPortHover, pickerOpen, detachOpen, pickerTab, pickerSearch, onOpenPicker, onClosePicker, onOpenDetach, onCloseDetach, onPickerTab, onPickerSearch, pickerChecked, onPickerCheck, onBulkLink, onJumpTab }: {
   card: CanvasCard
   viewLocked?: boolean
   isSelected: boolean
@@ -5044,6 +5362,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
   pickerChecked: string[]
   onPickerCheck: (ids: string[], checked: boolean) => void
   onBulkLink: (taskIds: string[]) => void
+  onJumpTab?: (tabId: string) => void
 }) {
   // Linked source data (Note/Task) is sourced from the live store so edits propagate.
   const { state, dispatch } = useApp()
@@ -5373,6 +5692,67 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
               placeholder="（リンク先のノートはまだ空です）"
             />
           </div>
+        ) : card.type === 'canvasLink' ? (
+          (() => {
+            const tab = card.refTabId ? state.canvasTabs.find(t => t.id === card.refTabId) : undefined
+            if (!card.refTabId) return (
+              <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-3 text-center">
+                <span className="text-[11px] text-slate-400">リンク先のキャンバスが未選択です</span>
+                {!locked && (
+                  <button
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => { e.stopPropagation(); onOpenPicker() }}
+                    className="text-[10px] px-2 py-0.5 rounded border border-indigo-300 text-indigo-600 hover:bg-indigo-50"
+                  >キャンバスを選択</button>
+                )}
+              </div>
+            )
+            if (!tab) return (
+              <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-3 text-center">
+                <span className="text-[11px] text-slate-500">リンク先が見つかりません</span>
+                <button
+                  onClick={() => onUpdate({ refTabId: undefined })}
+                  className="text-[10px] px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
+                >リンクを解除</button>
+              </div>
+            )
+            const board = tab.boardId ? state.canvasBoards.find(b => b.id === tab.boardId) : undefined
+            const targetCards = state.canvasCards.filter(c => c.tabId === tab.id)
+            const targetGroups = state.canvasGroups.filter(g => g.tabId === tab.id)
+            return (
+              <div className="flex-1 min-h-0 flex flex-col">
+                <div
+                  className="flex-1 min-h-0 bg-slate-50/70 cursor-pointer relative hover:bg-indigo-50/40 transition-colors"
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={e => { e.stopPropagation(); onJumpTab?.(tab.id) }}
+                  title={`クリックで「${tab.name}」を開く`}
+                >
+                  <CanvasLinkPreview cards={targetCards} groups={targetGroups} />
+                  {targetCards.length > 0 && (
+                    <span className="absolute bottom-1 right-1.5 text-[9px] text-slate-400 bg-white/85 rounded px-1 pointer-events-none">{targetCards.length}枚</span>
+                  )}
+                </div>
+                <div className="px-2 py-1 border-t border-slate-200/60 flex items-center gap-1 text-[10px] text-slate-500 shrink-0">
+                  <LayoutGrid size={10} className="text-indigo-500 shrink-0" />
+                  <span className="truncate flex-1" title={`${board ? `${board.name} › ` : ''}${tab.name}`}>{board ? `${board.name} › ` : ''}{tab.name}</span>
+                  {!locked && (
+                    <button
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => { e.stopPropagation(); onOpenPicker() }}
+                      className="p-0.5 rounded text-slate-400 hover:text-indigo-600 hover:bg-slate-100 shrink-0"
+                      title="リンク先を変更"
+                    ><Link2 size={10} /></button>
+                  )}
+                  <button
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => { e.stopPropagation(); onJumpTab?.(tab.id) }}
+                    className="p-0.5 rounded text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 shrink-0"
+                    title="開く"
+                  ><ArrowUpRight size={11} /></button>
+                </div>
+              </div>
+            )
+          })()
         ) : linkedTask ? (
           <div className="flex-1 min-h-0 flex flex-col">
             <div className="px-3 py-1 border-b border-slate-200/60 flex items-center gap-1 text-[10px] text-slate-500 shrink-0">
@@ -5492,7 +5872,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                 className={`px-2 py-0.5 rounded ${pickerTab === 'existing' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
                 onClick={() => onPickerTab('existing')}
               >既存</button>
-              {card.type !== 'sketch' && (
+              {card.type !== 'sketch' && card.type !== 'canvasLink' && (
                 <button
                   className={`px-2 py-0.5 rounded ${pickerTab === 'new' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
                   onClick={() => onPickerTab('new')}
@@ -5504,12 +5884,12 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                 title="閉じる (Esc)"
               ><X size={12} /></button>
             </div>
-            {(pickerTab === 'existing' || card.type === 'sketch') ? (
+            {(pickerTab === 'existing' || card.type === 'sketch' || card.type === 'canvasLink') ? (
               <>
                 <input
                   value={pickerSearch}
                   onChange={e => onPickerSearch(e.target.value)}
-                  placeholder={card.type === 'note' ? 'ノートを検索…' : card.type === 'sketch' ? 'スケッチを検索…' : 'タスクを検索…'}
+                  placeholder={card.type === 'note' ? 'ノートを検索…' : card.type === 'sketch' ? 'スケッチを検索…' : card.type === 'canvasLink' ? 'キャンバスを検索…' : 'タスクを検索…'}
                   autoFocus
                   className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none focus:border-indigo-400 mb-1"
                 />
@@ -5529,6 +5909,25 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                             <span className="ml-auto text-[9px] text-slate-400 shrink-0">{s.strokes.length}本</span>
                           </button>
                         ))
+                    : card.type === 'canvasLink'
+                    ? state.canvasTabs
+                        .filter(t => t.projectId === state.activeMasterProjectId && t.id !== card.tabId)
+                        .filter(t => !pickerSearch || (t.name || '').toLowerCase().includes(pickerSearch.toLowerCase()))
+                        .map(t => {
+                          const b = t.boardId ? state.canvasBoards.find(x => x.id === t.boardId) : undefined
+                          return (
+                            <button
+                              key={t.id}
+                              className="w-full text-left px-1.5 py-1 hover:bg-slate-50 rounded text-xs text-slate-700 truncate flex items-center gap-1"
+                              onClick={() => { onUpdate({ refTabId: t.id, title: t.name }); onClosePicker() }}
+                              title={b ? `${b.name} / ${t.name}` : t.name}
+                            >
+                              <LayoutGrid size={11} className="text-indigo-400 shrink-0" />
+                              <span className="truncate">{t.name}</span>
+                              {b && <span className="ml-auto text-[9px] text-slate-400 shrink-0 truncate max-w-[80px]">{b.name}</span>}
+                            </button>
+                          )
+                        })
                     : card.type === 'note'
                     ? state.notes
                         .filter(n => n.masterProjectId === state.activeMasterProjectId)
@@ -5585,6 +5984,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                   }
                   {((card.type === 'note' && state.notes.filter(n => n.masterProjectId === state.activeMasterProjectId).length === 0) ||
                     (card.type === 'sketch' && state.sketches.filter(s => s.masterProjectId === state.activeMasterProjectId).length === 0) ||
+                    (card.type === 'canvasLink' && state.canvasTabs.filter(t => t.projectId === state.activeMasterProjectId && t.id !== card.tabId).length === 0) ||
                     (card.type === 'todo' && state.projects.filter(p => p.masterProjectId === state.activeMasterProjectId).every(p => p.tasks.length === 0))) && (
                     <div className="px-1.5 py-2 text-[10px] text-slate-400 text-center">候補がありません</div>
                   )}
