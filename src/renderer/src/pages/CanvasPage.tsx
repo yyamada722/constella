@@ -21,11 +21,12 @@ import { usePopoverDismiss } from '../components/usePopoverDismiss'
 import { wheelZoomFactor } from '../utils/zoom'
 import ZoomSpeedControl from '../components/ZoomSpeedControl'
 import WaveSurfer from 'wavesurfer.js'
-import { useStore as useMindtrainStore, PALETTE as RAIL_PALETTE } from '../mindtrain/store/useStore'
+import { useStore as useMindtrainStore, PALETTE as RAIL_PALETTE, pickNextColor } from '../mindtrain/store/useStore'
 import { metroPath, findInsertionIndex } from '../mindtrain/utils/path'
+import { getLabelLayout } from '../mindtrain/utils/labels'
+import { computeDoneRuns, autoTrainDuration } from '../mindtrain/utils/trains'
 import { renderStationShape } from '../mindtrain/components/Canvas/shapes'
 import { TrainSprite } from '../mindtrain/components/Canvas/TrainSprite'
-import type { LabelDir } from '../mindtrain/types'
 
 const cardTypes = {
   text: { label: 'テキスト', icon: FileText, bg: 'bg-white', border: 'border-slate-300', text: 'text-slate-500', header: 'bg-slate-50', defaultWidth: 360, defaultHeight: 280 },
@@ -336,26 +337,38 @@ const SketchCardBody = memo(function SketchCardBody({ sketch, onUnlink, locked }
 // so we read flat state when mirroring the active plan.
 const MT_STATION_SIZE = 16
 const MT_TRANSFER_SIZE = 20
-const MT_LABEL_LAYOUT = (dir: LabelDir, corner: number): { dx: number; dy: number; anchor: 'start' | 'middle' | 'end'; baseline: 'auto' | 'middle' | 'hanging' } => {
-  const pad = 6
-  const diag = corner + 1
-  switch (dir) {
-    case 'n': return { dx: 0, dy: -corner - pad, anchor: 'middle', baseline: 'auto' }
-    case 'ne': return { dx: diag, dy: -diag, anchor: 'start', baseline: 'auto' }
-    case 'e': return { dx: corner + pad, dy: 0, anchor: 'start', baseline: 'middle' }
-    case 'se': return { dx: diag, dy: diag, anchor: 'start', baseline: 'hanging' }
-    case 's': return { dx: 0, dy: corner + pad, anchor: 'middle', baseline: 'hanging' }
-    case 'sw': return { dx: -diag, dy: diag, anchor: 'end', baseline: 'hanging' }
-    case 'w': return { dx: -(corner + pad), dy: 0, anchor: 'end', baseline: 'middle' }
-    case 'nw': return { dx: -diag, dy: -diag, anchor: 'end', baseline: 'auto' }
-  }
-}
+
+// 駅の状態3ピル — コンテキストメニューとプロパティパネルで共有（語彙と
+// 見た目を1箇所に）。hoverCls だけ設置面の背景に合わせて差し替え可。
+const STATION_STATUS_OPTIONS = [['todo', '計画中'], ['doing', '建設中'], ['done', '開業']] as const
+const StationStatusPills = memo(function StationStatusPills({ status, disabled, hoverCls = 'hover:bg-slate-50', onChange }: {
+  status: CanvasStation['status']
+  disabled?: boolean
+  hoverCls?: string
+  onChange: (s: CanvasStation['status']) => void
+}) {
+  return (
+    <div className="flex gap-1">
+      {STATION_STATUS_OPTIONS.map(([k, lbl]) => (
+        <button
+          key={k}
+          disabled={disabled}
+          onClick={() => onChange(k)}
+          className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${status === k ? 'bg-rose-500/15 border-rose-400 text-rose-600 font-semibold' : `border-slate-200 text-slate-500 ${hoverCls}`}`}
+        >{lbl}</button>
+      ))}
+    </div>
+  )
+})
 
 const MindtrainCardBody = memo(function MindtrainCardBody({ planId, onUnlink, locked }: {
   planId: string
   onUnlink: () => void
   locked: boolean
 }) {
+  // 貼り付け/複製で別マスタープロジェクトのプランを指すことがある。ジャンプ側と
+  // 同様に所属一致をガードし、他プロジェクトの路線図は描画しない（内容リーク防止）。
+  const { state: appState } = useApp()
   const meta = useMindtrainStore(s => s.workspaceMeta[planId])
   // Active plan → flat fields; any other plan → its stored snapshot.
   const stations = useMindtrainStore(s => (s.activeWorkspaceId === planId ? s.stations : s.workspaces[planId]?.stations))
@@ -368,6 +381,21 @@ const MindtrainCardBody = memo(function MindtrainCardBody({ planId, onUnlink, lo
     return (
       <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-4 text-center">
         <span className="text-[11px] text-slate-500">リンク先が見つかりません</span>
+        {!locked && (
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onUnlink() }}
+            className="text-[10px] px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
+          >リンクを解除</button>
+        )}
+      </div>
+    )
+  }
+
+  if (meta.projectId !== appState.activeMasterProjectId) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-4 text-center">
+        <span className="text-[11px] text-slate-500">別プロジェクトの路線図です（内容は表示されません）</span>
         {!locked && (
           <button
             onMouseDown={e => e.stopPropagation()}
@@ -445,7 +473,7 @@ const MindtrainCardBody = memo(function MindtrainCardBody({ planId, onUnlink, lo
             const strokeColor = st.color ?? (isTransfer ? '#1a1d22' : lines[st.lineIds[0]]?.color ?? '#888')
             const size = isTransfer ? MT_TRANSFER_SIZE : MT_STATION_SIZE
             const planned = st.status === 'todo'
-            const layout = MT_LABEL_LAYOUT(st.labelDir ?? 'n', size / 2 + 2)
+            const layout = getLabelLayout(st.labelDir ?? 'n', size / 2, 4)
             return (
               <g key={st.id} opacity={planned ? 0.55 : 1}>
                 <g strokeDasharray={planned ? '4 3' : undefined}>
@@ -973,20 +1001,15 @@ export default function CanvasPage() {
   const railGeometry = useMemo(() => tabRails.map(rail => {
     const pts = rail.stationIds.map(id => stationById.get(id)).filter((s): s is CanvasStation => !!s)
     const pathD = pts.length >= 2 ? metroPath(pts.map(s => ({ x: s.x, y: s.y }))) : null
-    // 連続して「開業」している区間（2駅以上）— 路線図ページと同じ自動電車のrun
-    const runs: { key: string; d: string; duration: number }[] = []
-    let curStart = -1
-    for (let i = 0; i <= pts.length; i++) {
-      const done = i < pts.length && pts[i].status === 'done'
-      if (done) { if (curStart === -1) curStart = i }
-      else {
-        if (curStart !== -1 && i - curStart >= 2) {
-          const seg = pts.slice(curStart, i)
-          runs.push({ key: `${rail.id}-${curStart}-${i - 1}`, d: metroPath(seg.map(s => ({ x: s.x, y: s.y }))), duration: Math.max(3, seg.length * 1.6) })
-        }
-        curStart = -1
+    // 連続して「開業」している区間（2駅以上）— run 検出は路線図ページと共通。
+    const runs = computeDoneRuns(pts).map(run => {
+      const seg = pts.slice(run.from, run.to + 1)
+      return {
+        key: `${rail.id}-${run.from}-${run.to}`,
+        d: metroPath(seg.map(s => ({ x: s.x, y: s.y }))),
+        duration: autoTrainDuration(seg.length),
       }
-    }
+    })
     return { rail, pathD, runs }
   }), [tabRails, stationById])
   const [activeRailId, setActiveRailId] = useState<string | null>(null)
@@ -996,7 +1019,19 @@ export default function CanvasPage() {
   const [editingStationId, setEditingStationId] = useState<string | null>(null)
   const activeRailIdRef = useRef(activeRailId)
   activeRailIdRef.current = activeRailId
-  useEffect(() => { setActiveRailId(null); setSelectedStationIds([]); setEditingStationId(null) }, [activeTabId])
+  // タブ切替時に線路まわりの一時状態をリセットする。実際に activeTabId が
+  // 変わった時だけ動く（前回値と比較）— マウント時や StrictMode の二重実行で
+  // 検索フォーカスが直前に入れた駅選択を消してしまわないように。
+  // フォーカス遷移がタブを切り替えた場合は skipStationResetRef で選択を守る。
+  const skipStationResetRef = useRef(false)
+  const prevTabForResetRef = useRef(activeTabId)
+  useEffect(() => {
+    if (prevTabForResetRef.current === activeTabId) return
+    prevTabForResetRef.current = activeTabId
+    setActiveRailId(null); setEditingStationId(null)
+    if (skipStationResetRef.current) { skipStationResetRef.current = false; return }
+    setSelectedStationIds([])
+  }, [activeTabId])
   // 線路ツール中はグリッドスナップを自動で有効化（路線図ページのグリッド感）。
   // 入る前の設定を覚えておき、別のツールへ戻ったら元に戻す。
   const snapBeforeRailRef = useRef<boolean | null>(null)
@@ -1216,7 +1251,7 @@ export default function CanvasPage() {
   const navigate = useNavigate()
   const handledFocusRef = useRef('')
   useEffect(() => {
-    const st = location.state as { focusCardId?: string; focusLabelId?: string } | null
+    const st = location.state as { focusCardId?: string; focusLabelId?: string; focusStationId?: string } | null
     if (!st || handledFocusRef.current === location.key) return
     // The target may live in a different master project (wiki-links / search):
     // switch the active master to its category's owner so it isn't filtered out.
@@ -1252,8 +1287,16 @@ export default function CanvasPage() {
       focusTab(label.tabId)
       setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([label.id])
       waitAndCenter(label.x, label.y)
+    } else if (st.focusStationId) {
+      const station = state.canvasStations.find(s => s.id === st.focusStationId)
+      if (!station) return
+      handledFocusRef.current = location.key
+      if (station.tabId !== activeTabId) skipStationResetRef.current = true
+      focusTab(station.tabId)
+      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setSelectedStationIds([station.id])
+      waitAndCenter(station.x, station.y)
     }
-  }, [location, state.canvasCards, state.canvasLabels, state.canvasTabs, activeProjectId, dispatch, navigateTo, canvasSize])
+  }, [location, state.canvasCards, state.canvasLabels, state.canvasStations, state.canvasTabs, activeProjectId, activeTabId, dispatch, navigateTo, canvasSize])
 
   // Hold Space to temporarily pan with a left-drag (rubber-band select otherwise)
   useEffect(() => {
@@ -1327,7 +1370,7 @@ export default function CanvasPage() {
         rail = {
           id: generateId(), tabId: activeTabId,
           name: `路線${rails.length + 1}`,
-          color: RAIL_PALETTE.find(c => !rails.some(r => r.color === c)) ?? RAIL_PALETTE[rails.length % RAIL_PALETTE.length],
+          color: pickNextColor(rails.map(r => r.color)),
           stationIds: [], createdAt: new Date().toISOString(),
         }
         dispatch({ type: 'ADD_CANVAS_RAIL', payload: rail })
@@ -1425,7 +1468,7 @@ export default function CanvasPage() {
     const rail: CanvasRail = {
       id, tabId: activeTabId,
       name: `路線${tabRails.length + 1}`,
-      color: RAIL_PALETTE.find(c => !tabRails.some(r => r.color === c)) ?? RAIL_PALETTE[tabRails.length % RAIL_PALETTE.length],
+      color: pickNextColor(tabRails.map(r => r.color)),
       stationIds: [], createdAt: new Date().toISOString(),
     }
     dispatch({ type: 'ADD_CANVAS_RAIL', payload: rail })
@@ -3753,7 +3796,8 @@ export default function CanvasPage() {
                             return `${c.title} ${c.content} ${c.url ?? ''} ${pagesText}`.toLowerCase().includes(q)
                           }).slice(0, 30)
                           const labelHits = tabLabels.filter(l => l.text.toLowerCase().includes(q)).slice(0, 10)
-                          if (cardHits.length + labelHits.length === 0) return <p className="text-[10px] text-slate-400 px-1 py-1">一致なし</p>
+                          const stationHits = tabStations.filter(s => s.name.toLowerCase().includes(q)).slice(0, 10)
+                          if (cardHits.length + labelHits.length + stationHits.length === 0) return <p className="text-[10px] text-slate-400 px-1 py-1">一致なし</p>
                           return (
                             <>
                               {cardHits.map(c => {
@@ -3786,6 +3830,21 @@ export default function CanvasPage() {
                                 >
                                   <Type size={11} className="text-violet-500 shrink-0" />
                                   <span className="truncate">{l.text || '(空のラベル)'}</span>
+                                </button>
+                              ))}
+                              {stationHits.map(s => (
+                                <button
+                                  key={'s:' + s.id}
+                                  onClick={() => {
+                                    navigateTo(s.x, s.y)
+                                    setSelectedIds([]); setSelectedLabelIds([])
+                                    setSelectedStationIds([s.id])
+                                    setCanvasSearchOpen(false)
+                                  }}
+                                  className="w-full text-left px-2 py-1 rounded hover:bg-slate-50 text-[11px] text-slate-700 flex items-center gap-1.5 truncate"
+                                >
+                                  <TrainFront size={11} className="text-rose-500 shrink-0" />
+                                  <span className="truncate">{s.name || '(無名の駅)'}</span>
                                 </button>
                               ))}
                             </>
@@ -4360,14 +4419,8 @@ export default function CanvasPage() {
                 return (
                   <>
                     <div className="px-3 pt-1 pb-0.5 text-[10px] text-slate-400 truncate">{st.name}</div>
-                    <div className="px-3 py-1 flex gap-1">
-                      {([['todo', '計画中'], ['doing', '建設中'], ['done', '開業']] as const).map(([k, lbl]) => (
-                        <button
-                          key={k}
-                          onClick={() => { dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, status: k } }); setContextMenu(null) }}
-                          className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${st.status === k ? 'bg-rose-500/15 border-rose-400 text-rose-600 font-semibold' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
-                        >{lbl}</button>
-                      ))}
+                    <div className="px-3 py-1">
+                      <StationStatusPills status={st.status} onChange={s => { dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, status: s } }); setContextMenu(null) }} />
                     </div>
                     <button onClick={() => { setEditingStationId(st.id); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> 名前を変更</button>
                     <div className="h-px bg-slate-200 my-1" />
@@ -4522,13 +4575,7 @@ export default function CanvasPage() {
                         </div>
                         <div>
                           <div className={secTitle}>状態</div>
-                          <div className="flex gap-1">
-                            {([['todo', '計画中'], ['doing', '建設中'], ['done', '開業']] as const).map(([k, lbl]) => (
-                              <button key={k} disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, status: k } })}
-                                className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${st.status === k ? 'bg-rose-500/15 border-rose-400 text-rose-600 font-semibold' : 'border-slate-200 text-slate-500 hover:bg-white'}`}
-                              >{lbl}</button>
-                            ))}
-                          </div>
+                          <StationStatusPills status={st.status} disabled={ro} hoverCls="hover:bg-white" onChange={s => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, status: s } })} />
                         </div>
                         <div>
                           <div className={secTitle}>所属路線</div>
