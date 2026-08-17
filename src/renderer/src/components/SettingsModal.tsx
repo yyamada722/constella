@@ -3,6 +3,7 @@
 import { X } from 'lucide-react'
 import { useTheme } from '../theme/ThemeContext'
 import { CODE_THEMES } from '../theme/hljsThemes'
+import { ZoomSpeedSlider } from './ZoomSpeedControl'
 
 interface Props {
   open: boolean
@@ -48,6 +49,13 @@ export function SettingsModal({ open, onClose }: Props) {
                 {m === 'light' ? 'ライト' : 'ダーク'}
               </button>
             ))}
+          </div>
+        </section>
+
+        <section className="mb-5">
+          <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">ズーム / ピンチ感度</label>
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3">
+            <ZoomSpeedSlider />
           </div>
         </section>
 
