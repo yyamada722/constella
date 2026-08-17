@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, FolderPlus } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus } from 'lucide-react'
 import { useApp } from '../store'
-import { CanvasCard, CanvasTab, CanvasBoard, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
+import { CanvasCard, CanvasTab, CanvasBoard, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { generateId } from '../utils'
@@ -21,6 +21,11 @@ import { usePopoverDismiss } from '../components/usePopoverDismiss'
 import { wheelZoomFactor } from '../utils/zoom'
 import ZoomSpeedControl from '../components/ZoomSpeedControl'
 import WaveSurfer from 'wavesurfer.js'
+import { useStore as useMindtrainStore, PALETTE as RAIL_PALETTE } from '../mindtrain/store/useStore'
+import { metroPath, findInsertionIndex } from '../mindtrain/utils/path'
+import { renderStationShape } from '../mindtrain/components/Canvas/shapes'
+import { TrainSprite } from '../mindtrain/components/Canvas/TrainSprite'
+import type { LabelDir } from '../mindtrain/types'
 
 const cardTypes = {
   text: { label: 'テキスト', icon: FileText, bg: 'bg-white', border: 'border-slate-300', text: 'text-slate-500', header: 'bg-slate-50', defaultWidth: 360, defaultHeight: 280 },
@@ -36,6 +41,8 @@ const cardTypes = {
   sequence: { label: '連番再生', icon: Layers, bg: 'bg-indigo-50', border: 'border-indigo-200', text: 'text-indigo-600', header: 'bg-indigo-100/50', defaultWidth: 360, defaultHeight: 360 },
   // スケッチカード — live-mirrors a Sketch (from the スケッチ page), rendered read-only.
   sketch: { label: 'スケッチ', icon: Brush, bg: 'bg-fuchsia-50', border: 'border-fuchsia-200', text: 'text-fuchsia-600', header: 'bg-fuchsia-100/50', defaultWidth: 320, defaultHeight: 260 },
+  // 路線図カード — live-mirrors a 路線図 (mindtrain) plan, rendered read-only.
+  mindtrain: { label: '路線図', icon: TrainFront, bg: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-600', header: 'bg-rose-100/50', defaultWidth: 360, defaultHeight: 260 },
   // タスク下書き — a lightweight planning sticky. Scatter these, wire parent→child
   // with arrows, then タスク化 converts the whole flow into real tasks.
   taskDraft: { label: 'タスク下書き', icon: ListTodo, bg: 'bg-yellow-50', border: 'border-yellow-400 border-dashed', text: 'text-yellow-700', header: 'bg-yellow-100/60', defaultWidth: 210, defaultHeight: 112 },
@@ -321,6 +328,188 @@ const SketchCardBody = memo(function SketchCardBody({ sketch, onUnlink, locked }
   )
 })
 
+/* ── 路線図カード body ── */
+// Read-only mirror of a 路線図 (mindtrain) plan. Editing stays on the 路線図 page;
+// here we redraw its lines/stations/annotations as an auto-fitted <svg>, sourced
+// live from the mindtrain store so edits propagate. The active plan lives in the
+// store's flat fields (its `workspaces` snapshot is only synced on plan switch),
+// so we read flat state when mirroring the active plan.
+const MT_STATION_SIZE = 16
+const MT_TRANSFER_SIZE = 20
+const MT_LABEL_LAYOUT = (dir: LabelDir, corner: number): { dx: number; dy: number; anchor: 'start' | 'middle' | 'end'; baseline: 'auto' | 'middle' | 'hanging' } => {
+  const pad = 6
+  const diag = corner + 1
+  switch (dir) {
+    case 'n': return { dx: 0, dy: -corner - pad, anchor: 'middle', baseline: 'auto' }
+    case 'ne': return { dx: diag, dy: -diag, anchor: 'start', baseline: 'auto' }
+    case 'e': return { dx: corner + pad, dy: 0, anchor: 'start', baseline: 'middle' }
+    case 'se': return { dx: diag, dy: diag, anchor: 'start', baseline: 'hanging' }
+    case 's': return { dx: 0, dy: corner + pad, anchor: 'middle', baseline: 'hanging' }
+    case 'sw': return { dx: -diag, dy: diag, anchor: 'end', baseline: 'hanging' }
+    case 'w': return { dx: -(corner + pad), dy: 0, anchor: 'end', baseline: 'middle' }
+    case 'nw': return { dx: -diag, dy: -diag, anchor: 'end', baseline: 'auto' }
+  }
+}
+
+const MindtrainCardBody = memo(function MindtrainCardBody({ planId, onUnlink, locked }: {
+  planId: string
+  onUnlink: () => void
+  locked: boolean
+}) {
+  const meta = useMindtrainStore(s => s.workspaceMeta[planId])
+  // Active plan → flat fields; any other plan → its stored snapshot.
+  const stations = useMindtrainStore(s => (s.activeWorkspaceId === planId ? s.stations : s.workspaces[planId]?.stations))
+  const lines = useMindtrainStore(s => (s.activeWorkspaceId === planId ? s.lines : s.workspaces[planId]?.lines))
+  const lineOrder = useMindtrainStore(s => (s.activeWorkspaceId === planId ? s.lineOrder : s.workspaces[planId]?.lineOrder))
+  const annotations = useMindtrainStore(s => (s.activeWorkspaceId === planId ? s.annotations : s.workspaces[planId]?.annotations))
+  const annotationOrder = useMindtrainStore(s => (s.activeWorkspaceId === planId ? s.annotationOrder : s.workspaces[planId]?.annotationOrder))
+
+  if (!meta || !stations || !lines) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-4 text-center">
+        <span className="text-[11px] text-slate-500">リンク先が見つかりません</span>
+        {!locked && (
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onUnlink() }}
+            className="text-[10px] px-2 py-0.5 rounded border border-slate-300 text-slate-600 hover:bg-slate-100"
+          >リンクを解除</button>
+        )}
+      </div>
+    )
+  }
+
+  const stationList = Object.values(stations)
+  const annList = (annotationOrder ?? []).map(id => annotations?.[id]).filter((a): a is NonNullable<typeof a> => !!a)
+  // Fit everything into the card: bbox over stations (+ label headroom) and annotations.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const st of stationList) {
+    if (st.x < minX) minX = st.x; if (st.y < minY) minY = st.y
+    if (st.x > maxX) maxX = st.x; if (st.y > maxY) maxY = st.y
+  }
+  for (const a of annList) {
+    const w = a.kind === 'label' ? 0 : a.width
+    const h = a.kind === 'label' ? 0 : a.height
+    if (a.x < minX) minX = a.x; if (a.y < minY) minY = a.y
+    if (a.x + w > maxX) maxX = a.x + w; if (a.y + h > maxY) maxY = a.y + h
+  }
+  const empty = !isFinite(minX)
+  const pad = 44 // room for station labels around the edge
+  const viewBox = empty ? '' : `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col">
+      <div className="px-3 py-1 border-b border-slate-200/60 flex items-center gap-1 text-[10px] text-slate-500 shrink-0">
+        <Link2 size={10} className="text-rose-400 shrink-0" />
+        <span className="truncate flex-1" title={meta.name}>{meta.name || '(無題)'}</span>
+        {!locked && (
+          <button
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => { e.stopPropagation(); onUnlink() }}
+            title="リンクを解除"
+            className="p-0.5 rounded hover:bg-slate-100 text-slate-400 hover:text-rose-500 shrink-0"
+          >
+            <Unlink size={10} />
+          </button>
+        )}
+      </div>
+      {empty ? (
+        <div className="flex-1 min-h-0 flex items-center justify-center text-[11px] text-slate-400">（空の路線図）</div>
+      ) : (
+        <svg
+          viewBox={viewBox}
+          preserveAspectRatio="xMidYMid meet"
+          className="w-full h-full flex-1 min-h-0"
+          style={{ pointerEvents: 'none' }}
+        >
+          {/* Annotations underneath (same stacking as the 路線図 page) */}
+          {annList.map(a => a.kind === 'area' ? (
+            <g key={a.id}>
+              <rect x={a.x} y={a.y} width={a.width} height={a.height} rx={10} fill={a.color} fillOpacity={0.12} stroke={a.color} strokeOpacity={0.5} strokeWidth={1.5} />
+              {a.text && <text x={a.x + 8} y={a.y + 16} fontSize={12} fontWeight={600} fill={a.color}>{a.text}</text>}
+            </g>
+          ) : a.kind === 'image' ? (
+            <rect key={a.id} x={a.x} y={a.y} width={a.width} height={a.height} rx={4} fill="#e2e8f0" fillOpacity={0.6} stroke="#cbd5e1" />
+          ) : null)}
+          {/* Line paths through their stations */}
+          {(lineOrder ?? []).map(lid => {
+            const line = lines[lid]
+            if (!line || line.stationIds.length < 2) return null
+            const pts = line.stationIds.map(sid => stations[sid]).filter(Boolean).map(s => ({ x: s.x, y: s.y }))
+            if (pts.length < 2) return null
+            return <path key={lid} d={metroPath(pts)} fill="none" stroke={line.color} strokeWidth={9} strokeLinecap="round" strokeLinejoin="round" />
+          })}
+          {/* Stations + name labels */}
+          {stationList.map(st => {
+            const isTransfer = st.lineIds.length >= 2
+            const strokeColor = st.color ?? (isTransfer ? '#1a1d22' : lines[st.lineIds[0]]?.color ?? '#888')
+            const size = isTransfer ? MT_TRANSFER_SIZE : MT_STATION_SIZE
+            const planned = st.status === 'todo'
+            const layout = MT_LABEL_LAYOUT(st.labelDir ?? 'n', size / 2 + 2)
+            return (
+              <g key={st.id} opacity={planned ? 0.55 : 1}>
+                <g strokeDasharray={planned ? '4 3' : undefined}>
+                  {renderStationShape({ shape: st.shape ?? 'rounded-square', cx: st.x, cy: st.y, size, fill: '#ffffff', stroke: strokeColor, strokeWidth: 4 })}
+                </g>
+                <text
+                  x={st.x + layout.dx} y={st.y + layout.dy}
+                  textAnchor={layout.anchor} dominantBaseline={layout.baseline}
+                  fontSize={12.5} fontWeight={planned ? 500 : 700} fill="#1f2937"
+                  style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3, strokeLinejoin: 'round' }}
+                >{st.name}</text>
+              </g>
+            )
+          })}
+          {/* Free-standing text labels on top */}
+          {annList.map(a => a.kind === 'label' ? (
+            <text key={a.id} x={a.x} y={a.y} fontSize={a.fontSize ?? 14} fontWeight={a.fontWeight ?? 600} fill={a.color ?? '#334155'}>{a.text}</text>
+          ) : null)}
+        </svg>
+      )}
+    </div>
+  )
+})
+
+// Picker list for 'mindtrain' cards — the current master project's 路線図 plans.
+// Own component so only an open picker subscribes to the mindtrain store.
+const MindtrainPlanPickerList = memo(function MindtrainPlanPickerList({ projectId, search, onPick }: {
+  projectId: string
+  search: string
+  onPick: (planId: string, name: string) => void
+}) {
+  const workspaceOrder = useMindtrainStore(s => s.workspaceOrder)
+  const workspaceMeta = useMindtrainStore(s => s.workspaceMeta)
+  const workspaces = useMindtrainStore(s => s.workspaces)
+  const activeWorkspaceId = useMindtrainStore(s => s.activeWorkspaceId)
+  const activeStations = useMindtrainStore(s => s.stations)
+  const plans = workspaceOrder
+    .filter(id => workspaceMeta[id]?.projectId === projectId)
+    .filter(id => !search || (workspaceMeta[id].name || '').toLowerCase().includes(search.toLowerCase()))
+  if (plans.length === 0) {
+    return <div className="px-1.5 py-2 text-[10px] text-slate-400 text-center">候補がありません</div>
+  }
+  return (
+    <>
+      {plans.map(id => {
+        const meta = workspaceMeta[id]
+        const stationCount = Object.keys(id === activeWorkspaceId ? activeStations : workspaces[id]?.stations ?? {}).length
+        return (
+          <button
+            key={id}
+            className="w-full text-left px-1.5 py-1 hover:bg-slate-50 rounded text-xs text-slate-700 truncate flex items-center gap-1"
+            onClick={() => onPick(id, meta.name)}
+            title={meta.name}
+          >
+            <TrainFront size={11} className="text-rose-400 shrink-0" />
+            <span className="truncate">{meta.name || '(無題)'}</span>
+            <span className="ml-auto text-[9px] text-slate-400 shrink-0">{stationCount}駅</span>
+          </button>
+        )
+      })}
+    </>
+  )
+})
+
 // Per-card color overrides (key stored on card.color). Two intensities per hue (淡 / 濃).
 const COLOR_THEMES: Record<string, { bg: string; border: string; text: string; header: string; dot: string }> = {
   slate: { bg: 'bg-slate-50', border: 'border-slate-300', text: 'text-slate-600', header: 'bg-slate-100/60', dot: '#94a3b8' },
@@ -553,6 +742,8 @@ interface DragState {
   // Labels moved alongside the drag: the selected labels (kind 'card') or the
   // labels contained in a dragged group (kind 'group-move').
   labels?: CanvasLabel[]
+  // 駅 moved alongside the drag (kind 'card'): mixed marquee selections move as one.
+  stations?: CanvasStation[]
   label?: CanvasLabel
   startMouseX: number
   startMouseY: number
@@ -588,7 +779,7 @@ export default function CanvasPage() {
   // Canvas in-tab search — click toolbar magnifier → popover with input + result rows → jump.
   const [canvasSearch, setCanvasSearch] = useState('')
   const [canvasSearchOpen, setCanvasSearchOpen] = useState(false)
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; kind: 'card' | 'canvas' | 'label' | 'arrow' | 'group'; canvasX: number; canvasY: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; kind: 'card' | 'canvas' | 'label' | 'arrow' | 'group' | 'station'; canvasX: number; canvasY: number } | null>(null)
   // Note/Task link picker + detach popovers (canvas-level so only one is open at a time).
   const [pickerOpenCardId, setPickerOpenCardId] = useState<string | null>(null)
   const [detachOpenCardId, setDetachOpenCardId] = useState<string | null>(null)
@@ -625,13 +816,17 @@ export default function CanvasPage() {
   // Canvas categories (tabs) are scoped directly by the global active master
   // project — there is no canvas-local project layer anymore.
   const activeProjectId = state.activeMasterProjectId
+  // 路線図プランのメタ（mindtrain store）— 参照カードの「路線図で開く」判定に使う。
+  const mtWorkspaceMeta = useMindtrainStore(s => s.workspaceMeta)
   const [activeTabId, setActiveTabId] = useState<string>(state.canvasTabs[0]?.id ?? '')
   const [editingTabId, setEditingTabId] = useState<string | null>(null)
   // Where the tab-name edit input lives — sidebar row or the title bar. Both
   // render the same tab; without this, TWO autoFocus inputs mount at once and
   // the loser's blur instantly cancels the edit.
   const [editingTabInTitle, setEditingTabInTitle] = useState(false)
-  const [tool, setTool] = useState<'select' | 'arrow' | 'group' | 'pen' | 'eraser' | 'label' | 'taskdraft'>('select')
+  const [tool, setTool] = useState<'select' | 'arrow' | 'group' | 'pen' | 'eraser' | 'label' | 'taskdraft' | 'rail'>('select')
+  const toolRef = useRef(tool)
+  toolRef.current = tool
   const [selectedArrowId, setSelectedArrowId] = useState<string | null>(null)
   const [editingArrowId, setEditingArrowId] = useState<string | null>(null)
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
@@ -748,6 +943,47 @@ export default function CanvasPage() {
   )
   const tabLabelsRef = useRef(tabLabels)
   tabLabelsRef.current = tabLabels
+
+  // ── 線路 (canvas-native 路線図) ──
+  const tabRails = useMemo(
+    () => state.canvasRails.filter(r => r.tabId === activeTabId),
+    [state.canvasRails, activeTabId]
+  )
+  const tabRailsRef = useRef(tabRails)
+  tabRailsRef.current = tabRails
+  const tabStations = useMemo(
+    () => state.canvasStations.filter(s => s.tabId === activeTabId),
+    [state.canvasStations, activeTabId]
+  )
+  const tabStationsRef = useRef(tabStations)
+  tabStationsRef.current = tabStations
+  const stationById = useMemo(() => new Map(tabStations.map(s => [s.id, s] as const)), [tabStations])
+  // station id → rails threading through it (2+ = 乗換駅, rendered bigger + dark)
+  const railsByStation = useMemo(() => {
+    const m = new Map<string, CanvasRail[]>()
+    for (const r of tabRails) for (const id of r.stationIds) { const a = m.get(id); if (a) a.push(r); else m.set(id, [r]) }
+    return m
+  }, [tabRails])
+  const [activeRailId, setActiveRailId] = useState<string | null>(null)
+  const [selectedStationIds, setSelectedStationIds] = useState<string[]>([])
+  const selectedStationIdsRef = useRef(selectedStationIds)
+  selectedStationIdsRef.current = selectedStationIds
+  const [editingStationId, setEditingStationId] = useState<string | null>(null)
+  const activeRailIdRef = useRef(activeRailId)
+  activeRailIdRef.current = activeRailId
+  useEffect(() => { setActiveRailId(null); setSelectedStationIds([]); setEditingStationId(null) }, [activeTabId])
+  // 線路ツール中はグリッドスナップを自動で有効化（路線図ページのグリッド感）。
+  // 入る前の設定を覚えておき、別のツールへ戻ったら元に戻す。
+  const snapBeforeRailRef = useRef<boolean | null>(null)
+  useEffect(() => {
+    if (tool === 'rail') {
+      snapBeforeRailRef.current = snapRef.current
+      setSnapToGrid(true)
+    } else if (snapBeforeRailRef.current !== null) {
+      setSnapToGrid(snapBeforeRailRef.current)
+      snapBeforeRailRef.current = null
+    }
+  }, [tool])
   // The single-label toolbar (size/color) only applies when exactly one label is selected.
   const selectedLabel = selectedLabelIds.length === 1 ? (tabLabels.find(l => l.id === selectedLabelIds[0]) ?? null) : null
   const selectedArrow = tabArrows.find(a => a.id === selectedArrowId) ?? null
@@ -780,6 +1016,14 @@ export default function CanvasPage() {
     () => state.canvasBoards.filter(b => b.projectId === activeProjectId),
     [state.canvasBoards, activeProjectId]
   )
+  // 右側プロパティパネル — 選択中の要素（駅/路線/カード/ラベル/矢印）の詳細を編集。
+  // 今後の編集UIはここに集約していく。
+  const [propsCollapsed, setPropsCollapsed] = useState(() => {
+    try { return localStorage.getItem('constella.canvasProps.collapsed') === '1' } catch { return false }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.canvasProps.collapsed', propsCollapsed ? '1' : '0') } catch { /* ignore */ }
+  }, [propsCollapsed])
   const [panelCollapsed, setPanelCollapsed] = useState(() => {
     try { return localStorage.getItem('constella.canvasBoards.collapsed') === '1' } catch { return false }
   })
@@ -1037,8 +1281,41 @@ export default function CanvasPage() {
     setSelectedGroupId(null)
     setSelectedLabelIds([])
     setEditingLabelId(null)
+    setSelectedStationIds([])
+    setEditingStationId(null)
     setShowAddMenu(false)
     setConvertOpen(false)
+    if (!canvasLocked && tool === 'rail') {
+      // Scatter mode like taskdraft: each click drops a 駅 onto the active rail and
+      // the tool stays armed. Station nodes catch their own mousedown (select /
+      // drag / thread — see handleStationDown), so this only fires on empty空白.
+      // Near-miss fallback: a click just outside a node still threads it.
+      const rail = tabRailsRef.current.find(r => r.id === activeRailIdRef.current)
+      if (!rail) return
+      const raw = toCanvas(e.clientX, e.clientY)
+      // 配置座標はスナップ、既存駅のヒット判定は生のクリック位置で行う。
+      const p = snapRef.current ? { x: Math.round(raw.x / 20) * 20, y: Math.round(raw.y / 20) * 20 } : raw
+      const hit = tabStationsRef.current.find(s => Math.hypot(s.x - raw.x, s.y - raw.y) <= 18)
+      if (hit) {
+        dispatch({ type: 'APPEND_STATION_TO_RAIL', payload: { railId: rail.id, stationId: hit.id } })
+        setSelectedStationIds([hit.id])
+      } else {
+        // クリックがアクティブ路線の線分上なら駅を「間に挿入」（路線図ページと同じ）
+        const linePts = rail.stationIds
+          .map(id => tabStationsRef.current.find(s => s.id === id))
+          .filter((s): s is CanvasStation => !!s)
+          .map(s => ({ x: s.x, y: s.y }))
+        const insertIdx = linePts.length >= 2 ? findInsertionIndex(linePts, raw, 12) : null
+        const station: CanvasStation = {
+          id: generateId(), tabId: activeTabId, name: `駅${tabStationsRef.current.length + 1}`,
+          x: p.x, y: p.y, status: 'todo', createdAt: new Date().toISOString(),
+        }
+        dispatch({ type: 'ADD_CANVAS_STATION', payload: { station, railId: rail.id, ...(insertIdx !== null ? { index: insertIdx } : {}) } })
+        setSelectedStationIds([station.id])
+      }
+      e.preventDefault()
+      return
+    }
     if (!canvasLocked && tool === 'label') {
       const p = toCanvas(e.clientX, e.clientY)
       const label: CanvasLabel = { id: generateId(), tabId: activeTabId, text: '', x: p.x, y: p.y, fontSize: 20, color: '#1e293b', createdAt: new Date().toISOString() }
@@ -1095,10 +1372,108 @@ export default function CanvasPage() {
     e.preventDefault()
   }, [tool, toCanvas, dispatch, activeTabId, canvasLocked, nearestPort])
 
+  // ── 線路 helpers ──
+  function addRail(): string {
+    const id = generateId()
+    const rail: CanvasRail = {
+      id, tabId: activeTabId,
+      name: `路線${tabRails.length + 1}`,
+      color: RAIL_PALETTE.find(c => !tabRails.some(r => r.color === c)) ?? RAIL_PALETTE[tabRails.length % RAIL_PALETTE.length],
+      stationIds: [], createdAt: new Date().toISOString(),
+    }
+    dispatch({ type: 'ADD_CANVAS_RAIL', payload: rail })
+    setActiveRailId(id)
+    return id
+  }
+
+  function enterRailTool() {
+    // The tool always draws onto the ACTIVE rail — make sure one exists. Other
+    // selections clear so the property panel shows the rail being drawn. Rail
+    // controls live ONLY in the property panel, so make sure it is visible.
+    if (tabRails.length === 0) addRail()
+    else if (!activeRailId || !tabRails.some(r => r.id === activeRailId)) setActiveRailId(tabRails[0].id)
+    setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setSelectedStationIds([])
+    setPropsCollapsed(false)
+    setTool('rail')
+  }
+
+  function requestDeleteRail(rail: CanvasRail) {
+    setConfirmDelete({
+      message: `路線「${rail.name}」を削除します（他の路線が通らない駅も消えます）。元に戻すには Ctrl+Z。`,
+      run: () => {
+        dispatch({ type: 'DELETE_CANVAS_RAIL', payload: rail.id })
+        setActiveRailId(prev => prev === rail.id ? (tabRailsRef.current.find(r => r.id !== rail.id)?.id ?? null) : prev)
+      },
+    })
+  }
+
+  // 路線図ページと同じ操作系: どのモードでも 駅mousedown=選択+ドラッグ開始。
+  // Shift+クリック=選択トグル。複数選択のメンバーを掴んだときは選択全体
+  // （カード/ラベル/駅）をまとめて動かす — カードと同じ dragRef 機構に委譲。
+  // railツール中に「動かさずクリック」したときだけアクティブ路線へ接続（延伸/乗換）。
+  const handleStationDown = useCallback((e: React.MouseEvent, st: CanvasStation) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    if (e.shiftKey) {
+      setSelectedStationIds(prev => prev.includes(st.id) ? prev.filter(x => x !== st.id) : [...prev, st.id])
+      return
+    }
+    const selStations = selectedStationIdsRef.current
+    const inMulti = selStations.includes(st.id) && (selStations.length + selectedIds.length + selectedLabelIds.length > 1)
+    if (!inMulti) {
+      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setEditingLabelId(null)
+      setSelectedStationIds([st.id])
+    }
+    if (canvasLockedRef.current) return
+    if (inMulti) {
+      // Group move via the shared drag machinery (same as grabbing a selected card).
+      const cards = tabCards.filter(c => selectedIds.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
+      const labels = tabLabels.filter(l => selectedLabelIds.includes(l.id))
+      const stations = tabStations.filter(s => selStations.includes(s.id))
+      dragRef.current = { kind: 'card', cards, labels, stations, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+      e.preventDefault()
+      return
+    }
+    const railMode = toolRef.current === 'rail'
+    // Self-contained drag (window listeners) — dispatches coalesce into one undo step.
+    const start = { mx: e.clientX, my: e.clientY, x: st.x, y: st.y }
+    let moved = false
+    const onMove = (ev: MouseEvent) => {
+      const dxs = ev.clientX - start.mx, dys = ev.clientY - start.my
+      if (!moved && Math.hypot(dxs, dys) <= 4) return // click vs drag threshold (screen px)
+      moved = true
+      const z = viewportRef.current.zoom
+      let nx = start.x + dxs / z
+      let ny = start.y + dys / z
+      if (snapRef.current) { nx = Math.round(nx / 20) * 20; ny = Math.round(ny / 20) * 20 }
+      dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, x: nx, y: ny } })
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      if (!moved && railMode) {
+        const rail = tabRailsRef.current.find(r => r.id === activeRailIdRef.current)
+        if (rail && !rail.stationIds.includes(st.id)) {
+          dispatch({ type: 'APPEND_STATION_TO_RAIL', payload: { railId: rail.id, stationId: st.id } })
+        }
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    e.preventDefault()
+  }, [dispatch, selectedIds, selectedLabelIds, tabCards, tabLabels, tabStations])
+
+  const handleStationContextMenu = useCallback((e: React.MouseEvent, st: CanvasStation) => {
+    if (canvasLockedRef.current) return
+    e.preventDefault(); e.stopPropagation()
+    setSelectedStationIds([st.id]); setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 220), kind: 'station', canvasX: 0, canvasY: 0 })
+  }, [])
+
   const selectCard = useCallback((id: string, additive: boolean) => {
     setSelectedArrowId(null)
     setSelectedGroupId(null)
-    if (!additive) setSelectedLabelIds([]) // keep labels when shift-extending a mixed selection
+    if (!additive) { setSelectedLabelIds([]); setSelectedStationIds([]) } // keep labels/駅 when shift-extending a mixed selection
     if (additive) setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
     else setSelectedIds(prev => (prev.length > 1 && prev.includes(id)) ? prev : [id])
   }, [])
@@ -1108,18 +1483,20 @@ export default function CanvasPage() {
     e.stopPropagation()
     setSelectedArrowId(null)
     setSelectedGroupId(null)
-    // Keep the multi-selection (cards + labels) when grabbing one of its members.
-    const inMulti = selectedIds.includes(card.id) && (selectedIds.length > 1 || selectedLabelIds.length > 0)
+    // Keep the multi-selection (cards + labels + 駅) when grabbing one of its members.
+    const inMulti = selectedIds.includes(card.id) && (selectedIds.length > 1 || selectedLabelIds.length > 0 || selectedStationIds.length > 0)
     const movingCards = inMulti ? selectedIds : [card.id]
     const movingLabels = inMulti ? selectedLabelIds : []
-    if (!inMulti) { setSelectedIds([card.id]); setSelectedLabelIds([]) }
+    const movingStations = inMulti ? selectedStationIds : []
+    if (!inMulti) { setSelectedIds([card.id]); setSelectedLabelIds([]); setSelectedStationIds([]) }
     const cards = canvasLockedRef.current ? [] : tabCards.filter(c => movingCards.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
     const labels = canvasLockedRef.current ? [] : tabLabels.filter(l => movingLabels.includes(l.id))
-    dragRef.current = { kind: 'card', cards, labels, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+    const stations = canvasLockedRef.current ? [] : tabStations.filter(s => movingStations.includes(s.id))
+    dragRef.current = { kind: 'card', cards, labels, stations, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
     // Don't enter "dragging" (which mounts the full-screen overlay) until the pointer
     // actually moves — otherwise the overlay intercepts the mouseup between a header
     // double-click's two clicks and title editing never opens (handled in handleMouseMove).
-  }, [selectedIds, selectedLabelIds, tabCards, tabLabels])
+  }, [selectedIds, selectedLabelIds, selectedStationIds, tabCards, tabLabels, tabStations])
 
   const handleResizeDown = useCallback((e: React.MouseEvent, card: CanvasCard) => {
     if (e.button !== 0) return
@@ -1215,6 +1592,7 @@ export default function CanvasPage() {
       setSelectRect({ x, y, w, h })
       setSelectedIds(tabCards.filter(c => c.x < x + w && c.x + c.width > x && c.y < y + h && c.y + c.height > y).map(c => c.id))
       setSelectedLabelIds(tabLabels.filter(l => { const b = labelBox(l); return b.x < x + w && b.x + b.w > x && b.y < y + h && b.y + b.h > y }).map(l => l.id))
+      setSelectedStationIds(tabStations.filter(s => s.x >= x && s.x <= x + w && s.y >= y && s.y <= y + h).map(s => s.id))
       return
     }
     const d = dragRef.current
@@ -1237,6 +1615,7 @@ export default function CanvasPage() {
     } else if (d.kind === 'card') {
       d.cards?.forEach(c => dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: snap(c.x + dx / zoom), y: snap(c.y + dy / zoom) } }))
       d.labels?.forEach(l => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: snap(l.x + dx / zoom), y: snap(l.y + dy / zoom) } }))
+      d.stations?.forEach(s => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...s, x: snap(s.x + dx / zoom), y: snap(s.y + dy / zoom) } }))
     } else if (d.kind === 'resize' && d.cardId) {
       // Shapes may shrink far below the normal card minimum (small circles, dots).
       const isShape = tabCardsRef.current.find(c => c.id === d.cardId)?.type === 'shape'
@@ -1270,7 +1649,7 @@ export default function CanvasPage() {
     } else if (d.kind === 'label-move' && d.label) {
       dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...d.label, x: snap(d.startX + dx / zoom), y: snap(d.startY + dy / zoom) } })
     }
-  }, [dispatch, toCanvas, tabCards, tabLabels, applyBrush, nearestPort])
+  }, [dispatch, toCanvas, tabCards, tabLabels, tabStations, applyBrush, nearestPort])
 
   // タスク端子 → 実タスク親子化: dragging the 端子 between two LIVE task-ref
   // cards writes the real parent-child relation (from = 親, to = 子). Invoked
@@ -1489,6 +1868,7 @@ export default function CanvasPage() {
     setSelectedGroupId(group.id)
     setSelectedIds([])
     setSelectedArrowId(null)
+    setSelectedStationIds([])
     if (canvasLockedRef.current) return
     const contained = tabCards.filter(c => {
       const cx = c.x + c.width / 2, cy = c.y + c.height / 2
@@ -1524,6 +1904,7 @@ export default function CanvasPage() {
     e.stopPropagation()
     setSelectedArrowId(null)
     setSelectedGroupId(null)
+    setSelectedStationIds([])
     if (e.shiftKey) {
       // toggle this label in/out of the multi-selection (no drag)
       setSelectedLabelIds(prev => prev.includes(label.id) ? prev.filter(x => x !== label.id) : [...prev, label.id])
@@ -1779,18 +2160,20 @@ export default function CanvasPage() {
   // Open the delete-confirmation modal for whatever is currently selected
   // (cards/labels, or a single arrow or group). Every delete path funnels here.
   const requestDeleteSelection = useCallback(() => {
-    const nCards = selectedIds.length, nLabels = selectedLabelIds.length
-    if (nCards + nLabels > 0) {
+    const nCards = selectedIds.length, nLabels = selectedLabelIds.length, nStations = selectedStationIds.length
+    if (nCards + nLabels + nStations > 0) {
       const parts: string[] = []
       if (nCards) parts.push(`カード${nCards}枚`)
       if (nLabels) parts.push(`ラベル${nLabels}個`)
-      const ids = [...selectedIds], lids = [...selectedLabelIds]
+      if (nStations) parts.push(`駅${nStations}個`)
+      const ids = [...selectedIds], lids = [...selectedLabelIds], sids = [...selectedStationIds]
       setConfirmDelete({
-        message: `${parts.join('・')}を削除します。元に戻すには Ctrl+Z。`,
+        message: `${parts.join('・')}を削除します。${nStations ? '駅は通っている路線からも外れます。' : ''}元に戻すには Ctrl+Z。`,
         run: () => {
           ids.forEach(id => dispatch({ type: 'DELETE_CANVAS_CARD', payload: id }))
           lids.forEach(id => dispatch({ type: 'DELETE_CANVAS_LABEL', payload: id }))
-          setSelectedIds([]); setSelectedLabelIds([])
+          sids.forEach(id => dispatch({ type: 'DELETE_CANVAS_STATION', payload: id }))
+          setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([])
         },
       })
     } else if (selectedArrowId) {
@@ -1800,7 +2183,7 @@ export default function CanvasPage() {
       const id = selectedGroupId
       setConfirmDelete({ message: 'グループ枠を削除します（中のカードは残ります）。元に戻すには Ctrl+Z。', run: () => { dispatch({ type: 'DELETE_CANVAS_GROUP', payload: id }); setSelectedGroupId(null) } })
     }
-  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupId, dispatch])
+  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupId, selectedStationIds, dispatch])
 
   // Keyboard: Delete removes the selection, Ctrl+D duplicates, Escape exits the active tool
   useEffect(() => {
@@ -1837,7 +2220,7 @@ export default function CanvasPage() {
         }
         return
       }
-      if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); return }
+      if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedStationIds(tabStationsRef.current.map(s => s.id)); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); return }
       if (mod && (e.key === 'c' || e.key === 'C')) {
         // 本文テキストを範囲選択中はネイティブのテキストコピーを優先する
         // （ここで preventDefault するとカード内テキストが一切コピーできない）。
@@ -1847,7 +2230,7 @@ export default function CanvasPage() {
       }
       // Ctrl+V is handled by the native 'paste' event listener (so clipboard image
       // data is available); preventing it here would suppress that event.
-      if (!locked && (selectedIds.length > 0 || selectedLabelIds.length > 0) && e.key.startsWith('Arrow')) {
+      if (!locked && (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedStationIds.length > 0) && e.key.startsWith('Arrow')) {
         e.preventDefault()
         const base = snapRef.current ? 20 : 1
         const step = e.shiftKey ? base * 10 : base
@@ -1857,11 +2240,13 @@ export default function CanvasPage() {
         tabCardsRef.current.forEach(c => { if (sel.has(c.id) && !c.locked) dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: c.x + nx, y: c.y + ny } }) })
         const lsel = new Set(selectedLabelIds)
         tabLabelsRef.current.forEach(l => { if (lsel.has(l.id)) dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: l.x + nx, y: l.y + ny } }) })
+        const ssel = new Set(selectedStationIds)
+        tabStationsRef.current.forEach(s => { if (ssel.has(s.id)) dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...s, x: s.x + nx, y: s.y + ny } }) })
         return
       }
-      if (e.key === 'Escape') { setTool('select'); setSelectedIds([]); setSelectedArrowId(null); setEditingArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setEditingLabelId(null); setShowAddMenu(false); setContextMenu(null); setConvertOpen(false); setPickerOpenCardId(null); setDetachOpenCardId(null); setPickerChecked([]) }
+      if (e.key === 'Escape') { setTool('select'); setSelectedIds([]); setSelectedArrowId(null); setEditingArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setEditingLabelId(null); setSelectedStationIds([]); setEditingStationId(null); setShowAddMenu(false); setContextMenu(null); setConvertOpen(false); setPickerOpenCardId(null); setDetachOpenCardId(null); setPickerChecked([]) }
       if (!locked && (e.key === 'Delete' || e.key === 'Backspace')) {
-        if (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedArrowId || selectedGroupId) {
+        if (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedArrowId || selectedGroupId || selectedStationIds.length > 0) {
           e.preventDefault()
           requestDeleteSelection() // every delete path goes through the confirm modal
         }
@@ -1931,7 +2316,7 @@ export default function CanvasPage() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupId, dispatch, undo, redo, duplicateSelection, copyCards, pasteCards, groupSelection, confirmDelete, requestDeleteSelection])
+  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupId, selectedStationIds, dispatch, undo, redo, duplicateSelection, copyCards, pasteCards, groupSelection, confirmDelete, requestDeleteSelection])
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
     if (canvasLockedRef.current) return
@@ -2298,14 +2683,15 @@ export default function CanvasPage() {
 
   function fitToScreen() {
     const cards = tabCards
-    if (!cards.length) { setViewport({ x: 0, y: 0, zoom: 1 }); return }
+    if (!cards.length && !tabStations.length) { setViewport({ x: 0, y: 0, zoom: 1 }); return }
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
     const pad = 60
-    const minX = Math.min(...cards.map(c => c.x)) - pad
-    const minY = Math.min(...cards.map(c => c.y)) - pad
-    const maxX = Math.max(...cards.map(c => c.x + c.width)) + pad
-    const maxY = Math.max(...cards.map(c => c.y + c.height)) + pad
+    // 駅ノードも収める（カードの無い路線図専用タブでも全体表示が効くように）
+    const minX = Math.min(...cards.map(c => c.x), ...tabStations.map(s => s.x - 30)) - pad
+    const minY = Math.min(...cards.map(c => c.y), ...tabStations.map(s => s.y - 30)) - pad
+    const maxX = Math.max(...cards.map(c => c.x + c.width), ...tabStations.map(s => s.x + 30)) + pad
+    const maxY = Math.max(...cards.map(c => c.y + c.height), ...tabStations.map(s => s.y + 30)) + pad
     const w = maxX - minX
     const h = maxY - minY
     const zoom = Math.min(rect.width / w, rect.height / h, 2)
@@ -2392,6 +2778,7 @@ export default function CanvasPage() {
     tabGroups.forEach(g => acc(g.x, g.y, g.width, g.height))
     tabLabels.forEach(l => { const b = labelBox(l); acc(b.x, b.y, b.w, b.h) })
     tabStrokes.forEach(s => { for (let i = 0; i + 1 < s.points.length; i += 2) acc(s.points[i], s.points[i + 1]) })
+    tabStations.forEach(s => acc(s.x - 30, s.y - 30, 60, 60))
     tabArrows.forEach(a => {
       const ends = resolveArrowEnds(a, cardsById)
       acc(ends.x1, ends.y1)
@@ -2559,7 +2946,7 @@ export default function CanvasPage() {
       setExportingShare(false)
       setShareProgress(null)
     }
-  }, [activeTabId, exportingShare, tabCards, tabGroups, tabLabels, tabStrokes, tabArrows, cardsById, state.canvasTabs, shareEmbedLimitMB, shareTranscode])
+  }, [activeTabId, exportingShare, tabCards, tabGroups, tabLabels, tabStrokes, tabStations, tabArrows, cardsById, state.canvasTabs, shareEmbedLimitMB, shareTranscode])
 
   // Sidebar row for one canvas tab (小カテゴリー). Draggable onto board headers.
   const renderTabRow = (tab: CanvasTab) => (
@@ -2839,8 +3226,17 @@ export default function CanvasPage() {
               >
                 <ListTodo size={16} />
               </button>
+              <button
+                onClick={() => { if (tool === 'rail') setTool('select'); else enterRailTool() }}
+                title="線路（路線図を描く）— クリックで駅を連続配置 / 既存の駅クリックで延伸・乗換 / Escで終了"
+                className={`p-1.5 rounded transition-colors ${tool === 'rail' ? 'bg-rose-500/15 text-rose-600' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}
+              >
+                <TrainFront size={16} />
+              </button>
             </div>
           )}
+          {/* 路線の切替・色・駅リストなどの操作は右のプロパティパネルに集約
+              （railツール中はパネルが路線エディタを表示する）。 */}
           {viewMode === 'canvas' && !canvasLocked && draftCards.length > 0 && (
             <div className="relative ml-1 pl-2 border-l border-slate-200" ref={convertRef}>
               <button
@@ -3208,6 +3604,8 @@ export default function CanvasPage() {
                   groups: tabGroups,
                   strokes: tabStrokes,
                   labels: tabLabels,
+                  rails: tabRails,
+                  stations: tabStations,
                 }
                 const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
                 const url = URL.createObjectURL(blob)
@@ -3308,7 +3706,7 @@ export default function CanvasPage() {
           data-canvas-bg="1"
           className="flex-1 overflow-hidden relative"
           style={{
-            cursor: spacePan ? (isDragging ? 'grabbing' : 'grab') : tool === 'label' ? 'text' : (tool === 'arrow' || tool === 'group' || tool === 'pen' || tool === 'eraser') ? 'crosshair' : 'default',
+            cursor: spacePan ? (isDragging ? 'grabbing' : 'grab') : tool === 'label' ? 'text' : (tool === 'arrow' || tool === 'group' || tool === 'pen' || tool === 'eraser' || tool === 'rail') ? 'crosshair' : 'default',
             // Dot grid aligned to the 20px snap grid; dots sit exactly on snap intersections.
             // Hidden when zoomed out enough that cells get too dense to read.
             ...(20 * viewport.zoom >= 8 ? {
@@ -3365,7 +3763,7 @@ export default function CanvasPage() {
             // card or its <webview> — receives the mouse. For 'arrow' this is what
             // lets the user drag card→card directly: the mousedown lands on the
             // canvas bg INSIDE the card's bbox, so cardAtPoint attaches both ends.
-            className={`canvas-ink${!canvasLocked && (tool === 'pen' || tool === 'eraser' || tool === 'arrow') ? ' canvas-drawing' : ''}`}
+            className={`canvas-ink${!canvasLocked && (tool === 'pen' || tool === 'eraser' || tool === 'arrow' || tool === 'rail') ? ' canvas-drawing' : ''}`}
             style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`, transformOrigin: '0 0', position: 'absolute', top: 0, left: 0 }}
           >
             {/* Group areas (backmost) */}
@@ -3402,6 +3800,113 @@ export default function CanvasPage() {
               />
             )}
 
+            {/* 線路レイヤー — canvas-native route map (behind cards, like arrows).
+                Lines thread through stations via the same metro elbow path as the
+                路線図 page; stations are draggable nodes (select tool). */}
+            {(tabRails.length > 0 || tabStations.length > 0) && (
+              <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
+                {tabRails.map(rail => {
+                  const pts = rail.stationIds.map(id => stationById.get(id)).filter((s): s is CanvasStation => !!s)
+                  if (pts.length < 2) return null
+                  // While drawing, the non-active rails dim so the target line reads.
+                  const dim = tool === 'rail' && rail.id !== activeRailId
+                  return <path key={rail.id} d={metroPath(pts)} fill="none" stroke={rail.color} strokeWidth={9} strokeLinecap="round" strokeLinejoin="round" opacity={dim ? 0.3 : 1} />
+                })}
+                {tabStations.map(st => {
+                  const rails = railsByStation.get(st.id) ?? []
+                  const isTransfer = rails.length >= 2
+                  const strokeColor = isTransfer ? '#1a1d22' : rails[0]?.color ?? '#94a3b8'
+                  const size = isTransfer ? 20 : 16
+                  const planned = st.status === 'todo'
+                  const selected = selectedStationIds.includes(st.id)
+                  return (
+                    <g
+                      key={st.id}
+                      // railツール中はカード層が canvas-drawing でクリックスルーになるが、
+                      // 駅だけは .rail-interactive の CSS 例外で掴める（選択/ドラッグ/接続）。
+                      className={tool === 'rail' ? 'rail-interactive' : undefined}
+                      style={{ pointerEvents: tool === 'select' && !canvasLocked ? 'auto' : 'none', cursor: 'grab' }}
+                      onMouseDown={e => handleStationDown(e, st)}
+                      onDoubleClick={e => { e.stopPropagation(); setEditingStationId(st.id) }}
+                      onContextMenu={e => handleStationContextMenu(e, st)}
+                    >
+                      {/* generous invisible hit area so small nodes are easy to grab */}
+                      <rect x={st.x - 16} y={st.y - 16} width={32} height={32} fill="transparent" />
+                      {selected && (
+                        <g strokeDasharray="3 3" opacity={0.85}>
+                          {renderStationShape({ shape: 'rounded-square', cx: st.x, cy: st.y, size: size + 12, fill: 'none', stroke: '#6366f1', strokeWidth: 1.5 })}
+                        </g>
+                      )}
+                      <g opacity={planned ? 0.55 : 1} strokeDasharray={planned ? '4 3' : undefined}>
+                        {renderStationShape({ shape: 'rounded-square', cx: st.x, cy: st.y, size, fill: 'var(--shape-fill)', stroke: strokeColor, strokeWidth: 4 })}
+                      </g>
+                      <text
+                        x={st.x} y={st.y - size / 2 - 8}
+                        textAnchor="middle"
+                        fontSize={12.5} fontWeight={planned ? 500 : 700} fill="#1e293b"
+                        opacity={planned ? 0.65 : 1}
+                        style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3, strokeLinejoin: 'round', userSelect: 'none' }}
+                      >{st.name}</text>
+                    </g>
+                  )
+                })}
+                {/* 自動電車 — 路線図ページと同じ: 連続して「開業」している区間に
+                    名前なしの電車を走らせる。開業マークを付けるだけで走り出す。 */}
+                {tabRails.map(rail => {
+                  const sList = rail.stationIds.map(id => stationById.get(id)).filter((s): s is CanvasStation => !!s)
+                  if (sList.length < 2) return null
+                  const runs: { from: number; to: number }[] = []
+                  let curStart = -1
+                  for (let i = 0; i < sList.length; i++) {
+                    if (sList[i].status === 'done') {
+                      if (curStart === -1) curStart = i
+                    } else {
+                      if (curStart !== -1 && i - curStart >= 2) runs.push({ from: curStart, to: i - 1 })
+                      curStart = -1
+                    }
+                  }
+                  if (curStart !== -1 && sList.length - curStart >= 2) runs.push({ from: curStart, to: sList.length - 1 })
+                  if (runs.length === 0) return null
+                  const dim = tool === 'rail' && rail.id !== activeRailId
+                  return (
+                    <g key={`trains-${rail.id}`} opacity={dim ? 0.3 : 1} pointerEvents="none">
+                      {runs.map(run => {
+                        const segStations = sList.slice(run.from, run.to + 1)
+                        const segD = metroPath(segStations.map(s => ({ x: s.x, y: s.y })))
+                        const duration = Math.max(3, segStations.length * 1.6)
+                        return (
+                          <TrainSprite
+                            key={`auto-${rail.id}-${run.from}-${run.to}`}
+                            pathD={segD}
+                            color={rail.color}
+                            durationMs={duration * 1000}
+                          />
+                        )
+                      })}
+                    </g>
+                  )
+                })}
+              </svg>
+            )}
+
+            {/* 駅名の編集（ダブルクリック） */}
+            {editingStationId && (() => {
+              const st = tabStations.find(s => s.id === editingStationId)
+              if (!st) return null
+              return (
+                <input
+                  autoFocus
+                  value={st.name}
+                  onChange={e => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, name: e.target.value } })}
+                  onBlur={() => setEditingStationId(null)}
+                  onKeyDown={e => { if ((e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur() } }}
+                  onMouseDown={e => e.stopPropagation()}
+                  className="absolute text-[12px] font-bold text-center bg-white border border-indigo-400 rounded px-1 outline-none shadow-sm"
+                  style={{ left: st.x, top: st.y - 36, transform: 'translateX(-50%)', width: `${Math.max(4, st.name.length + 2)}ch` }}
+                />
+              )
+            })()}
+
             {/* Arrow layer (behind cards) */}
             <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
               <defs>
@@ -3421,7 +3926,7 @@ export default function CanvasPage() {
                     d={arrowGeometry(ends, a.curved, a.points).d}
                     selected={selectedArrowId === a.id}
                     interactive={tool === 'select'}
-                    onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]) }}
+                    onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]); setSelectedStationIds([]) }}
                     onEndDown={handleArrowEndDown}
                     onWayDown={handleWayDown}
                     onWayInsert={handleWayInsert}
@@ -3762,7 +4267,29 @@ export default function CanvasPage() {
                   </button>
                   <div className="px-3 pt-0.5 pb-1 text-[10px] text-slate-400">枠だけ削除され、中のカードは残ります</div>
                 </>
-              ) : (
+              ) : contextMenu.kind === 'station' ? (() => {
+                const st = tabStations.find(s => s.id === selectedStationIds[0])
+                if (!st) return null
+                return (
+                  <>
+                    <div className="px-3 pt-1 pb-0.5 text-[10px] text-slate-400 truncate">{st.name}</div>
+                    <div className="px-3 py-1 flex gap-1">
+                      {([['todo', '計画中'], ['doing', '建設中'], ['done', '開業']] as const).map(([k, lbl]) => (
+                        <button
+                          key={k}
+                          onClick={() => { dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, status: k } }); setContextMenu(null) }}
+                          className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${st.status === k ? 'bg-rose-500/15 border-rose-400 text-rose-600 font-semibold' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                        >{lbl}</button>
+                      ))}
+                    </div>
+                    <button onClick={() => { setEditingStationId(st.id); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> 名前を変更</button>
+                    <div className="h-px bg-slate-200 my-1" />
+                    <button onClick={() => { setContextMenu(null); requestDeleteSelection() }} className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600 flex items-center justify-between">
+                      <span className="flex items-center gap-2"><Trash2 size={14} /> 駅を削除</span><kbd className="text-[10px] text-red-300">Del</kbd>
+                    </button>
+                  </>
+                )
+              })() : (
                 <>
                   {selCards.length === 1 && selCards[0].stationId && (
                     <>
@@ -3785,6 +4312,13 @@ export default function CanvasPage() {
                   {selCards.length === 1 && selCards[0].refSketchId && state.sketches.some(s => s.id === selCards[0].refSketchId) && (
                     <>
                       <button onClick={() => { navigate('/sketch', { state: { focusSketchId: selCards[0].refSketchId } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-fuchsia-600 flex items-center gap-2"><Brush size={14} /> スケッチで開く</button>
+                      <div className="h-px bg-slate-200 my-1" />
+                    </>
+                  )}
+                  {/* 複製/貼り付けで別プロジェクトのプランを指すことがあるので所属一致も確認 */}
+                  {selCards.length === 1 && selCards[0].refPlanId && mtWorkspaceMeta[selCards[0].refPlanId]?.projectId === activeProjectId && (
+                    <>
+                      <button onClick={() => { navigate('/mindtrain', { state: { focusPlanId: selCards[0].refPlanId } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-rose-600 flex items-center gap-2"><TrainFront size={14} /> 路線図で開く</button>
                       <div className="h-px bg-slate-200 my-1" />
                     </>
                   )}
@@ -3860,6 +4394,301 @@ export default function CanvasPage() {
         </div>
       )}
       </div>
+
+      {/* プロパティパネル（右）— 選択中の要素の詳細編集。選択なしのときはキャンバス概要。
+          編集系UIは今後ここへ集約していく。 */}
+      {viewMode === 'canvas' && (
+        <div className={`${propsCollapsed ? 'w-10' : 'w-64'} shrink-0 border-l border-slate-200 bg-slate-50 flex flex-col transition-[width] duration-150`}>
+          {propsCollapsed ? (
+            <button
+              onClick={() => setPropsCollapsed(false)}
+              className="p-2.5 text-slate-400 hover:text-slate-700 transition-colors"
+              title="プロパティパネルを開く"
+            ><PanelRightOpen size={16} /></button>
+          ) : (
+            <>
+              <div className="flex items-center gap-1 px-2 py-2 border-b border-slate-200 shrink-0">
+                <SlidersHorizontal size={13} className="text-slate-400 shrink-0" />
+                <span className="text-xs font-semibold text-slate-600 flex-1 select-none">プロパティ</span>
+                <button onClick={() => setPropsCollapsed(true)} className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100" title="パネルを畳む"><PanelRightClose size={14} /></button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 text-xs">
+                {(() => {
+                  const ro = canvasLocked
+                  const secTitle = 'text-[10px] font-semibold text-slate-400 mb-1 select-none'
+                  const inputCls = 'w-full text-xs bg-white border border-slate-200 rounded px-2 py-1 outline-none focus:border-indigo-400 disabled:bg-slate-100 disabled:text-slate-400'
+                  const selStation = selectedStationIds.length === 1 ? tabStations.find(s => s.id === selectedStationIds[0]) : undefined
+                  // railツール中は路線セクションを常時表示し、駅を選択していれば駅セクションも
+                  // 下に並べる — 路線図ページの「路線パネル + 駅の詳細」と同じ構成。
+                  const activeRail = tool === 'rail' ? tabRails.find(r => r.id === activeRailId) : undefined
+                  const propCard = !selStation && !activeRail && selectedIds.length === 1 ? tabCards.find(c => c.id === selectedIds[0]) : undefined
+
+                  /* ── 駅セクション ── */
+                  const stationSection = (st: CanvasStation) => {
+                    const stRails = railsByStation.get(st.id) ?? []
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-1.5 text-slate-700 font-semibold"><TrainFront size={13} className="text-rose-500" /> 駅{stRails.length >= 2 ? '（乗換駅）' : ''}</div>
+                        <div>
+                          <div className={secTitle}>駅名</div>
+                          <input value={st.name} disabled={ro} onChange={e => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, name: e.target.value } })} className={inputCls} />
+                        </div>
+                        <div>
+                          <div className={secTitle}>状態</div>
+                          <div className="flex gap-1">
+                            {([['todo', '計画中'], ['doing', '建設中'], ['done', '開業']] as const).map(([k, lbl]) => (
+                              <button key={k} disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...st, status: k } })}
+                                className={`px-2 py-0.5 rounded-full text-[10px] border transition-colors ${st.status === k ? 'bg-rose-500/15 border-rose-400 text-rose-600 font-semibold' : 'border-slate-200 text-slate-500 hover:bg-white'}`}
+                              >{lbl}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={secTitle}>所属路線</div>
+                          {stRails.length === 0 && <div className="text-[10px] text-slate-400">（どの路線も通っていません）</div>}
+                          <div className="flex flex-wrap gap-1">
+                            {stRails.map(r => (
+                              <span key={r.id} className="flex items-center gap-1 pl-1.5 pr-1 py-0.5 rounded-full border border-slate-200 bg-white text-[10px] text-slate-600">
+                                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
+                                {r.name}
+                                {!ro && (
+                                  <button onClick={() => dispatch({ type: 'DETACH_STATION_FROM_RAIL', payload: { railId: r.id, stationId: st.id } })} title="この路線から外す" className="p-0.5 rounded hover:bg-slate-100 text-slate-300 hover:text-rose-500"><X size={9} /></button>
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        {!ro && (
+                          <button onClick={requestDeleteSelection} className="w-full text-left px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"><Trash2 size={12} /> 駅を削除</button>
+                        )}
+                      </div>
+                    )
+                  }
+                  if (selStation && !activeRail) return stationSection(selStation)
+
+                  /* ── 駅の複数選択（矩形選択など） ── */
+                  if (!activeRail && selectedStationIds.length > 1) {
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-1.5 text-slate-700 font-semibold"><TrainFront size={13} className="text-rose-500" /> 駅 {selectedStationIds.length}個を選択中</div>
+                        <div className="text-[10px] text-slate-400 leading-relaxed">ドラッグでまとめて移動、矢印キーで微調整、Del で削除できます。</div>
+                        {!ro && (
+                          <button onClick={requestDeleteSelection} className="w-full text-left px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"><Trash2 size={12} /> 選択した駅を削除</button>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  /* ── カード ── */
+                  if (propCard) {
+                    const cfg = cardTypes[propCard.type]
+                    const CIcon = cfg.icon
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-1.5 text-slate-700 font-semibold"><CIcon size={13} className={cfg.text} /> {cfg.label}カード</div>
+                        <div>
+                          <div className={secTitle}>タイトル</div>
+                          <input value={propCard.title} disabled={ro || !!propCard.locked} onChange={e => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...propCard, title: e.target.value } })} className={inputCls} />
+                        </div>
+                        <div>
+                          <div className={secTitle}>色</div>
+                          <div className="flex items-start gap-1.5">
+                            <button disabled={ro} onClick={() => setCardColor(undefined)} title="デフォルト" className="w-4 h-4 rounded-full border border-slate-300 flex items-center justify-center text-slate-400 shrink-0 mt-0.5"><Ban size={11} /></button>
+                            <div className="grid grid-cols-8 gap-1">
+                              {HUE_KEYS.map(h => (
+                                <button key={h} disabled={ro} onClick={() => setCardColor(h)} className={`w-4 h-4 rounded-full hover:scale-110 transition-transform ${propCard.color === h ? 'ring-2 ring-offset-1 ring-slate-400' : ''}`} style={{ backgroundColor: COLOR_THEMES[h].dot }} />
+                              ))}
+                              {HUE_KEYS.map(h => (
+                                <button key={h + '2'} disabled={ro} onClick={() => setCardColor(h + '2')} className={`w-4 h-4 rounded-full hover:scale-110 transition-transform ${propCard.color === h + '2' ? 'ring-2 ring-offset-1 ring-slate-400' : ''}`} style={{ backgroundColor: COLOR_THEMES[h + '2'].dot }} />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-[10px] text-slate-400 font-mono">x{Math.round(propCard.x)} y{Math.round(propCard.y)} ・ {Math.round(propCard.width)}×{Math.round(propCard.height)}</div>
+                        {!ro && (
+                          <div className="space-y-1.5">
+                            <button onClick={() => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...propCard, locked: !propCard.locked } })} className="w-full text-left px-2 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-white flex items-center gap-1.5">
+                              {propCard.locked ? <><Unlock size={12} /> ロック解除</> : <><Lock size={12} /> ロック</>}
+                            </button>
+                            <button onClick={requestDeleteSelection} className="w-full text-left px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"><Trash2 size={12} /> カードを削除</button>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  /* ── ラベル ── */
+                  if (selectedLabel) {
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-1.5 text-slate-700 font-semibold"><Type size={13} className="text-slate-500" /> ラベル</div>
+                        <div>
+                          <div className={secTitle}>テキスト</div>
+                          <input value={selectedLabel.text} disabled={ro} onChange={e => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...selectedLabel, text: e.target.value } })} className={inputCls} />
+                        </div>
+                        <div>
+                          <div className={secTitle}>サイズ</div>
+                          <div className="flex gap-1">
+                            {LABEL_SIZES.map((sz, i) => (
+                              <button key={sz} disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...selectedLabel, fontSize: sz } })}
+                                className={`px-2 rounded font-semibold transition-colors ${selectedLabel.fontSize === sz ? 'bg-indigo-500/15 text-indigo-600' : 'text-slate-500 hover:bg-white'}`} style={{ fontSize: 11 + i * 3 }}>A</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={secTitle}>色</div>
+                          <div className="flex gap-1.5">
+                            {PEN_COLORS.map(c => (
+                              <button key={c} disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...selectedLabel, color: c } })}
+                                className={`w-4 h-4 rounded-full transition-transform ${selectedLabel.color === c ? 'ring-2 ring-offset-1 ring-slate-400 scale-110' : ''}`} style={{ backgroundColor: c }} />
+                            ))}
+                          </div>
+                        </div>
+                        {!ro && (
+                          <button onClick={requestDeleteSelection} className="w-full text-left px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"><Trash2 size={12} /> ラベルを削除</button>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  /* ── 矢印 ── */
+                  if (selectedArrow) {
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-1.5 text-slate-700 font-semibold"><ArrowUpRight size={13} className="text-indigo-500" /> 矢印</div>
+                        <div>
+                          <div className={secTitle}>ラベル</div>
+                          <input value={selectedArrow.label ?? ''} disabled={ro} placeholder="（なし）" onChange={e => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selectedArrow, label: e.target.value } })} className={inputCls} />
+                        </div>
+                        <div>
+                          <div className={secTitle}>形状</div>
+                          <button disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selectedArrow, curved: !selectedArrow.curved } })} className="px-2 py-1 rounded border border-slate-200 text-slate-600 hover:bg-white flex items-center gap-1.5">
+                            <Spline size={12} /> {selectedArrow.curved ? '直線にする' : '曲線にする'}
+                          </button>
+                        </div>
+                        <div>
+                          <div className={secTitle}>色</div>
+                          <div className="flex gap-1.5 items-center">
+                            <button disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selectedArrow, color: undefined } })} title="デフォルト" className={`w-4 h-4 rounded-full border border-slate-300 flex items-center justify-center text-slate-400 ${!selectedArrow.color ? 'ring-2 ring-offset-1 ring-slate-400' : ''}`}><Ban size={11} /></button>
+                            {PEN_COLORS.map(c => (
+                              <button key={c} disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selectedArrow, color: c } })}
+                                className={`w-4 h-4 rounded-full transition-transform ${selectedArrow.color === c ? 'ring-2 ring-offset-1 ring-slate-400 scale-110' : ''}`} style={{ backgroundColor: c }} />
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={secTitle}>太さ</div>
+                          <div className="flex gap-1">
+                            {[2, 3, 5].map(w => (
+                              <button key={w} disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selectedArrow, width: w === 2 ? undefined : w } })}
+                                className={`w-7 h-6 flex items-center justify-center rounded transition-colors ${(selectedArrow.width ?? 2) === w ? 'bg-indigo-500/15' : 'hover:bg-white'}`}>
+                                <span className="rounded-full bg-slate-700" style={{ width: w + 2, height: w + 2 }} />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {!ro && (
+                          <button onClick={requestDeleteSelection} className="w-full text-left px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"><Trash2 size={12} /> 矢印を削除</button>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  /* ── 路線（railツール中）。駅を選択していれば駅セクションも下に並ぶ ── */
+                  if (activeRail) {
+                    return (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-1.5 text-slate-700 font-semibold"><TrainFront size={13} className="text-rose-500" /> 路線</div>
+                        <div className="flex flex-wrap gap-1">
+                          {tabRails.map(r => (
+                            <button key={r.id} onClick={() => setActiveRailId(r.id)}
+                              title={`${r.name}（${r.stationIds.length}駅）に駅を追加`}
+                              className={`flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] border transition-colors ${r.id === activeRail.id ? 'border-slate-400 bg-white text-slate-800 font-semibold' : 'border-slate-200 text-slate-500 hover:bg-white'}`}>
+                              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: r.color }} />{r.name}
+                            </button>
+                          ))}
+                          {!ro && (
+                            <button onClick={addRail} title="新しい路線を追加" className="px-1.5 py-0.5 rounded-full text-[10px] border border-dashed border-slate-300 text-slate-500 hover:bg-white">＋路線</button>
+                          )}
+                        </div>
+                        <div>
+                          <div className={secTitle}>路線名</div>
+                          <input value={activeRail.name} disabled={ro} onChange={e => dispatch({ type: 'UPDATE_CANVAS_RAIL', payload: { ...activeRail, name: e.target.value } })} className={inputCls} />
+                        </div>
+                        <div>
+                          <div className={secTitle}>色</div>
+                          <div className="grid grid-cols-10 gap-1">
+                            {RAIL_PALETTE.map(c => (
+                              <button key={c} disabled={ro} onClick={() => dispatch({ type: 'UPDATE_CANVAS_RAIL', payload: { ...activeRail, color: c } })}
+                                className={`w-4 h-4 rounded-full hover:scale-110 transition-transform ${activeRail.color === c ? 'ring-2 ring-offset-1 ring-slate-400' : ''}`} style={{ backgroundColor: c }} />
+                            ))}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={secTitle}>駅（{activeRail.stationIds.length}）</div>
+                          <div className="space-y-0.5">
+                            {activeRail.stationIds.map((sid, i) => {
+                              const st = stationById.get(sid)
+                              if (!st) return null
+                              return (
+                                <div key={sid} className="group flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-white">
+                                  <span className="text-[9px] text-slate-400 w-4 text-right shrink-0">{i + 1}</span>
+                                  <button onClick={() => setSelectedStationIds([st.id])} className="flex-1 min-w-0 text-left text-slate-700 truncate">{st.name}</button>
+                                  {!ro && (
+                                    <button onClick={() => dispatch({ type: 'DETACH_STATION_FROM_RAIL', payload: { railId: activeRail.id, stationId: sid } })} title="この路線から外す" className="p-0.5 rounded opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500"><X size={10} /></button>
+                                  )}
+                                </div>
+                              )
+                            })}
+                            {activeRail.stationIds.length === 0 && <div className="text-[10px] text-slate-400 px-1.5">キャンバスをクリックして駅を配置</div>}
+                          </div>
+                        </div>
+                        {!ro && (
+                          <button onClick={() => requestDeleteRail(activeRail)} className="w-full text-left px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"><Trash2 size={12} /> 路線を削除</button>
+                        )}
+                        {selStation && (
+                          <>
+                            <div className="h-px bg-slate-200" />
+                            {stationSection(selStation)}
+                          </>
+                        )}
+                      </div>
+                    )
+                  }
+
+                  /* ── 選択なし: キャンバス概要 ── */
+                  const tabInfo = state.canvasTabs.find(t => t.id === activeTabId)
+                  return (
+                    <div className="space-y-4">
+                      <div>
+                        <div className={secTitle}>このキャンバス</div>
+                        <div className="text-slate-700 font-semibold truncate">{tabInfo?.name ?? '—'}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5">カード {tabCards.length} ・ 路線 {tabRails.length} ・ 駅 {tabStations.length}</div>
+                      </div>
+                      {tabRails.length > 0 && (
+                        <div>
+                          <div className={secTitle}>路線一覧</div>
+                          <div className="space-y-0.5">
+                            {tabRails.map(r => (
+                              <button key={r.id} onClick={() => { setActiveRailId(r.id); if (!canvasLocked) setTool('rail') }}
+                                className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-white text-left">
+                                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
+                                <span className="flex-1 min-w-0 text-slate-700 truncate">{r.name}</span>
+                                <span className="text-[9px] text-slate-400 shrink-0">{r.stationIds.length}駅</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="text-[10px] text-slate-400 leading-relaxed">カード・駅・ラベル・矢印を選択すると、ここに詳細が表示されます。</div>
+                    </div>
+                  )
+                })()}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -5857,6 +6686,21 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
               )}
             </div>
           )
+        ) : card.type === 'mindtrain' ? (
+          card.refPlanId ? (
+            <MindtrainCardBody planId={card.refPlanId} onUnlink={() => onUpdate({ refPlanId: undefined })} locked={locked} />
+          ) : (
+            <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 px-3 py-4 text-center">
+              <span className="text-[11px] text-slate-400">路線図が未選択です</span>
+              {!locked && (
+                <button
+                  onMouseDown={e => e.stopPropagation()}
+                  onClick={e => { e.stopPropagation(); onOpenPicker() }}
+                  className="text-[10px] px-2 py-0.5 rounded border border-rose-300 text-rose-600 hover:bg-rose-50"
+                >路線図を選択</button>
+              )}
+            </div>
+          )
         ) : (
           <div className="flex-1 min-h-0 flex flex-col">
             {(card.type === 'note' || card.type === 'todo') && !locked && (
@@ -5896,7 +6740,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                 className={`px-2 py-0.5 rounded ${pickerTab === 'existing' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
                 onClick={() => onPickerTab('existing')}
               >既存</button>
-              {card.type !== 'sketch' && card.type !== 'canvasLink' && (
+              {card.type !== 'sketch' && card.type !== 'canvasLink' && card.type !== 'mindtrain' && (
                 <button
                   className={`px-2 py-0.5 rounded ${pickerTab === 'new' ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-50'}`}
                   onClick={() => onPickerTab('new')}
@@ -5908,12 +6752,12 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                 title="閉じる (Esc)"
               ><X size={12} /></button>
             </div>
-            {(pickerTab === 'existing' || card.type === 'sketch' || card.type === 'canvasLink') ? (
+            {(pickerTab === 'existing' || card.type === 'sketch' || card.type === 'canvasLink' || card.type === 'mindtrain') ? (
               <>
                 <input
                   value={pickerSearch}
                   onChange={e => onPickerSearch(e.target.value)}
-                  placeholder={card.type === 'note' ? 'ノートを検索…' : card.type === 'sketch' ? 'スケッチを検索…' : card.type === 'canvasLink' ? 'キャンバスを検索…' : 'タスクを検索…'}
+                  placeholder={card.type === 'note' ? 'ノートを検索…' : card.type === 'sketch' ? 'スケッチを検索…' : card.type === 'canvasLink' ? 'キャンバスを検索…' : card.type === 'mindtrain' ? '路線図を検索…' : 'タスクを検索…'}
                   autoFocus
                   className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none focus:border-indigo-400 mb-1"
                 />
@@ -5933,6 +6777,12 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                             <span className="ml-auto text-[9px] text-slate-400 shrink-0">{s.strokes.length}本</span>
                           </button>
                         ))
+                    : card.type === 'mindtrain'
+                    ? <MindtrainPlanPickerList
+                        projectId={state.activeMasterProjectId}
+                        search={pickerSearch}
+                        onPick={(planId, name) => { onUpdate({ refPlanId: planId, title: name || card.title }); onClosePicker() }}
+                      />
                     : card.type === 'canvasLink'
                     ? state.canvasTabs
                         .filter(t => t.projectId === state.activeMasterProjectId && t.id !== card.tabId)
@@ -6114,6 +6964,7 @@ const ListCardComponent = memo(function ListCardComponent({ card, onUpdate, onDe
 }) {
   const { state: listState } = useApp()
   const linkedTabForList = card.type === 'canvasLink' && card.refTabId ? listState.canvasTabs.find(t => t.id === card.refTabId) : undefined
+  const planMetaForList = useMindtrainStore(s => (card.type === 'mindtrain' && card.refPlanId ? s.workspaceMeta[card.refPlanId] : undefined))
   const cfg = cardTypes[card.type]
   const theme = (card.color && COLOR_THEMES[card.color]) || cfg
   const Icon = cfg.icon
@@ -6276,6 +7127,15 @@ const ListCardComponent = memo(function ListCardComponent({ card, onUpdate, onDe
               </>
             ) : (
               <span className="text-slate-400">{card.refTabId ? 'リンク先が見つかりません' : 'リンク先未選択（キャンバス表示で設定）'}</span>
+            )}
+          </div>
+        ) : card.type === 'mindtrain' ? (
+          <div className="flex items-center gap-2 text-xs text-slate-600">
+            <TrainFront size={13} className="text-rose-500 shrink-0" />
+            {planMetaForList ? (
+              <span className="truncate">{planMetaForList.name || '(無題)'}</span>
+            ) : (
+              <span className="text-slate-400">{card.refPlanId ? 'リンク先が見つかりません' : 'リンク先未選択（キャンバス表示で設定）'}</span>
             )}
           </div>
         ) : (

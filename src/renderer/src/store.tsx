@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, useEffect, useMemo, useState, useRef, useCallback, ReactNode } from 'react'
-import { Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, Flow, Plan, PlanFolder, TimelineBand } from './types'
+import { Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Flow, Plan, PlanFolder, TimelineBand } from './types'
 import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNotice } from './persistence/db'
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
@@ -31,6 +31,8 @@ export interface AppState {
   canvasGroups: CanvasGroup[]
   canvasStrokes: CanvasStroke[]
   canvasLabels: CanvasLabel[]
+  canvasRails: CanvasRail[]
+  canvasStations: CanvasStation[]
 }
 
 export type Action =
@@ -106,6 +108,14 @@ export type Action =
   | { type: 'ADD_CANVAS_LABEL'; payload: CanvasLabel }
   | { type: 'UPDATE_CANVAS_LABEL'; payload: CanvasLabel }
   | { type: 'DELETE_CANVAS_LABEL'; payload: string }
+  | { type: 'ADD_CANVAS_RAIL'; payload: CanvasRail }
+  | { type: 'UPDATE_CANVAS_RAIL'; payload: CanvasRail }
+  | { type: 'DELETE_CANVAS_RAIL'; payload: string }
+  | { type: 'ADD_CANVAS_STATION'; payload: { station: CanvasStation; railId: string; index?: number } }
+  | { type: 'UPDATE_CANVAS_STATION'; payload: CanvasStation }
+  | { type: 'DELETE_CANVAS_STATION'; payload: string }
+  | { type: 'APPEND_STATION_TO_RAIL'; payload: { railId: string; stationId: string } }
+  | { type: 'DETACH_STATION_FROM_RAIL'; payload: { railId: string; stationId: string } }
 
 const now = new Date().toISOString()
 
@@ -187,7 +197,9 @@ const initialState: AppState = {
   canvasStrokes: [],
   canvasLabels: [
     { id: 'l1', tabId: 'tab1', text: 'ラベルの例', x: 560, y: 540, fontSize: 22, color: '#1e293b', createdAt: now },
-  ]
+  ],
+  canvasRails: [],
+  canvasStations: [],
 }
 
 function reducer(state: AppState, action: Action): AppState {
@@ -227,6 +239,8 @@ function reducer(state: AppState, action: Action): AppState {
         canvasGroups: state.canvasGroups.filter(g => !removedTabs.has(g.tabId)),
         canvasStrokes: state.canvasStrokes.filter(s => !removedTabs.has(s.tabId)),
         canvasLabels: state.canvasLabels.filter(l => !removedTabs.has(l.tabId)),
+        canvasRails: state.canvasRails.filter(r => !removedTabs.has(r.tabId)),
+        canvasStations: state.canvasStations.filter(s => !removedTabs.has(s.tabId)),
       }
     }
     case 'SET_ACTIVE_MASTER_PROJECT':
@@ -458,7 +472,7 @@ function reducer(state: AppState, action: Action): AppState {
     case 'DELETE_CANVAS_TAB':
       // Cascade the tab's own content, and clear canvasLink references from
       // OTHER tabs' cards (same idiom as the refNoteId/refTaskId cascades).
-      return { ...state, canvasTabs: state.canvasTabs.filter(t => t.id !== action.payload), canvasCards: state.canvasCards.filter(c => c.tabId !== action.payload).map(c => c.refTabId === action.payload ? { ...c, refTabId: undefined } : c), canvasArrows: state.canvasArrows.filter(a => a.tabId !== action.payload), canvasGroups: state.canvasGroups.filter(g => g.tabId !== action.payload), canvasStrokes: state.canvasStrokes.filter(s => s.tabId !== action.payload), canvasLabels: state.canvasLabels.filter(l => l.tabId !== action.payload) }
+      return { ...state, canvasTabs: state.canvasTabs.filter(t => t.id !== action.payload), canvasCards: state.canvasCards.filter(c => c.tabId !== action.payload).map(c => c.refTabId === action.payload ? { ...c, refTabId: undefined } : c), canvasArrows: state.canvasArrows.filter(a => a.tabId !== action.payload), canvasGroups: state.canvasGroups.filter(g => g.tabId !== action.payload), canvasStrokes: state.canvasStrokes.filter(s => s.tabId !== action.payload), canvasLabels: state.canvasLabels.filter(l => l.tabId !== action.payload), canvasRails: state.canvasRails.filter(r => r.tabId !== action.payload), canvasStations: state.canvasStations.filter(s => s.tabId !== action.payload) }
     case 'ADD_CANVAS_BOARD':
       return { ...state, canvasBoards: [...state.canvasBoards, action.payload] }
     case 'UPDATE_CANVAS_BOARD':
@@ -488,6 +502,60 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, canvasStrokes: state.canvasStrokes.filter(s => s.id !== action.payload) }
     case 'REPLACE_CANVAS_STROKES':
       return { ...state, canvasStrokes: [...state.canvasStrokes.filter(s => s.tabId !== action.payload.tabId), ...action.payload.strokes] }
+    case 'ADD_CANVAS_RAIL':
+      return { ...state, canvasRails: [...state.canvasRails, action.payload] }
+    case 'UPDATE_CANVAS_RAIL':
+      return { ...state, canvasRails: state.canvasRails.map(r => r.id === action.payload.id ? action.payload : r) }
+    case 'DELETE_CANVAS_RAIL': {
+      // Drop the rail, and any of its stations that no OTHER rail threads through
+      // (transfer stations survive on their remaining rails).
+      const rail = state.canvasRails.find(r => r.id === action.payload)
+      if (!rail) return state
+      const rails = state.canvasRails.filter(r => r.id !== action.payload)
+      const stillUsed = new Set(rails.flatMap(r => r.stationIds))
+      return {
+        ...state,
+        canvasRails: rails,
+        canvasStations: state.canvasStations.filter(s => !rail.stationIds.includes(s.id) || stillUsed.has(s.id)),
+      }
+    }
+    case 'ADD_CANVAS_STATION': {
+      // Station + its rail-thread entry land in ONE action so undo removes both.
+      // `index` inserts mid-line (クリックが既存の線分上だったとき) instead of appending.
+      const { station, railId, index } = action.payload
+      return {
+        ...state,
+        canvasStations: [...state.canvasStations, station],
+        canvasRails: state.canvasRails.map(r => {
+          if (r.id !== railId) return r
+          const ids = index != null
+            ? [...r.stationIds.slice(0, index), station.id, ...r.stationIds.slice(index)]
+            : [...r.stationIds, station.id]
+          return { ...r, stationIds: ids }
+        }),
+      }
+    }
+    case 'UPDATE_CANVAS_STATION':
+      return { ...state, canvasStations: state.canvasStations.map(s => s.id === action.payload.id ? action.payload : s) }
+    case 'DELETE_CANVAS_STATION':
+      return {
+        ...state,
+        canvasStations: state.canvasStations.filter(s => s.id !== action.payload),
+        canvasRails: state.canvasRails.map(r => r.stationIds.includes(action.payload) ? { ...r, stationIds: r.stationIds.filter(id => id !== action.payload) } : r),
+      }
+    case 'APPEND_STATION_TO_RAIL': {
+      // Thread an EXISTING station onto a rail (乗換駅). No-op if already on it.
+      const { railId, stationId } = action.payload
+      const rail = state.canvasRails.find(r => r.id === railId)
+      if (!rail || rail.stationIds.includes(stationId)) return state
+      return { ...state, canvasRails: state.canvasRails.map(r => r.id === railId ? { ...r, stationIds: [...r.stationIds, stationId] } : r) }
+    }
+    case 'DETACH_STATION_FROM_RAIL': {
+      // Un-thread a station from ONE rail; the station itself stays (it keeps its
+      // other rails, or floats unthreaded — still selectable/deletable on canvas).
+      const { railId, stationId } = action.payload
+      return { ...state, canvasRails: state.canvasRails.map(r => r.id === railId ? { ...r, stationIds: r.stationIds.filter(id => id !== stationId) } : r) }
+    }
     case 'ADD_CANVAS_LABEL':
       return { ...state, canvasLabels: [...state.canvasLabels, action.payload] }
     case 'UPDATE_CANVAS_LABEL':
@@ -508,6 +576,8 @@ const COALESCE_MS = 500
 const COALESCABLE = new Set<Action['type']>([
   'MOVE_CANVAS_CARD', 'RESIZE_CANVAS_CARD', 'UPDATE_CANVAS_CARD',
   'UPDATE_CANVAS_ARROW', 'UPDATE_CANVAS_GROUP', 'UPDATE_CANVAS_LABEL',
+  // Dragging a 駅 / typing a 路線 name fires many dispatches — one undo step.
+  'UPDATE_CANVAS_STATION', 'UPDATE_CANVAS_RAIL',
   'UPDATE_NOTE', 'UPDATE_PROJECT', 'UPDATE_RESEARCH', 'UPDATE_TASK', 'UPDATE_CANVAS_TAB', 'UPDATE_CANVAS_BOARD',
   'UPDATE_MASTER_PROJECT',
   // Flow node drags / title typing produce many UPDATE_FLOW dispatches — one undo step.
