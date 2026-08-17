@@ -151,6 +151,31 @@ export interface CanvasLabel {
   createdAt: string
 }
 
+/* ── キャンバス線路 (canvas-native 路線図) ──
+   Metro-style route maps drawn DIRECTLY on a canvas tab: rails thread through
+   station nodes in order. Independent of the 路線図 (mindtrain) page — this is
+   canvas-local data, cascaded with the tab like strokes/labels. A station that
+   appears in 2+ rails renders as a transfer (乗換駅). */
+
+export interface CanvasRail {
+  id: string
+  tabId: string
+  name: string
+  color: string
+  stationIds: string[] // ordered — the line is drawn through these stations
+  createdAt: string
+}
+
+export interface CanvasStation {
+  id: string
+  tabId: string
+  name: string
+  x: number
+  y: number
+  status: 'todo' | 'doing' | 'done' // 計画中 / 建設中 / 開業 — same grammar as the 路線図 page
+  createdAt: string
+}
+
 // Rough-timing choice on a taskDraft card / flow node ("大体いつやりたいか") — a
 // 5-way position within the month (month head / early / mid / late / month end).
 // Mapped to a concrete endDate (YYYY-MM-DD) in the current month (rolling to next
@@ -260,7 +285,7 @@ export type ShapeKind = 'rect' | 'roundRect' | 'ellipse' | 'diamond' | 'triangle
 export interface CanvasCard {
   id: string
   tabId: string
-  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft' | 'shape' | 'sketch' | 'canvasLink'
+  type: 'text' | 'note' | 'todo' | 'research' | 'idea' | 'web' | 'pdf' | 'image' | 'video' | 'audio' | 'sequence' | 'taskDraft' | 'shape' | 'sketch' | 'canvasLink' | 'mindtrain'
   title: string
   content: string
   url?: string
@@ -276,6 +301,7 @@ export interface CanvasCard {
   refTaskId?: string // when set on a 'todo' card, the card mirrors this Task (live read/write)
   refSketchId?: string // when set on a 'sketch' card, the card live-mirrors this Sketch (read-only on canvas)
   refTabId?: string // when set on a 'canvasLink' card, the card is a shortcut to that canvas tab
+  refPlanId?: string // when set on a 'mindtrain' card, the card live-mirrors that 路線図 plan (read-only on canvas)
   draftWhen?: DraftWhen // 'taskDraft' cards: rough target timing, converted to endDate on タスク化
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
 

@@ -74,6 +74,19 @@ body {
   -webkit-user-select: none !important;
 }
 
+/* 線路ツール中: カードはクリックスルーのまま、駅ノードだけは掴める（選択/ドラッグ/接続）。
+   The class is only put on station nodes while the rail tool is active
+   (plus the station-rename input, which also needs text selection back). */
+.canvas-drawing .rail-interactive,
+.canvas-drawing .rail-interactive * {
+  pointer-events: auto !important;
+}
+
+.canvas-drawing input.rail-interactive {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
 /* Kanban status pill: shrinking bar that counts down the settle window before a
    status change commits and the card relocates columns. Re-keyed each click. */
 @keyframes statusCommitShrink { from { transform: scaleX(1); } to { transform: scaleX(0); } }

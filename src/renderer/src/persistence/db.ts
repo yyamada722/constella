@@ -14,7 +14,7 @@ import { isRemote } from './runtime'
 import type { AppState } from '../store'
 import type {
   Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
-  CanvasTab, CanvasBoard, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CardPage, Bookmark, Flow, FlowNode, FlowEdge, FlowGroup, Plan, PlanFolder, TimelineBand,
+  CanvasTab, CanvasBoard, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, CardPage, Bookmark, Flow, FlowNode, FlowEdge, FlowGroup, Plan, PlanFolder, TimelineBand,
 } from '../types'
 import { generateId } from '../utils'
 
@@ -37,11 +37,13 @@ CREATE TABLE IF NOT EXISTS timeline_bands (ord INTEGER, id TEXT PRIMARY KEY, mas
 CREATE TABLE IF NOT EXISTS ai_conversations (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, messages TEXT, createdAt TEXT, updatedAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_boards (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, name TEXT, color TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_tabs (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, boardId TEXT, name TEXT, createdAt TEXT);
-CREATE TABLE IF NOT EXISTS canvas_cards (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, type TEXT, title TEXT, content TEXT, url TEXT, color TEXT, locked INTEGER, pages TEXT, crop TEXT, bookmarks TEXT, pdf TEXT, frames TEXT, stationId TEXT, refNoteId TEXT, refTaskId TEXT, refSketchId TEXT, refTabId TEXT, draftWhen TEXT, shape TEXT, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS canvas_cards (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, type TEXT, title TEXT, content TEXT, url TEXT, color TEXT, locked INTEGER, pages TEXT, crop TEXT, bookmarks TEXT, pdf TEXT, frames TEXT, stationId TEXT, refNoteId TEXT, refTaskId TEXT, refSketchId TEXT, refTabId TEXT, refPlanId TEXT, draftWhen TEXT, shape TEXT, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_arrows (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, x1 REAL, y1 REAL, x2 REAL, y2 REAL, fromCardId TEXT, toCardId TEXT, label TEXT, curved INTEGER, color TEXT, width REAL, fromPort TEXT, toPort TEXT, points TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_groups (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, title TEXT, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_strokes (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, points TEXT, color TEXT, width REAL, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_labels (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, text TEXT, x REAL, y REAL, fontSize REAL, color TEXT, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS canvas_rails (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, name TEXT, color TEXT, stationIds TEXT, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS canvas_stations (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, name TEXT, x REAL, y REAL, status TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS app_kv (key TEXT PRIMARY KEY, value TEXT);
 `
 
@@ -232,6 +234,7 @@ async function getDb(): Promise<Database> {
     try { db.run('ALTER TABLE canvas_tabs ADD COLUMN projectId TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE canvas_tabs ADD COLUMN boardId TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE canvas_cards ADD COLUMN refTabId TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refPlanId TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE canvas_arrows ADD COLUMN color TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE canvas_arrows ADD COLUMN width REAL') } catch { /* column already present */ }
     try { db.run('ALTER TABLE canvas_cards ADD COLUMN stationId TEXT') } catch { /* column already present */ }
@@ -462,6 +465,7 @@ export async function loadState(): Promise<AppState | null> {
     refTaskId: optStr(r.refTaskId),
     refSketchId: optStr(r.refSketchId),
     refTabId: optStr(r.refTabId),
+    refPlanId: optStr(r.refPlanId),
     draftWhen: optStr(r.draftWhen) as CanvasCard['draftWhen'],
     shape: optStr(r.shape) as CanvasCard['shape'],
     x: num(r.x), y: num(r.y), width: num(r.width), height: num(r.height), createdAt: str(r.createdAt),
@@ -494,7 +498,17 @@ export async function loadState(): Promise<AppState | null> {
     x: num(r.x), y: num(r.y), fontSize: num(r.fontSize), color: str(r.color), createdAt: str(r.createdAt),
   }))
 
-  return { masterProjects, activeMasterProjectId, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, planFolders, timelineBands, aiConversations, canvasBoards, canvasTabs, canvasCards, canvasArrows, canvasGroups, canvasStrokes, canvasLabels }
+  const canvasRails: CanvasRail[] = rows(db, 'SELECT * FROM canvas_rails ORDER BY ord').map(r => ({
+    id: str(r.id), tabId: str(r.tabId), name: str(r.name), color: str(r.color),
+    stationIds: parseArr<string>(r.stationIds), createdAt: str(r.createdAt),
+  }))
+
+  const canvasStations: CanvasStation[] = rows(db, 'SELECT * FROM canvas_stations ORDER BY ord').map(r => ({
+    id: str(r.id), tabId: str(r.tabId), name: str(r.name),
+    x: num(r.x), y: num(r.y), status: (str(r.status) || 'todo') as CanvasStation['status'], createdAt: str(r.createdAt),
+  }))
+
+  return { masterProjects, activeMasterProjectId, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, planFolders, timelineBands, aiConversations, canvasBoards, canvasTabs, canvasCards, canvasArrows, canvasGroups, canvasStrokes, canvasLabels, canvasRails, canvasStations }
 }
 
 // Saves are serialized through a single chain so that two debounced writes can
@@ -561,11 +575,13 @@ async function doSaveState(state: AppState): Promise<void> {
     canvasGroups: state.canvasGroups ?? [],
     canvasStrokes: state.canvasStrokes ?? [],
     canvasLabels: state.canvasLabels ?? [],
+    canvasRails: state.canvasRails ?? [],
+    canvasStations: state.canvasStations ?? [],
     activeMasterProjectId: state.activeMasterProjectId ?? '',
   }
   db.run('BEGIN TRANSACTION')
   try {
-    for (const t of ['master_projects', 'notes', 'note_folders', 'projects', 'tasks', 'research', 'research_folders', 'sketches', 'flows', 'plans', 'plan_folders', 'timeline_bands', 'ai_conversations', 'canvas_boards', 'canvas_tabs', 'canvas_cards', 'canvas_arrows', 'canvas_groups', 'canvas_strokes', 'canvas_labels']) {
+    for (const t of ['master_projects', 'notes', 'note_folders', 'projects', 'tasks', 'research', 'research_folders', 'sketches', 'flows', 'plans', 'plan_folders', 'timeline_bands', 'ai_conversations', 'canvas_boards', 'canvas_tabs', 'canvas_cards', 'canvas_arrows', 'canvas_groups', 'canvas_strokes', 'canvas_labels', 'canvas_rails', 'canvas_stations']) {
       db.run(`DELETE FROM ${t}`)
     }
 
@@ -626,7 +642,7 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO canvas_tabs (ord,id,projectId,boardId,name,createdAt) VALUES (?,?,?,?,?,?)',
       state.canvasTabs.map((t, i) => [i, t.id, t.projectId, t.boardId ?? null, t.name, t.createdAt].map(B)))
 
-    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,refSketchId,refTabId,draftWhen,shape,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,refSketchId,refTabId,refPlanId,draftWhen,shape,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.canvasCards.map((c, i) => [i, c.id, c.tabId, c.type, c.title, c.content,
         c.url ?? null, c.color ?? null, c.locked ? 1 : 0, c.pages ? JSON.stringify(c.pages) : null,
         c.crop ? JSON.stringify(c.crop) : null,
@@ -634,7 +650,7 @@ async function doSaveState(state: AppState): Promise<void> {
         c.pdf ? JSON.stringify(c.pdf) : null,
         c.frames && c.frames.length ? JSON.stringify(c.frames) : null,
         c.stationId ?? null,
-        c.refNoteId ?? null, c.refTaskId ?? null, c.refSketchId ?? null, c.refTabId ?? null,
+        c.refNoteId ?? null, c.refTaskId ?? null, c.refSketchId ?? null, c.refTabId ?? null, c.refPlanId ?? null,
         c.draftWhen ?? null,
         c.shape ?? null,
         c.x, c.y, c.width, c.height, c.createdAt].map(B)))
@@ -653,6 +669,12 @@ async function doSaveState(state: AppState): Promise<void> {
 
     insert('INSERT INTO canvas_labels (ord,id,tabId,text,x,y,fontSize,color,createdAt) VALUES (?,?,?,?,?,?,?,?,?)',
       state.canvasLabels.map((l, i) => [i, l.id, l.tabId, l.text, l.x, l.y, l.fontSize, l.color, l.createdAt].map(B)))
+
+    insert('INSERT INTO canvas_rails (ord,id,tabId,name,color,stationIds,createdAt) VALUES (?,?,?,?,?,?,?)',
+      state.canvasRails.map((r, i) => [i, r.id, r.tabId, r.name, r.color, JSON.stringify(r.stationIds ?? []), r.createdAt].map(B)))
+
+    insert('INSERT INTO canvas_stations (ord,id,tabId,name,x,y,status,createdAt) VALUES (?,?,?,?,?,?,?,?)',
+      state.canvasStations.map((s, i) => [i, s.id, s.tabId, s.name, s.x, s.y, s.status, s.createdAt].map(B)))
 
     db.run("INSERT OR REPLACE INTO meta (key,value) VALUES ('initialized','1'), ('schema_version',?), ('activeMasterProject',?)", [String(SCHEMA_VERSION), state.activeMasterProjectId ?? ''])
     db.run('COMMIT')
