@@ -804,6 +804,9 @@ export default function CanvasPage() {
     noticeTimer.current = setTimeout(() => setNotice(null), 3600)
   }, [])
   const clipboardRef = useRef<CanvasCard[]>([])
+  // 駅+路線スレッドのクリップボード（カードと並走）。threads は選択駅だけを
+  // 順序を保って辿ったサブスレッド（コピー時点の駅IDのまま; ペースト時に再採番）。
+  const railClipboardRef = useRef<{ stations: CanvasStation[]; threads: { name: string; color: string; stationIds: string[] }[] }>({ stations: [], threads: [] })
   // True while the most recent copy was an in-app card copy (no window blur since),
   // so Ctrl+V prefers pasting cards over a stale image left in the OS clipboard.
   const internalCopyFreshRef = useRef(false)
@@ -964,6 +967,28 @@ export default function CanvasPage() {
     for (const r of tabRails) for (const id of r.stationIds) { const a = m.get(id); if (a) a.push(r); else m.set(id, [r]) }
     return m
   }, [tabRails])
+  // 線路レイヤーのジオメトリ（経路文字列＋自動電車の開業run）は駅/路線が変わった時
+  // だけ再計算 — マーキーやパン等の毎フレーム再レンダーで metroPath を組み直さず、
+  // TrainSprite の pathD を安定させてアニメーションの張り直し（先頭リセット）を防ぐ。
+  const railGeometry = useMemo(() => tabRails.map(rail => {
+    const pts = rail.stationIds.map(id => stationById.get(id)).filter((s): s is CanvasStation => !!s)
+    const pathD = pts.length >= 2 ? metroPath(pts.map(s => ({ x: s.x, y: s.y }))) : null
+    // 連続して「開業」している区間（2駅以上）— 路線図ページと同じ自動電車のrun
+    const runs: { key: string; d: string; duration: number }[] = []
+    let curStart = -1
+    for (let i = 0; i <= pts.length; i++) {
+      const done = i < pts.length && pts[i].status === 'done'
+      if (done) { if (curStart === -1) curStart = i }
+      else {
+        if (curStart !== -1 && i - curStart >= 2) {
+          const seg = pts.slice(curStart, i)
+          runs.push({ key: `${rail.id}-${curStart}-${i - 1}`, d: metroPath(seg.map(s => ({ x: s.x, y: s.y }))), duration: Math.max(3, seg.length * 1.6) })
+        }
+        curStart = -1
+      }
+    }
+    return { rail, pathD, runs }
+  }), [tabRails, stationById])
   const [activeRailId, setActiveRailId] = useState<string | null>(null)
   const [selectedStationIds, setSelectedStationIds] = useState<string[]>([])
   const selectedStationIdsRef = useRef(selectedStationIds)
@@ -1290,8 +1315,24 @@ export default function CanvasPage() {
       // the tool stays armed. Station nodes catch their own mousedown (select /
       // drag / thread — see handleStationDown), so this only fires on empty空白.
       // Near-miss fallback: a click just outside a node still threads it.
-      const rail = tabRailsRef.current.find(r => r.id === activeRailIdRef.current)
-      if (!rail) return
+      // アクティブ路線が消えていたら（タブ切替/最終路線の削除）先頭路線へフォールバック
+      // — なければその場で新しい路線を作る。クリックが黙って死ぬのが最悪なので。
+      let rail = tabRailsRef.current.find(r => r.id === activeRailIdRef.current)
+      if (!rail) {
+        rail = tabRailsRef.current[0]
+        if (rail) setActiveRailId(rail.id)
+      }
+      if (!rail) {
+        const rails = tabRailsRef.current
+        rail = {
+          id: generateId(), tabId: activeTabId,
+          name: `路線${rails.length + 1}`,
+          color: RAIL_PALETTE.find(c => !rails.some(r => r.color === c)) ?? RAIL_PALETTE[rails.length % RAIL_PALETTE.length],
+          stationIds: [], createdAt: new Date().toISOString(),
+        }
+        dispatch({ type: 'ADD_CANVAS_RAIL', payload: rail })
+        setActiveRailId(rail.id)
+      }
       const raw = toCanvas(e.clientX, e.clientY)
       // 配置座標はスナップ、既存駅のヒット判定は生のクリック位置で行う。
       const p = snapRef.current ? { x: Math.round(raw.x / 20) * 20, y: Math.round(raw.y / 20) * 20 } : raw
@@ -1300,17 +1341,23 @@ export default function CanvasPage() {
         dispatch({ type: 'APPEND_STATION_TO_RAIL', payload: { railId: rail.id, stationId: hit.id } })
         setSelectedStationIds([hit.id])
       } else {
-        // クリックがアクティブ路線の線分上なら駅を「間に挿入」（路線図ページと同じ）
-        const linePts = rail.stationIds
+        // クリックがアクティブ路線の線分上なら駅を「間に挿入」（路線図ページと同じ）。
+        // 判定は実際に置かれるスナップ後の座標で行い（生クリックで判定すると
+        // スナップ先が区間の外に出て路線が折り返す）、挿入位置は路線の
+        // 生 stationIds 配列上のアンカー駅から求める（欠損IDでズレないように）。
+        const lineStations = rail.stationIds
           .map(id => tabStationsRef.current.find(s => s.id === id))
           .filter((s): s is CanvasStation => !!s)
-          .map(s => ({ x: s.x, y: s.y }))
-        const insertIdx = linePts.length >= 2 ? findInsertionIndex(linePts, raw, 12) : null
+        const insertIdx = lineStations.length >= 2
+          ? findInsertionIndex(lineStations.map(s => ({ x: s.x, y: s.y })), p, 12)
+          : null
+        const anchorId = insertIdx !== null ? lineStations[insertIdx]?.id : undefined
+        const index = anchorId ? rail.stationIds.indexOf(anchorId) : undefined
         const station: CanvasStation = {
           id: generateId(), tabId: activeTabId, name: `駅${tabStationsRef.current.length + 1}`,
           x: p.x, y: p.y, status: 'todo', createdAt: new Date().toISOString(),
         }
-        dispatch({ type: 'ADD_CANVAS_STATION', payload: { station, railId: rail.id, ...(insertIdx !== null ? { index: insertIdx } : {}) } })
+        dispatch({ type: 'ADD_CANVAS_STATION', payload: { station, railId: rail.id, ...(index !== undefined && index >= 0 ? { index } : {}) } })
         setSelectedStationIds([station.id])
       }
       e.preventDefault()
@@ -1441,7 +1488,13 @@ export default function CanvasPage() {
     const onMove = (ev: MouseEvent) => {
       const dxs = ev.clientX - start.mx, dys = ev.clientY - start.my
       if (!moved && Math.hypot(dxs, dys) <= 4) return // click vs drag threshold (screen px)
-      moved = true
+      if (!moved) {
+        moved = true
+        // カードドラッグと同じ全画面オーバーレイを立てて <webview> 埋め込みに
+        // マウスイベントを食われないようにする（食われると駅が固まり、
+        // mouseup を取り逃してゴーストドラッグ化する）。
+        setIsDragging(true)
+      }
       const z = viewportRef.current.zoom
       let nx = start.x + dxs / z
       let ny = start.y + dys / z
@@ -1451,6 +1504,7 @@ export default function CanvasPage() {
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      if (moved) setIsDragging(false)
       if (!moved && railMode) {
         const rail = tabRailsRef.current.find(r => r.id === activeRailIdRef.current)
         if (rail && !rail.stationIds.includes(st.id)) {
@@ -1463,8 +1517,8 @@ export default function CanvasPage() {
     e.preventDefault()
   }, [dispatch, selectedIds, selectedLabelIds, tabCards, tabLabels, tabStations])
 
+  // ロック中も開ける — メニュー側の canvasLocked 分岐が読み取り専用表示を出す。
   const handleStationContextMenu = useCallback((e: React.MouseEvent, st: CanvasStation) => {
-    if (canvasLockedRef.current) return
     e.preventDefault(); e.stopPropagation()
     setSelectedStationIds([st.id]); setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 220), kind: 'station', canvasX: 0, canvasY: 0 })
@@ -1642,6 +1696,7 @@ export default function CanvasPage() {
       d.groupCards?.forEach(c => dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: snap(c.x + dx / zoom), y: snap(c.y + dy / zoom) } }))
       d.groupGroups?.forEach(g => dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...g, x: snap(g.x + dx / zoom), y: snap(g.y + dy / zoom) } }))
       d.labels?.forEach(l => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: snap(l.x + dx / zoom), y: snap(l.y + dy / zoom) } }))
+      d.stations?.forEach(s => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...s, x: snap(s.x + dx / zoom), y: snap(s.y + dy / zoom) } }))
     } else if (d.kind === 'group-resize' && d.group) {
       const w = Math.max(120, snap((d.startW ?? 200) + dx / zoom))
       const h = Math.max(80, snap((d.startH ?? 120) + dy / zoom))
@@ -1868,6 +1923,7 @@ export default function CanvasPage() {
     setSelectedGroupId(group.id)
     setSelectedIds([])
     setSelectedArrowId(null)
+    setSelectedLabelIds([])
     setSelectedStationIds([])
     if (canvasLockedRef.current) return
     const contained = tabCards.filter(c => {
@@ -1885,10 +1941,15 @@ export default function CanvasPage() {
       const b = labelBox(l); const cx = b.x + b.w / 2, cy = b.y + b.h / 2
       return cx >= group.x && cx <= group.x + group.width && cy >= group.y && cy <= group.y + group.height
     })
-    dragRef.current = { kind: 'group-move', group, groupCards: contained, groupGroups: containedGroups, labels: containedLabels, startMouseX: e.clientX, startMouseY: e.clientY, startX: group.x, startY: group.y, moved: false }
+    // 駅 inside the frame move with it — otherwise dragging a group tears the
+    // rails away from the grouped content.
+    const containedStations = tabStations.filter(s =>
+      s.x >= group.x && s.x <= group.x + group.width && s.y >= group.y && s.y <= group.y + group.height
+    )
+    dragRef.current = { kind: 'group-move', group, groupCards: contained, groupGroups: containedGroups, labels: containedLabels, stations: containedStations, startMouseX: e.clientX, startMouseY: e.clientY, startX: group.x, startY: group.y, moved: false }
     // Defer the drag overlay until real movement so a double-click on the group title
     // (to rename) isn't swallowed by the overlay (handled in handleMouseMove).
-  }, [tabCards, tabGroups, tabLabels])
+  }, [tabCards, tabGroups, tabLabels, tabStations])
 
   const handleGroupResizeDown = useCallback((e: React.MouseEvent, group: CanvasGroup) => {
     if (e.button !== 0) return
@@ -1904,23 +1965,25 @@ export default function CanvasPage() {
     e.stopPropagation()
     setSelectedArrowId(null)
     setSelectedGroupId(null)
-    setSelectedStationIds([])
     if (e.shiftKey) {
       // toggle this label in/out of the multi-selection (no drag)
       setSelectedLabelIds(prev => prev.includes(label.id) ? prev.filter(x => x !== label.id) : [...prev, label.id])
       return
     }
-    // Clicking a member of an existing multi-selection keeps it and drags the whole set.
-    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length > 1)
+    // Clicking a member of an existing multi-selection keeps it and drags the whole
+    // set — cards, labels AND 駅 (same as grabbing a card or a station).
+    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length + selectedStationIds.length > 1)
     const labelSel = inMulti ? selectedLabelIds : [label.id]
     const cardSel = inMulti ? selectedIds : []
-    if (!inMulti) { setSelectedLabelIds([label.id]); setSelectedIds([]) }
+    const stationSel = inMulti ? selectedStationIds : []
+    if (!inMulti) { setSelectedLabelIds([label.id]); setSelectedIds([]); setSelectedStationIds([]) }
     if (canvasLockedRef.current) return
     const labels = tabLabels.filter(l => labelSel.includes(l.id))
     const cards = tabCards.filter(c => cardSel.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
-    dragRef.current = { kind: 'card', cards, labels, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+    const stations = tabStations.filter(s => stationSel.includes(s.id))
+    dragRef.current = { kind: 'card', cards, labels, stations, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
     setIsDragging(true)
-  }, [selectedLabelIds, selectedIds, tabLabels, tabCards])
+  }, [selectedLabelIds, selectedIds, selectedStationIds, tabLabels, tabCards, tabStations])
 
   const handleOverlayDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
@@ -1994,7 +2057,7 @@ export default function CanvasPage() {
 
   // Duplicate the selected cards (offset by a grid step)
   const duplicateSelection = useCallback(() => {
-    if (canvasLockedRef.current || selectedIds.length === 0) return
+    if (canvasLockedRef.current || (selectedIds.length === 0 && selectedStationIds.length === 0)) return
     const newIds: string[] = []
     tabCards.filter(c => selectedIds.includes(c.id)).forEach(c => {
       const copy: CanvasCard = {
@@ -2007,26 +2070,67 @@ export default function CanvasPage() {
       dispatch({ type: 'ADD_CANVAS_CARD', payload: copy })
       newIds.push(copy.id)
     })
+    // 選択中の駅も複製 — 選択駅を2つ以上通る路線は、そのサブスレッドごと
+    // 新しい路線として複製する（路線図を丸ごと選んで Ctrl+D した時の期待動作）。
+    const selStations = tabStations.filter(s => selectedStationIds.includes(s.id))
+    const newStationIds = cloneStationsWithThreads(
+      selStations,
+      tabRails.map(r => ({ name: r.name, color: r.color, stationIds: r.stationIds })),
+      activeTabId, 24, 24,
+    )
     setSelectedIds(newIds)
+    setSelectedStationIds(newStationIds)
     setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
-  }, [selectedIds, tabCards, dispatch])
+  }, [selectedIds, selectedStationIds, tabCards, tabStations, tabRails, activeTabId, dispatch])
+
+  // stations を新IDで複製し、threads（選択駅のみを順序維持で辿ったもの）のうち
+  // 2駅以上残るものを新しい路線として dispatch する。新しい駅IDの配列を返す。
+  function cloneStationsWithThreads(
+    stations: CanvasStation[],
+    threads: { name: string; color: string; stationIds: string[] }[],
+    targetTabId: string, ox: number, oy: number,
+  ): string[] {
+    if (stations.length === 0) return []
+    const now = new Date().toISOString()
+    const idMap = new Map<string, string>()
+    for (const s of stations) {
+      const id = generateId()
+      idMap.set(s.id, id)
+      dispatch({ type: 'ADD_CANVAS_STATION', payload: { station: { ...s, id, tabId: targetTabId, x: s.x + ox, y: s.y + oy, createdAt: now } } })
+    }
+    for (const t of threads) {
+      const thread = t.stationIds.filter(id => idMap.has(id)).map(id => idMap.get(id)!)
+      if (thread.length >= 2) {
+        dispatch({ type: 'ADD_CANVAS_RAIL', payload: { id: generateId(), tabId: targetTabId, name: t.name, color: t.color, stationIds: thread, createdAt: now } })
+      }
+    }
+    return [...idMap.values()]
+  }
 
   const copyCards = useCallback(() => {
     const sel = tabCards.filter(c => selectedIds.includes(c.id))
-    if (sel.length > 0) {
+    const selStations = tabStations.filter(s => selectedStationIds.includes(s.id))
+    if (sel.length > 0 || selStations.length > 0) {
       clipboardRef.current = sel.map(c => ({ ...c, pages: c.pages?.map(p => ({ ...p })) }))
+      railClipboardRef.current = {
+        stations: selStations.map(s => ({ ...s })),
+        threads: tabRails.map(r => ({ name: r.name, color: r.color, stationIds: [...r.stationIds] })),
+      }
       internalCopyFreshRef.current = true
     }
-  }, [tabCards, selectedIds])
+  }, [tabCards, selectedIds, tabStations, selectedStationIds, tabRails])
 
   const pasteCards = useCallback((atX?: number, atY?: number) => {
     if (canvasLockedRef.current) return
     const clip = clipboardRef.current
-    if (clip.length === 0) return
+    const railClip = railClipboardRef.current
+    if (clip.length === 0 && railClip.stations.length === 0) return
     let ox = 24, oy = 24
     if (atX != null && atY != null) {
-      ox = atX - Math.min(...clip.map(c => c.x))
-      oy = atY - Math.min(...clip.map(c => c.y))
+      const minX = Math.min(...clip.map(c => c.x), ...railClip.stations.map(s => s.x))
+      const minY = Math.min(...clip.map(c => c.y), ...railClip.stations.map(s => s.y))
+      ox = atX - minX
+      oy = atY - minY
     }
     const newIds: string[] = []
     clip.forEach(c => {
@@ -2039,7 +2143,9 @@ export default function CanvasPage() {
       dispatch({ type: 'ADD_CANVAS_CARD', payload: copy })
       newIds.push(copy.id)
     })
+    const newStationIds = cloneStationsWithThreads(railClip.stations, railClip.threads, activeTabId, ox, oy)
     setSelectedIds(newIds)
+    setSelectedStationIds(newStationIds)
     setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
   }, [activeTabId, dispatch])
 
@@ -2453,7 +2559,7 @@ export default function CanvasPage() {
       if (canvasLockedRef.current) return
       const items = e.clipboardData?.items
       const imgItem = items && Array.from(items).find(i => i.kind === 'file' && i.type.startsWith('image/'))
-      const hasCards = clipboardRef.current.length > 0
+      const hasCards = clipboardRef.current.length > 0 || railClipboardRef.current.stations.length > 0
       // A fresh in-app card copy wins over a stale OS-clipboard image (keeps card duplication working).
       if (imgItem && !(internalCopyFreshRef.current && hasCards)) {
         const file = imgItem.getAsFile()
@@ -3805,12 +3911,11 @@ export default function CanvasPage() {
                 路線図 page; stations are draggable nodes (select tool). */}
             {(tabRails.length > 0 || tabStations.length > 0) && (
               <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
-                {tabRails.map(rail => {
-                  const pts = rail.stationIds.map(id => stationById.get(id)).filter((s): s is CanvasStation => !!s)
-                  if (pts.length < 2) return null
+                {railGeometry.map(({ rail, pathD }) => {
+                  if (!pathD) return null
                   // While drawing, the non-active rails dim so the target line reads.
                   const dim = tool === 'rail' && rail.id !== activeRailId
-                  return <path key={rail.id} d={metroPath(pts)} fill="none" stroke={rail.color} strokeWidth={9} strokeLinecap="round" strokeLinejoin="round" opacity={dim ? 0.3 : 1} />
+                  return <path key={rail.id} d={pathD} fill="none" stroke={rail.color} strokeWidth={9} strokeLinecap="round" strokeLinejoin="round" opacity={dim ? 0.3 : 1} />
                 })}
                 {tabStations.map(st => {
                   const rails = railsByStation.get(st.id) ?? []
@@ -3825,9 +3930,11 @@ export default function CanvasPage() {
                       // railツール中はカード層が canvas-drawing でクリックスルーになるが、
                       // 駅だけは .rail-interactive の CSS 例外で掴める（選択/ドラッグ/接続）。
                       className={tool === 'rail' ? 'rail-interactive' : undefined}
-                      style={{ pointerEvents: tool === 'select' && !canvasLocked ? 'auto' : 'none', cursor: 'grab' }}
+                      // ロック中も選択（＝読み取り専用パネルでの閲覧）はできる。
+                      // 移動やリネームは handleStationDown / dblclick 側でガード。
+                      style={{ pointerEvents: tool === 'select' ? 'auto' : 'none', cursor: canvasLocked ? 'default' : 'grab' }}
                       onMouseDown={e => handleStationDown(e, st)}
-                      onDoubleClick={e => { e.stopPropagation(); setEditingStationId(st.id) }}
+                      onDoubleClick={e => { e.stopPropagation(); if (!canvasLockedRef.current) setEditingStationId(st.id) }}
                       onContextMenu={e => handleStationContextMenu(e, st)}
                     >
                       {/* generous invisible hit area so small nodes are easy to grab */}
@@ -3851,38 +3958,16 @@ export default function CanvasPage() {
                   )
                 })}
                 {/* 自動電車 — 路線図ページと同じ: 連続して「開業」している区間に
-                    名前なしの電車を走らせる。開業マークを付けるだけで走り出す。 */}
-                {tabRails.map(rail => {
-                  const sList = rail.stationIds.map(id => stationById.get(id)).filter((s): s is CanvasStation => !!s)
-                  if (sList.length < 2) return null
-                  const runs: { from: number; to: number }[] = []
-                  let curStart = -1
-                  for (let i = 0; i < sList.length; i++) {
-                    if (sList[i].status === 'done') {
-                      if (curStart === -1) curStart = i
-                    } else {
-                      if (curStart !== -1 && i - curStart >= 2) runs.push({ from: curStart, to: i - 1 })
-                      curStart = -1
-                    }
-                  }
-                  if (curStart !== -1 && sList.length - curStart >= 2) runs.push({ from: curStart, to: sList.length - 1 })
+                    名前なしの電車を走らせる。開業マークを付けるだけで走り出す。
+                    run/経路は railGeometry で駅・路線が変わった時だけ再計算。 */}
+                {railGeometry.map(({ rail, runs }) => {
                   if (runs.length === 0) return null
                   const dim = tool === 'rail' && rail.id !== activeRailId
                   return (
                     <g key={`trains-${rail.id}`} opacity={dim ? 0.3 : 1} pointerEvents="none">
-                      {runs.map(run => {
-                        const segStations = sList.slice(run.from, run.to + 1)
-                        const segD = metroPath(segStations.map(s => ({ x: s.x, y: s.y })))
-                        const duration = Math.max(3, segStations.length * 1.6)
-                        return (
-                          <TrainSprite
-                            key={`auto-${rail.id}-${run.from}-${run.to}`}
-                            pathD={segD}
-                            color={rail.color}
-                            durationMs={duration * 1000}
-                          />
-                        )
-                      })}
+                      {runs.map(run => (
+                        <TrainSprite key={run.key} pathD={run.d} color={rail.color} durationMs={run.duration * 1000} />
+                      ))}
                     </g>
                   )
                 })}
@@ -3901,7 +3986,9 @@ export default function CanvasPage() {
                   onBlur={() => setEditingStationId(null)}
                   onKeyDown={e => { if ((e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) || e.key === 'Escape') { e.stopPropagation(); e.currentTarget.blur() } }}
                   onMouseDown={e => e.stopPropagation()}
-                  className="absolute text-[12px] font-bold text-center bg-white border border-indigo-400 rounded px-1 outline-none shadow-sm"
+                  // rail-interactive: railツール中の canvas-drawing クリックスルーから
+                  // この入力欄を除外（外すとクリックが背景へ抜けて新駅が湧く）。
+                  className="rail-interactive absolute text-[12px] font-bold text-center bg-white border border-indigo-400 rounded px-1 outline-none shadow-sm"
                   style={{ left: st.x, top: st.y - 36, transform: 'translateX(-50%)', width: `${Math.max(4, st.name.length + 2)}ch` }}
                 />
               )
@@ -3926,7 +4013,7 @@ export default function CanvasPage() {
                     d={arrowGeometry(ends, a.curved, a.points).d}
                     selected={selectedArrowId === a.id}
                     interactive={tool === 'select'}
-                    onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]); setSelectedStationIds([]) }}
+                    onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupId(null); setSelectedStationIds([]) }}
                     onEndDown={handleArrowEndDown}
                     onWayDown={handleWayDown}
                     onWayInsert={handleWayInsert}
@@ -4195,7 +4282,7 @@ export default function CanvasPage() {
             >
               {contextMenu.kind === 'canvas' ? (
                 <>
-                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={clipboardRef.current.length === 0} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
+                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={clipboardRef.current.length === 0 && railClipboardRef.current.stations.length === 0} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
                     <span className="flex items-center gap-2"><ClipboardPaste size={14} /> ここに貼り付け</span><kbd className="text-[10px] text-slate-400">Ctrl+V</kbd>
                   </button>
                   <div className="h-px bg-slate-200 my-1" />

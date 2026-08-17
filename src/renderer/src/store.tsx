@@ -111,7 +111,7 @@ export type Action =
   | { type: 'ADD_CANVAS_RAIL'; payload: CanvasRail }
   | { type: 'UPDATE_CANVAS_RAIL'; payload: CanvasRail }
   | { type: 'DELETE_CANVAS_RAIL'; payload: string }
-  | { type: 'ADD_CANVAS_STATION'; payload: { station: CanvasStation; railId: string; index?: number } }
+  | { type: 'ADD_CANVAS_STATION'; payload: { station: CanvasStation; railId?: string; index?: number } }
   | { type: 'UPDATE_CANVAS_STATION'; payload: CanvasStation }
   | { type: 'DELETE_CANVAS_STATION'; payload: string }
   | { type: 'APPEND_STATION_TO_RAIL'; payload: { railId: string; stationId: string } }
@@ -522,6 +522,7 @@ function reducer(state: AppState, action: Action): AppState {
     case 'ADD_CANVAS_STATION': {
       // Station + its rail-thread entry land in ONE action so undo removes both.
       // `index` inserts mid-line (クリックが既存の線分上だったとき) instead of appending.
+      // railId 省略時は unthreaded な駅として追加（複製/ペーストが路線を別途作る）。
       const { station, railId, index } = action.payload
       return {
         ...state,
