@@ -234,9 +234,11 @@ interface Actions {
 
 type Store = State & Actions;
 
-const pickNextColor = (lines: Record<string, Line>): string => {
-  const used = new Set(Object.values(lines).map((l) => l.color));
-  return PALETTE.find((c) => !used.has(c)) ?? PALETTE[Object.keys(lines).length % PALETTE.length];
+// 「未使用の先頭色、なければ本数の剰余」— 路線図の路線とキャンバスの線路の
+// 両方で使う共通の次色選択。
+export const pickNextColor = (usedColors: string[]): string => {
+  const used = new Set(usedColors);
+  return PALETTE.find((c) => !used.has(c)) ?? PALETTE[usedColors.length % PALETTE.length];
 };
 
 // Selection state in one place: the multi arrays plus the derived "exactly one"
@@ -286,7 +288,7 @@ export const useStore = create<Store>()(
       addLine: (name, color) => {
         const id = nanoid(8);
         set((s) => {
-          const finalColor = color ?? pickNextColor(s.lines);
+          const finalColor = color ?? pickNextColor(Object.values(s.lines).map((l) => l.color));
           const finalName = name ?? `路線 ${s.lineOrder.length + 1}`;
           return {
             lines: {

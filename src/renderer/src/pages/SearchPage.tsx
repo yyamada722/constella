@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, FolderKanban, Globe, LayoutDashboard, Type } from 'lucide-react'
+import { FileText, FolderKanban, Globe, LayoutDashboard, Type, TrainFront } from 'lucide-react'
 import { useApp } from '../store'
 import { useNavigate } from 'react-router-dom'
 import { SearchInput } from '../components/SearchInput'
 
-type ResultType = 'note' | 'task' | 'research' | 'card' | 'label'
+type ResultType = 'note' | 'task' | 'research' | 'card' | 'label' | 'station'
 
 interface SearchResult {
   id: string
@@ -21,6 +21,7 @@ const typeConfig = {
   research: { icon: Globe, color: 'text-sky-600', label: 'リサーチ' },
   card: { icon: LayoutDashboard, color: 'text-indigo-600', label: 'カード' },
   label: { icon: Type, color: 'text-violet-600', label: 'ラベル' },
+  station: { icon: TrainFront, color: 'text-rose-600', label: '駅' },
 } as const
 
 // Highlight every substring match (case-insensitive) inside a snippet with <mark>.
@@ -88,6 +89,19 @@ export default function SearchPage() {
         items.push({ id: label.id, type: 'label', title: label.text || '(空のラベル)', preview: 'ラベル', tags: [], meta: tabName(label.tabId) })
       }
     }
+    // キャンバスの線路: 駅名と路線名。路線ヒットはその路線の先頭駅へジャンプする。
+    for (const station of state.canvasStations) {
+      if (station.name.toLowerCase().includes(q)) {
+        const rails = state.canvasRails.filter(r => r.stationIds.includes(station.id)).map(r => r.name)
+        items.push({ id: station.id, type: 'station', title: station.name || '(無名の駅)', preview: rails.join('・') || '駅', tags: [], meta: tabName(station.tabId) })
+      }
+    }
+    for (const rail of state.canvasRails) {
+      if (rail.name.toLowerCase().includes(q)) {
+        const first = rail.stationIds.map(id => state.canvasStations.find(s => s.id === id)).find(Boolean)
+        if (first) items.push({ id: first.id, type: 'station', title: rail.name, preview: `路線（${rail.stationIds.length}駅)`, tags: [], meta: tabName(rail.tabId) })
+      }
+    }
 
     return items
   }, [query, state])
@@ -102,6 +116,7 @@ export default function SearchPage() {
     else if (r.type === 'task') navigate(`/projects?taskId=${r.id}`)
     else if (r.type === 'research') navigate('/research')
     else if (r.type === 'card') navigate('/canvas', { state: { focusCardId: r.id } })
+    else if (r.type === 'station') navigate('/canvas', { state: { focusStationId: r.id } })
     else navigate('/canvas', { state: { focusLabelId: r.id } })
   }
 

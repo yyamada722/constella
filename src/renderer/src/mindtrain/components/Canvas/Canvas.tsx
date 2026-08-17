@@ -1,6 +1,8 @@
 import { useRef, useState, useEffect } from 'react';
 import { PALETTE, useStore } from '../../store/useStore';
 import { findInsertionIndex, metroPath } from '../../utils/path';
+import { getLabelLayout } from '../../utils/labels';
+import { computeDoneRuns, autoTrainDuration } from '../../utils/trains';
 import { snapPoint } from '../../utils/grid';
 import { TrainSprite } from './TrainSprite';
 import { LineLabel } from './LineLabel';
@@ -19,40 +21,7 @@ function MtImage({ src, x, y, width, height }: { src: string; x: number; y: numb
   return <image x={x} y={y} width={width} height={height} href={url} preserveAspectRatio="xMidYMid slice" />;
 }
 
-interface LabelLayout {
-  dx: number;
-  dy: number;
-  anchor: 'start' | 'middle' | 'end';
-  baseline: 'auto' | 'middle' | 'hanging';
-}
-
-function getLabelLayout(
-  dir: LabelDir,
-  halfSize: number,
-  strokeW: number
-): LabelLayout {
-  const corner = halfSize + strokeW / 2;
-  const pad = 6;
-  const diag = corner + 1;
-  switch (dir) {
-    case 'n':
-      return { dx: 0, dy: -corner - pad, anchor: 'middle', baseline: 'auto' };
-    case 'ne':
-      return { dx: diag, dy: -diag, anchor: 'start', baseline: 'auto' };
-    case 'e':
-      return { dx: corner + pad, dy: 0, anchor: 'start', baseline: 'middle' };
-    case 'se':
-      return { dx: diag, dy: diag, anchor: 'start', baseline: 'hanging' };
-    case 's':
-      return { dx: 0, dy: corner + pad, anchor: 'middle', baseline: 'hanging' };
-    case 'sw':
-      return { dx: -diag, dy: diag, anchor: 'end', baseline: 'hanging' };
-    case 'w':
-      return { dx: -(corner + pad), dy: 0, anchor: 'end', baseline: 'middle' };
-    case 'nw':
-      return { dx: -diag, dy: -diag, anchor: 'end', baseline: 'auto' };
-  }
-}
+// getLabelLayout は utils/labels.ts へ移動（キャンバスの線路レイヤーと共有）。
 
 const ARROW_GLYPH: Record<LabelDir, string> = {
   n: '↑',
@@ -1039,28 +1008,15 @@ export function Canvas() {
 
       if (lineTrains.length === 0) {
         // ユーザー定義の電車がなければ、連続して「開業」している区間に
-        // 自動の名前なし電車を走らせる（点群モード）。
-        const runs: { from: number; to: number }[] = [];
-        let curStart = -1;
-        for (let i = 0; i < sList.length; i++) {
-          if (sList[i].status === 'done') {
-            if (curStart === -1) curStart = i;
-          } else {
-            if (curStart !== -1 && i - curStart >= 2) {
-              runs.push({ from: curStart, to: i - 1 });
-            }
-            curStart = -1;
-          }
-        }
-        if (curStart !== -1 && sList.length - curStart >= 2) {
-          runs.push({ from: curStart, to: sList.length - 1 });
-        }
+        // 自動の名前なし電車を走らせる（点群モード）。run 検出はキャンバスの
+        // 線路レイヤーと共通（utils/trains.ts）。
+        const runs = computeDoneRuns(sList);
         runs.forEach((run) => {
           const segStations = sList.slice(run.from, run.to + 1);
           const segD = metroPath(
             segStations.map((s) => ({ x: s.x, y: s.y }))
           );
-          const duration = Math.max(3, segStations.length * 1.6);
+          const duration = autoTrainDuration(segStations.length);
           out.push(
             <TrainSprite
               key={`auto-${lid}-${run.from}-${run.to}`}
