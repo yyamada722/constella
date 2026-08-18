@@ -89,14 +89,17 @@ function Header() {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute top-12 left-2 z-50 w-64 max-h-[60vh] overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl py-1">
-            {state.masterProjects.map(p => (
+            {/* Archived projects are hidden, matching the desktop switcher; the active
+                one stays listed (with a badge) even if archived so mobile is never stuck. */}
+            {state.masterProjects.filter(p => !p.archivedAt || p.id === state.activeMasterProjectId).map(p => (
               <button
                 key={p.id}
                 onClick={() => { dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: p.id }); setOpen(false) }}
                 className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
               >
                 <Check size={14} className={p.id === state.activeMasterProjectId ? 'opacity-100 text-indigo-500' : 'opacity-0'} />
-                <span className="truncate">{p.name}</span>
+                <span className={`truncate ${p.archivedAt ? 'text-slate-400 dark:text-slate-500' : ''}`}>{p.name}</span>
+                {p.archivedAt && <span className="ml-auto shrink-0 text-[10px] text-slate-400">アーカイブ済</span>}
               </button>
             ))}
           </div>

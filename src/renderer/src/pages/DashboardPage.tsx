@@ -16,11 +16,29 @@ interface AgendaItem { task: Task; board: Project; bIdx: number; masterId: strin
 // Effective status per task: parents mirror their child aggregate — the same status the
 // gantt/kanban display — so a parent whose children are all done never counts as overdue
 // even if its own raw status was left at todo. Leaves use their own status.
-function effStatusLookup(pool: Task[]): (t: Task) => Task['status'] {
+// Cached per pool array (WeakMap keyed on the array reference — state updates produce
+// new arrays, invalidating naturally): the buckets, the sort and the agenda all hit the
+// same pool several times per render, and aggregateFor rebuilds its child map per call.
+interface EffStatus { statusOf: (t: Task) => Task['status']; hasChildren: (t: Task) => boolean }
+const effCache = new WeakMap<Task[], EffStatus>()
+function effStatusLookup(pool: Task[]): EffStatus {
+  const hit = effCache.get(pool)
+  if (hit) return hit
   const known = new Set(pool.map(t => t.id))
   const parentIds = new Set<string>()
   for (const t of pool) if (t.parentId && known.has(t.parentId)) parentIds.add(t.parentId)
-  return t => parentIds.has(t.id) ? aggregateFor(pool, t).status : t.status
+  const statusCache = new Map<string, Task['status']>()
+  const api: EffStatus = {
+    statusOf: t => {
+      if (!parentIds.has(t.id)) return t.status
+      let s = statusCache.get(t.id)
+      if (!s) { s = aggregateFor(pool, t).status; statusCache.set(t.id, s) }
+      return s
+    },
+    hasChildren: t => parentIds.has(t.id),
+  }
+  effCache.set(pool, api)
+  return api
 }
 const BUCKET_ORDER: AgendaBucket[] = ['overdue', 'today', 'tomorrow', 'soon']
 const BUCKET_META: Record<AgendaBucket, { label: string; head: string; chip: string }> = {
@@ -66,6 +84,15 @@ export default function DashboardPage() {
     const v = new Set([...masterFilter].filter(id => ids.has(id)))
     return v.size === 0 || v.size === liveMasters.length ? new Set<string>() : v
   }, [masterFilter, liveMasters])
+  // Prune ids that stopped being live (deleted/archived masters) from the STORED set
+  // too — sanitizing only the derived value would leave a stale id in localStorage
+  // that silently re-activates the old filter when the project is restored.
+  useEffect(() => {
+    const live = new Set(liveMasters.map(m => m.id))
+    const kept = [...masterFilter].filter(id => live.has(id))
+    if (kept.length === masterFilter.size) return
+    setMasterFilter(kept.length === 0 || kept.length === liveMasters.length ? new Set() : new Set(kept))
+  }, [liveMasters, masterFilter])
   const filteredMasters = useMemo(
     () => activeFilter.size === 0 ? liveMasters : liveMasters.filter(m => activeFilter.has(m.id)),
     [liveMasters, activeFilter]
@@ -85,9 +112,8 @@ export default function DashboardPage() {
     for (const master of filteredMasters) {
       filteredProjects.filter(p => p.masterProjectId === master.id).forEach((board, bIdx) => {
         const eff = effStatusLookup(board.tasks)
-        const hasKids = (t: Task) => board.tasks.some(x => x.parentId === t.id)
         for (const t of board.tasks) {
-          const effStatus = eff(t)
+          const effStatus = eff.statusOf(t)
           if (effStatus === 'done') continue
           const due = t.endDate ?? t.startDate // end is the deadline; start-only = 1-day item
           if (!due) continue
@@ -97,7 +123,7 @@ export default function DashboardPage() {
           else if (due === tomorrow) bucket = 'tomorrow'
           else if (due <= soonEnd) bucket = 'soon'
           if (!bucket) continue
-          items.push({ task: t, board, bIdx, masterId: master.id, masterName: master.name, due, bucket, effStatus, hasChildren: hasKids(t) })
+          items.push({ task: t, board, bIdx, masterId: master.id, masterName: master.name, due, bucket, effStatus, hasChildren: eff.hasChildren(t) })
         }
       })
     }
@@ -181,8 +207,13 @@ export default function DashboardPage() {
   }, [summarySort])
   const summaryMasters = useMemo(() => {
     if (summarySort === 'default') return byMaster
+    // Score once per master, then sort — the comparator would otherwise re-run the
+    // bucket scans O(n log n) times.
     const score = (tasks: Task[]) => slipping(tasks).length * 10000 + thisWeek(tasks).length * 100 + undated(tasks).length
-    return [...byMaster].sort((a, b) => score(b.tasks) - score(a.tasks))
+    return byMaster
+      .map(m => ({ m, s: score(m.tasks) }))
+      .sort((a, b) => b.s - a.s)
+      .map(x => x.m)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [byMaster, summarySort, today])
 
@@ -192,7 +223,7 @@ export default function DashboardPage() {
     const eff = effStatusLookup(tasks)
     let todo = 0, doing = 0, done = 0
     for (const t of tasks) {
-      const s = eff(t)
+      const s = eff.statusOf(t)
       if (s === 'done') done++
       else if (s === 'in-progress') doing++
       else todo++
@@ -202,7 +233,7 @@ export default function DashboardPage() {
   function thisWeek(tasks: Task[]) {
     const eff = effStatusLookup(tasks)
     return tasks.filter(t => {
-      if (eff(t) === 'done') return false // finished work isn't "やること" anymore
+      if (eff.statusOf(t) === 'done') return false // finished work isn't "やること" anymore
       const e = t.endDate || t.startDate
       if (!e) return false
       return e >= today && e <= weekEnd
@@ -211,7 +242,7 @@ export default function DashboardPage() {
   function slipping(tasks: Task[]) {
     const eff = effStatusLookup(tasks)
     return tasks.filter(t => {
-      if (eff(t) === 'done') return false
+      if (eff.statusOf(t) === 'done') return false
       const e = t.endDate
       if (!e) return false
       return e < today
@@ -219,7 +250,7 @@ export default function DashboardPage() {
   }
   function undated(tasks: Task[]) {
     const eff = effStatusLookup(tasks)
-    return tasks.filter(t => !t.startDate && !t.endDate && eff(t) !== 'done')
+    return tasks.filter(t => !t.startDate && !t.endDate && eff.statusOf(t) !== 'done')
   }
   function jumpToMaster(masterId: string) {
     if (state.activeMasterProjectId !== masterId) {
@@ -253,7 +284,7 @@ export default function DashboardPage() {
           {/* Master-project filter — narrows all three views at once. */}
           <div className="relative" ref={filterMenuRef}>
             <button
-              onClick={() => setFilterMenuOpen(o => { if (!o) setFilterSearch(''); return !o })}
+              onClick={() => { if (!filterMenuOpen) setFilterSearch(''); setFilterMenuOpen(o => !o) }}
               title="表示するプロジェクトを絞り込み"
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition-colors ${
                 activeFilter.size > 0

@@ -390,7 +390,7 @@ export default function Sidebar() {
       <div className={`pt-3 pb-1 relative ${expanded ? 'px-3' : 'px-2'}`}>
         {expanded && <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide px-1 pb-1">プロジェクト</div>}
         <button
-          onClick={() => setProjMenuOpen(o => { if (!o) setProjSearch(''); return !o })}
+          onClick={() => { if (!projMenuOpen) setProjSearch(''); setProjMenuOpen(o => !o) }}
           className={`w-full flex items-center gap-2 rounded-lg text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors ${expanded ? 'px-2.5 py-2' : 'p-2 justify-center'}`}
           title={expanded ? 'プロジェクトを切り替え' : (activeMaster?.name ?? 'プロジェクト')}
         >

@@ -234,7 +234,7 @@
 :where(.dark) .hover\:text-teal-700:hover { color: rgb(94 234 212); }
 :where(.dark) .hover\:text-yellow-700:hover { color: rgb(253 224 71); }
 :where(.dark) .placeholder-slate-400::placeholder { color: rgb(115 115 115); }
-:where(.dark) .placeholder\:text-slate-400 { color: rgb(115 115 115); }
+:where(.dark) .placeholder\:text-slate-400::placeholder { color: rgb(115 115 115); }
 :where(.dark) .ring-amber-400 { --tw-ring-color: rgb(217 119 6); }
 :where(.dark) .ring-emerald-400 { --tw-ring-color: rgb(5 150 105); }
 :where(.dark) .ring-fuchsia-400 { --tw-ring-color: rgb(192 38 211); }
