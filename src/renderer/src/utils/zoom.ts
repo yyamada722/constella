@@ -8,7 +8,7 @@
 
 const KEY = 'constella.zoomSpeed'
 export const ZOOM_SPEED_MIN = 0.2
-export const ZOOM_SPEED_MAX = 3
+export const ZOOM_SPEED_MAX = 6
 export const ZOOM_SPEED_DEFAULT = 1
 
 let cached: number | null = null
