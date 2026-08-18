@@ -315,6 +315,14 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
     window.addEventListener('mouseup', onUp)
   }
 
+  // Cross-project mode: board names alone are ambiguous (several projects can have a
+  // "企画" board), so chips / row chips / the edit popover carry a master-name prefix.
+  const masterNameOf = useMemo(() => {
+    if (!groupByMaster || !masters) return () => undefined as string | undefined
+    const byId = new Map(masters.map(m => [m.id, m.name]))
+    return (b: Project) => byId.get(b.masterProjectId)
+  }, [groupByMaster, masters])
+
   // ── Shared cross-project schedules (read-only overlay) ──
   // Tasks in OTHER master projects that were marked "shared" show here — under
   // their sharedAlias so the real title stays private. Read-only: to change one,
@@ -322,8 +330,10 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
   const sharedExternal = useMemo(() => {
     if (!bandMasterId) return [] as { id: string; alias: string; start: string; end: string; color: BoardColor; boardName: string }[]
     const out: { id: string; alias: string; start: string; end: string; color: BoardColor; boardName: string }[] = []
+    const archivedMasters = new Set(state.masterProjects.filter(m => m.archivedAt).map(m => m.id))
     state.projects.forEach((p, pi) => {
       if (p.masterProjectId === bandMasterId) return // own master → shown as normal bars
+      if (archivedMasters.has(p.masterProjectId)) return // finished projects stop broadcasting
       for (const t of p.tasks) {
         if (!t.shared) continue
         const span = taskSpan(t.startDate, t.endDate)
@@ -332,7 +342,7 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
       }
     })
     return out
-  }, [state.projects, bandMasterId])
+  }, [state.projects, state.masterProjects, bandMasterId])
   const bandCols = (b: { start: string; end: string }): [number, number] =>
     [daysBetween(rangeStart, b.start), daysBetween(rangeStart, b.end)]
 
@@ -674,11 +684,14 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
                       return n
                     })
                   }}
-                  title={`${b.name}（クリックで単独表示→追加/解除、Alt+クリックでこれだけ隠す）`}
+                  title={`${masterNameOf(b) ? `${masterNameOf(b)} / ` : ''}${b.name}（クリックで単独表示→追加/解除、Alt+クリックでこれだけ隠す）`}
                   className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] border transition-all shrink-0 ${hidden ? 'border-slate-200 text-slate-400 bg-white opacity-50' : `${cls.border} ${cls.text} ${cls.bg}`}`}
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${cls.dot} ${hidden ? 'opacity-30' : ''}`} />
-                  <span className="truncate max-w-[80px]">{b.name}</span>
+                  <span className={`truncate ${masterNameOf(b) ? 'max-w-[150px]' : 'max-w-[80px]'}`}>
+                    {masterNameOf(b) && <span className={hidden ? 'opacity-60' : 'text-slate-500'}>{masterNameOf(b)}/</span>}
+                    {b.name}
+                  </span>
                 </button>
               )
             })}
@@ -731,7 +744,11 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
               placeholder="(無題)"
               className="flex-1 min-w-0 bg-transparent border-b border-slate-200 focus:border-emerald-400 outline-none text-slate-800 font-medium px-0.5 py-0.5"
             />
-            <span className="text-[10px] text-slate-400 truncate max-w-[80px]" title={editing.row.board.name}>{editing.row.board.name}</span>
+            <span className={`text-[10px] text-slate-400 truncate ${masterNameOf(editing.row.board) ? 'max-w-[130px]' : 'max-w-[80px]'}`}
+                  title={`${masterNameOf(editing.row.board) ? `${masterNameOf(editing.row.board)} / ` : ''}${editing.row.board.name}`}>
+              {masterNameOf(editing.row.board) && <span className="opacity-70">{masterNameOf(editing.row.board)} / </span>}
+              {editing.row.board.name}
+            </span>
           </div>
           <textarea
             value={editing.row.task.description}
@@ -1124,9 +1141,13 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
                     const boardCol = boardColorFor(r.board, boardIndex.get(r.board.id) ?? 0)
                     const bcCls = BOARD_COLOR_CLASSES[boardCol]
                     return (
-                      <span className={`ml-auto text-[10px] truncate max-w-[80px] inline-flex items-center gap-1 ${bcCls.text}`} title={r.board.name}>
+                      <span className={`ml-auto text-[10px] truncate inline-flex items-center gap-1 ${masterNameOf(r.board) ? 'max-w-[150px]' : 'max-w-[80px]'} ${bcCls.text}`}
+                            title={`${masterNameOf(r.board) ? `${masterNameOf(r.board)} / ` : ''}${r.board.name}`}>
                         <span className={`w-1.5 h-1.5 rounded-full ${bcCls.dot} shrink-0`} />
-                        <span className="truncate">{r.board.name}</span>
+                        <span className="truncate">
+                          {masterNameOf(r.board) && <span className="text-slate-400">{masterNameOf(r.board)}/</span>}
+                          {r.board.name}
+                        </span>
                       </span>
                     )
                   })()}

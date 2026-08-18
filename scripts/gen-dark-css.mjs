@@ -133,6 +133,9 @@ const PSEUDO = {
   'focus-within:': ':focus-within',
   'active:': ':active',
   'disabled:': ':disabled',
+  // placeholder: is a pseudo-ELEMENT — without this mapping the override lands on
+  // the input's own text color instead of the placeholder.
+  'placeholder:': '::placeholder',
 }
 
 function ruleFor(token) {

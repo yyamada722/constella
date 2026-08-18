@@ -4,6 +4,8 @@ export interface MasterProject {
   id: string
   name: string
   createdAt: string
+  archivedAt?: string // ISO timestamp — archived (finished) projects are hidden from the switcher's main list and excluded from dashboard aggregation; restorable
+  folder?: string // optional group name — the switcher renders projects sharing a folder under one collapsible header (plain string, no folder entity)
 }
 
 export interface Note {

@@ -22,7 +22,7 @@ const SCHEMA_VERSION = 1
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS master_projects (ord INTEGER, id TEXT PRIMARY KEY, name TEXT, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS master_projects (ord INTEGER, id TEXT PRIMARY KEY, name TEXT, createdAt TEXT, archivedAt TEXT, folder TEXT);
 CREATE TABLE IF NOT EXISTS notes (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, content TEXT, tags TEXT, createdAt TEXT, updatedAt TEXT, folderId TEXT, pinned INTEGER, archivedAt TEXT, shared INTEGER, refByMasterIds TEXT);
 CREATE TABLE IF NOT EXISTS note_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT);
@@ -272,6 +272,8 @@ async function getDb(): Promise<Database> {
     try { db.run('ALTER TABLE canvas_arrows ADD COLUMN points TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE plans ADD COLUMN folder TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE plans ADD COLUMN folderId TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE master_projects ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE master_projects ADD COLUMN folder TEXT') } catch { /* column already present */ }
     // One-time migration: collapse all pre-existing data under a single default
     // master project ('メイン'). Runs once (meta-gated); the in-memory
     // normalizeMasterProjects in store.tsx is the comprehensive safety net for any
@@ -330,6 +332,8 @@ export async function loadState(): Promise<AppState | null> {
 
   const masterProjects: MasterProject[] = rows(db, 'SELECT * FROM master_projects ORDER BY ord').map(r => ({
     id: str(r.id), name: str(r.name), createdAt: str(r.createdAt),
+    archivedAt: optStr(r.archivedAt),
+    folder: optStr(r.folder),
   }))
   const activeMasterProjectId = str(rows(db, "SELECT value FROM meta WHERE key='activeMasterProject'")[0]?.value)
 
@@ -591,8 +595,8 @@ async function doSaveState(state: AppState): Promise<void> {
       stmt.free()
     }
 
-    insert('INSERT INTO master_projects (ord,id,name,createdAt) VALUES (?,?,?,?)',
-      state.masterProjects.map((p, i) => [i, p.id, p.name, p.createdAt].map(B)))
+    insert('INSERT INTO master_projects (ord,id,name,createdAt,archivedAt,folder) VALUES (?,?,?,?,?,?)',
+      state.masterProjects.map((p, i) => [i, p.id, p.name, p.createdAt, p.archivedAt ?? null, p.folder ?? null].map(B)))
 
     insert('INSERT INTO notes (ord,id,masterProjectId,title,content,tags,createdAt,updatedAt,folderId,pinned,archivedAt,shared,refByMasterIds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.notes.map((n, i) => [i, n.id, n.masterProjectId, n.title, n.content, JSON.stringify(n.tags ?? []), n.createdAt, n.updatedAt, n.folderId ?? null, n.pinned ? 1 : 0, n.archivedAt ?? null, n.shared ? 1 : 0, JSON.stringify(n.refByMasterIds ?? [])].map(B)))

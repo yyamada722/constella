@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, Fragment } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map } from 'lucide-react'
+import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus } from 'lucide-react'
 import { useApp } from '../store'
 import { useStore as useMindtrainStore } from '../mindtrain/store/useStore'
 import { exportBackup, importBackup } from '../persistence/backup'
@@ -98,6 +98,91 @@ export default function Sidebar() {
   const masters = state.masterProjects
   const activeMaster = masters.find(m => m.id === state.activeMasterProjectId) ?? masters[0] ?? null
 
+  // Switcher search + pinned masters. Pins are a pure view preference (localStorage),
+  // not part of the data model — pinned projects float to the top of the dropdown.
+  const [projSearch, setProjSearch] = useState('')
+  const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('constella.pinnedMasters') || '[]')
+      return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []
+    } catch { return [] }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.pinnedMasters', JSON.stringify(pinnedIds)) } catch { /* ignore */ }
+  }, [pinnedIds])
+  const togglePin = (id: string) => setPinnedIds(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id])
+  // Archived masters live in a collapsed section at the bottom — out of the main
+  // list and out of the search, but still switchable / restorable / deletable.
+  const activeMasters = masters.filter(m => !m.archivedAt)
+  const archivedMasters = masters.filter(m => m.archivedAt)
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const searchable = activeMasters.length >= 6
+  const q = projSearch.trim().toLowerCase()
+  const matched = q ? activeMasters.filter(m => m.name.toLowerCase().includes(q)) : activeMasters
+  const pinnedMasters = matched.filter(m => pinnedIds.includes(m.id))
+  const otherMasters = matched.filter(m => !pinnedIds.includes(m.id))
+
+  // Project folders — a plain string tag on MasterProject (no folder entity). The
+  // switcher groups unpinned active projects sharing a folder under one collapsible
+  // header; rename rewrites every member, ungrouping just clears the tag.
+  const [collapsedFolders, setCollapsedFolders] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('constella.masterFolderCollapsed') || '[]')
+      return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : []
+    } catch { return [] }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.masterFolderCollapsed', JSON.stringify(collapsedFolders)) } catch { /* ignore */ }
+  }, [collapsedFolders])
+  const toggleFolderCollapsed = (name: string) =>
+    setCollapsedFolders(c => c.includes(name) ? c.filter(x => x !== name) : [...c, name])
+  const [editingFolder, setEditingFolder] = useState<string | null>(null) // original name under rename
+  const [folderDraft, setFolderDraft] = useState('')
+  const [folderPickerFor, setFolderPickerFor] = useState<string | null>(null) // master id with the move-to-folder picker open
+  const [newFolderDraft, setNewFolderDraft] = useState('')
+  const allFolderNames = [...new Set(activeMasters.filter(m => m.folder).map(m => m.folder!))]
+
+  function setMasterFolder(id: string, folder: string | undefined) {
+    const m = masters.find(x => x.id === id)
+    if (!m) return
+    dispatch({ type: 'UPDATE_MASTER_PROJECT', payload: { ...m, folder: folder?.trim() || undefined } })
+    setFolderPickerFor(null)
+    setNewFolderDraft('')
+  }
+  function renameFolder(oldName: string, newName: string) {
+    const next = newName.trim()
+    setEditingFolder(null)
+    if (!next || next === oldName) return
+    for (const m of masters.filter(x => x.folder === oldName)) {
+      dispatch({ type: 'UPDATE_MASTER_PROJECT', payload: { ...m, folder: next } })
+    }
+    setCollapsedFolders(c => c.map(x => x === oldName ? next : x))
+  }
+  function ungroupFolder(name: string) {
+    for (const m of masters.filter(x => x.folder === name)) {
+      dispatch({ type: 'UPDATE_MASTER_PROJECT', payload: { ...m, folder: undefined } })
+    }
+    setCollapsedFolders(c => c.filter(x => x !== name))
+  }
+
+  // Archive / restore. Archiving the active master hops to a surviving active one
+  // first (same pattern as delete) so the workspace never sits on a hidden project.
+  function archiveMaster(id: string) {
+    if (activeMasters.length <= 1) return
+    const m = masters.find(x => x.id === id)
+    if (!m) return
+    if (id === state.activeMasterProjectId) {
+      const next = activeMasters.find(x => x.id !== id)
+      if (next) dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: next.id })
+    }
+    dispatch({ type: 'UPDATE_MASTER_PROJECT', payload: { ...m, archivedAt: new Date().toISOString() } })
+  }
+  function restoreMaster(id: string) {
+    const m = masters.find(x => x.id === id)
+    if (!m) return
+    dispatch({ type: 'UPDATE_MASTER_PROJECT', payload: { ...m, archivedAt: undefined } })
+  }
+
   function switchMaster(id: string) {
     setProjMenuOpen(false)
     if (id !== state.activeMasterProjectId) dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: id })
@@ -117,7 +202,7 @@ export default function Sidebar() {
     // If deleting the active master, switch to a survivor first (also moving the
     // route map off the doomed workspace) so nothing references the deleted id.
     if (id === state.activeMasterProjectId) {
-      const next = masters.find(x => x.id !== id)
+      const next = masters.find(x => x.id !== id && !x.archivedAt) ?? masters.find(x => x.id !== id)
       if (next) {
         dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: next.id })
         useMindtrainStore.getState().bindWorkspaceToProject(next.id, next.name)
@@ -158,6 +243,119 @@ export default function Sidebar() {
     try { await importBackup(file); window.location.reload() } catch (e) { alert(String(e instanceof Error ? e.message : e)); setBusy(null) }
   }
 
+  // One dropdown row per master project — shared by the pinned and unpinned groups.
+  // Action buttons do NOT sit in the flex flow (they'd eat name width even while
+  // invisible): they overlay the row's right edge on hover with a fade so the full
+  // project name stays readable until you actually reach for an action.
+  function masterRow(m: typeof masters[number], indent = false) {
+    const pinned = pinnedIds.includes(m.id)
+    const editing = editingMasterId === m.id
+    return (
+      <Fragment key={m.id}>
+      <div
+        onClick={() => switchMaster(m.id)}
+        className={`group relative flex items-center gap-2 py-1.5 text-sm cursor-pointer hover:bg-slate-100 ${indent ? 'pl-6 pr-2.5' : 'px-2.5'} ${
+          m.id === state.activeMasterProjectId ? 'text-indigo-600' : 'text-slate-700'
+        }`}
+      >
+        <Check size={14} className={`shrink-0 ${m.id === state.activeMasterProjectId ? 'opacity-100' : 'opacity-0'}`} />
+        {editing ? (
+          <input
+            autoFocus
+            type="text"
+            value={m.name}
+            onChange={e => dispatch({ type: 'UPDATE_MASTER_PROJECT', payload: { ...m, name: e.target.value } })}
+            onBlur={() => setEditingMasterId(null)}
+            onKeyDown={e => { if (e.key === 'Enter') setEditingMasterId(null) }}
+            onClick={e => e.stopPropagation()}
+            className="flex-1 min-w-0 bg-transparent border-b border-indigo-300 outline-none text-sm text-slate-800"
+          />
+        ) : (
+          <span className="flex-1 min-w-0 truncate" title={m.name} onDoubleClick={e => { e.stopPropagation(); setEditingMasterId(m.id) }}>{m.name}</span>
+        )}
+        {/* Static pinned marker — hidden while the hover action cluster is up. */}
+        {pinned && !editing && <Pin size={11} className="text-indigo-400 fill-current shrink-0 group-hover:hidden" />}
+        {!editing && (
+          <div className="absolute right-1.5 inset-y-0 hidden group-hover:flex items-center gap-0.5 pl-1.5 bg-slate-100">
+            <button
+              onClick={e => { e.stopPropagation(); setNewFolderDraft(''); setFolderPickerFor(p => p === m.id ? null : m.id) }}
+              className={`p-0.5 rounded hover:bg-slate-200 shrink-0 ${folderPickerFor === m.id ? 'text-amber-600' : 'text-slate-400 hover:text-amber-600'}`}
+              title="フォルダへ移動"
+            >
+              <FolderInput size={12} />
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); togglePin(m.id) }}
+              className={`p-0.5 rounded hover:bg-slate-200 shrink-0 ${pinned ? 'text-indigo-500 hover:text-indigo-700' : 'text-slate-400 hover:text-slate-700'}`}
+              title={pinned ? 'ピン留めを解除' : '上部にピン留め'}
+            >
+              <Pin size={12} className={pinned ? 'fill-current' : ''} />
+            </button>
+            <button
+              onClick={e => { e.stopPropagation(); setEditingMasterId(m.id) }}
+              className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-700 shrink-0"
+              title="名前を変更"
+            >
+              <Pencil size={12} />
+            </button>
+            {activeMasters.length > 1 && (
+              <button
+                onClick={e => { e.stopPropagation(); archiveMaster(m.id) }}
+                className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-amber-600 shrink-0"
+                title="アーカイブ（終了したプロジェクトを一覧から退避）"
+              >
+                <Archive size={12} />
+              </button>
+            )}
+            {masters.length > 1 && (
+              <button
+                onClick={e => { e.stopPropagation(); deleteMaster(m.id) }}
+                className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-500 shrink-0"
+                title="プロジェクトを削除"
+              >
+                <Trash2 size={12} />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {/* Move-to-folder picker — inline under the row so it scrolls with the list. */}
+      {folderPickerFor === m.id && (
+        <div className="pl-9 pr-2.5 py-1.5 bg-slate-50 border-y border-slate-100 space-y-0.5" onClick={e => e.stopPropagation()}>
+          <div className="text-[10px] text-slate-400 px-1">フォルダへ移動</div>
+          {allFolderNames.filter(n => n !== m.folder).map(n => (
+            <button
+              key={n}
+              onClick={() => setMasterFolder(m.id, n)}
+              className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-slate-600 hover:bg-slate-200/60 text-left"
+            >
+              <Folder size={11} className="text-amber-500/80 shrink-0" /> <span className="truncate">{n}</span>
+            </button>
+          ))}
+          {m.folder && (
+            <button
+              onClick={() => setMasterFolder(m.id, undefined)}
+              className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-slate-500 hover:bg-slate-200/60 text-left"
+            >
+              <FolderMinus size={11} className="shrink-0" /> フォルダから外す
+            </button>
+          )}
+          <div className="flex items-center gap-1.5 px-1.5 pt-0.5">
+            <Folder size={11} className="text-slate-300 shrink-0" />
+            <input
+              value={newFolderDraft}
+              onChange={e => setNewFolderDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && newFolderDraft.trim()) setMasterFolder(m.id, newFolderDraft) }}
+              placeholder="新しいフォルダ名… (Enter)"
+              className="flex-1 min-w-0 bg-transparent border-b border-slate-200 focus:border-indigo-300 outline-none text-xs text-slate-700 py-0.5 placeholder:text-slate-400"
+            />
+          </div>
+        </div>
+      )}
+      </Fragment>
+    )
+  }
+
   // When collapsed AND not hovering AND no dropdown open → render the compact strip.
   const expanded = !collapsed || hover || projMenuOpen || menuOpen
   const outerW = collapsed ? 48 : width
@@ -192,7 +390,7 @@ export default function Sidebar() {
       <div className={`pt-3 pb-1 relative ${expanded ? 'px-3' : 'px-2'}`}>
         {expanded && <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide px-1 pb-1">プロジェクト</div>}
         <button
-          onClick={() => setProjMenuOpen(o => !o)}
+          onClick={() => { if (!projMenuOpen) setProjSearch(''); setProjMenuOpen(o => !o) }}
           className={`w-full flex items-center gap-2 rounded-lg text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 transition-colors ${expanded ? 'px-2.5 py-2' : 'p-2 justify-center'}`}
           title={expanded ? 'プロジェクトを切り替え' : (activeMaster?.name ?? 'プロジェクト')}
         >
@@ -205,50 +403,142 @@ export default function Sidebar() {
         {projMenuOpen && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setProjMenuOpen(false)} />
-            <div className="absolute left-3 right-3 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-xl py-1">
-              <div className="max-h-72 overflow-y-auto">
-                {masters.map(m => (
-                  <div
-                    key={m.id}
-                    onClick={() => switchMaster(m.id)}
-                    className={`group flex items-center gap-2 px-2.5 py-1.5 text-sm cursor-pointer hover:bg-slate-100 ${
-                      m.id === state.activeMasterProjectId ? 'text-indigo-600' : 'text-slate-700'
-                    }`}
-                  >
-                    <Check size={14} className={`shrink-0 ${m.id === state.activeMasterProjectId ? 'opacity-100' : 'opacity-0'}`} />
-                    {editingMasterId === m.id ? (
-                      <input
-                        autoFocus
-                        type="text"
-                        value={m.name}
-                        onChange={e => dispatch({ type: 'UPDATE_MASTER_PROJECT', payload: { ...m, name: e.target.value } })}
-                        onBlur={() => setEditingMasterId(null)}
-                        onKeyDown={e => { if (e.key === 'Enter') setEditingMasterId(null) }}
-                        onClick={e => e.stopPropagation()}
-                        className="flex-1 min-w-0 bg-transparent border-b border-indigo-300 outline-none text-sm text-slate-800"
-                      />
-                    ) : (
-                      <span className="flex-1 min-w-0 truncate" onDoubleClick={e => { e.stopPropagation(); setEditingMasterId(m.id) }}>{m.name}</span>
-                    )}
-                    <button
-                      onClick={e => { e.stopPropagation(); setEditingMasterId(m.id) }}
-                      className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-slate-700 transition-all shrink-0"
-                      title="名前を変更"
-                    >
-                      <Pencil size={12} />
-                    </button>
-                    {masters.length > 1 && (
-                      <button
-                        onClick={e => { e.stopPropagation(); deleteMaster(m.id) }}
-                        className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-rose-500 transition-all shrink-0"
-                        title="プロジェクトを削除"
-                      >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
+            <div className="absolute left-3 mt-1 z-20 w-max min-w-[calc(100%-1.5rem)] max-w-[340px] bg-white border border-slate-200 rounded-lg shadow-xl py-1">
+              {searchable && (
+                <div className="px-2 pt-1 pb-1.5 border-b border-slate-100">
+                  <div className="flex items-center gap-1.5 bg-slate-100 rounded px-2 py-1">
+                    <Search size={12} className="text-slate-400 shrink-0" />
+                    <input
+                      autoFocus
+                      type="text"
+                      value={projSearch}
+                      onChange={e => setProjSearch(e.target.value)}
+                      onKeyDown={e => {
+                        // Enter jumps to the top hit (pinned matches rank first).
+                        if (e.key === 'Enter') {
+                          const first = pinnedMasters[0] ?? otherMasters[0]
+                          if (first) switchMaster(first.id)
+                        }
+                      }}
+                      placeholder={`プロジェクトを検索…（${activeMasters.length}件）`}
+                      className="flex-1 min-w-0 bg-transparent outline-none text-xs text-slate-700 placeholder:text-slate-400"
+                    />
                   </div>
-                ))}
+                </div>
+              )}
+              <div className="max-h-72 overflow-y-auto">
+                {matched.length === 0 && (
+                  <div className="px-3 py-3 text-xs text-slate-400 text-center">一致するプロジェクトがありません</div>
+                )}
+                {pinnedMasters.map(m => masterRow(m))}
+                {pinnedMasters.length > 0 && otherMasters.length > 0 && <div className="h-px bg-slate-100 my-1" />}
+                {q ? (
+                  // Searching → flat result list, folders ignored.
+                  otherMasters.map(m => masterRow(m))
+                ) : (
+                  <>
+                    {otherMasters.filter(m => !m.folder).map(m => masterRow(m))}
+                    {(() => {
+                      const names: string[] = []
+                      for (const m of otherMasters) if (m.folder && !names.includes(m.folder)) names.push(m.folder)
+                      return names.map(name => {
+                        const members = otherMasters.filter(m => m.folder === name)
+                        const closed = collapsedFolders.includes(name)
+                        return (
+                          <div key={name}>
+                            <div
+                              onClick={() => toggleFolderCollapsed(name)}
+                              className="group relative flex items-center gap-1.5 px-2.5 py-1 text-xs cursor-pointer hover:bg-slate-50 text-slate-500 select-none"
+                            >
+                              {closed ? <ChevronRight size={12} className="shrink-0 text-slate-400" /> : <ChevronDown size={12} className="shrink-0 text-slate-400" />}
+                              <Folder size={12} className="text-amber-500/80 shrink-0" />
+                              {editingFolder === name ? (
+                                <input
+                                  autoFocus
+                                  value={folderDraft}
+                                  onChange={e => setFolderDraft(e.target.value)}
+                                  onBlur={() => renameFolder(name, folderDraft)}
+                                  onKeyDown={e => { if (e.key === 'Enter') renameFolder(name, folderDraft); else if (e.key === 'Escape') setEditingFolder(null) }}
+                                  onClick={e => e.stopPropagation()}
+                                  className="flex-1 min-w-0 bg-transparent border-b border-indigo-300 outline-none text-xs text-slate-700"
+                                />
+                              ) : (
+                                <span className="flex-1 min-w-0 truncate font-medium" title={name}>{name}</span>
+                              )}
+                              <span className="text-[10px] text-slate-400 group-hover:hidden">{members.length}</span>
+                              {editingFolder !== name && (
+                                <div className="absolute right-1.5 inset-y-0 hidden group-hover:flex items-center gap-0.5 pl-1.5 bg-slate-50">
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setFolderDraft(name); setEditingFolder(name) }}
+                                    className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-slate-700 shrink-0"
+                                    title="フォルダ名を変更"
+                                  >
+                                    <Pencil size={11} />
+                                  </button>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); ungroupFolder(name) }}
+                                    className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-500 shrink-0"
+                                    title="フォルダを解除（プロジェクトは一覧に戻ります）"
+                                  >
+                                    <FolderMinus size={11} />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                            {!closed && members.map(m => masterRow(m, true))}
+                          </div>
+                        )
+                      })
+                    })()}
+                  </>
+                )}
               </div>
+              {/* Archived (finished) projects — collapsed section, restorable. */}
+              {archivedMasters.length > 0 && (
+                <div className="border-t border-slate-100 mt-1 pt-1">
+                  <button
+                    onClick={() => setArchiveOpen(o => !o)}
+                    className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-slate-400 hover:bg-slate-50 hover:text-slate-600"
+                  >
+                    {archiveOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    <Archive size={12} /> アーカイブ（{archivedMasters.length}）
+                  </button>
+                  {archiveOpen && (
+                    <div className="max-h-40 overflow-y-auto">
+                      {archivedMasters.map(m => (
+                        <div
+                          key={m.id}
+                          onClick={() => switchMaster(m.id)}
+                          title="クリックで開く（ダッシュボード集計からは除外されたまま）"
+                          className={`group relative flex items-center gap-2 pl-6 pr-2.5 py-1.5 text-sm cursor-pointer hover:bg-slate-100 ${
+                            m.id === state.activeMasterProjectId ? 'text-indigo-600' : 'text-slate-400'
+                          }`}
+                        >
+                          <span className="flex-1 min-w-0 truncate">{m.name}</span>
+                          <div className="absolute right-1.5 inset-y-0 hidden group-hover:flex items-center gap-0.5 pl-1.5 bg-slate-100">
+                            <button
+                              onClick={e => { e.stopPropagation(); restoreMaster(m.id) }}
+                              className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-emerald-600 shrink-0"
+                              title="アーカイブから復元"
+                            >
+                              <ArchiveRestore size={12} />
+                            </button>
+                            {masters.length > 1 && (
+                              <button
+                                onClick={e => { e.stopPropagation(); deleteMaster(m.id) }}
+                                className="p-0.5 rounded hover:bg-slate-200 text-slate-400 hover:text-rose-500 shrink-0"
+                                title="プロジェクトを削除"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="border-t border-slate-100 mt-1 pt-1">
                 <button onClick={() => { setProjMenuOpen(false); addMaster() }} className="w-full flex items-center gap-2 px-2.5 py-1.5 text-sm text-indigo-600 hover:bg-indigo-50">
                   <Plus size={14} /> 新しいプロジェクト
