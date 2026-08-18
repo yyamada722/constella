@@ -1,15 +1,27 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Boxes, Activity, AlertTriangle, CheckCircle2, Circle, CircleDot, GanttChartSquare, Bell, CalendarClock } from 'lucide-react'
+import { Boxes, Activity, AlertTriangle, CheckCircle2, Circle, CircleDot, GanttChartSquare, Bell, CalendarClock, SlidersHorizontal, Search, ArrowDownWideNarrow, ChevronDown, ChevronRight } from 'lucide-react'
 import { useApp, Action } from '../store'
 import { Task, Project } from '../types'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
 import { isoToday, daysBetween, addDaysIso } from '../utils/date'
+import { aggregateFor } from '../utils/taskTree'
+import { usePopoverDismiss } from '../components/usePopoverDismiss'
 import GanttView from './GanttView'
 
 // Urgency buckets for the "やること" agenda / header alert.
 type AgendaBucket = 'overdue' | 'today' | 'tomorrow' | 'soon'
-interface AgendaItem { task: Task; board: Project; bIdx: number; masterId: string; masterName: string; due: string; bucket: AgendaBucket }
+interface AgendaItem { task: Task; board: Project; bIdx: number; masterId: string; masterName: string; due: string; bucket: AgendaBucket; effStatus: Task['status']; hasChildren: boolean }
+
+// Effective status per task: parents mirror their child aggregate — the same status the
+// gantt/kanban display — so a parent whose children are all done never counts as overdue
+// even if its own raw status was left at todo. Leaves use their own status.
+function effStatusLookup(pool: Task[]): (t: Task) => Task['status'] {
+  const known = new Set(pool.map(t => t.id))
+  const parentIds = new Set<string>()
+  for (const t of pool) if (t.parentId && known.has(t.parentId)) parentIds.add(t.parentId)
+  return t => parentIds.has(t.id) ? aggregateFor(pool, t).status : t.status
+}
 const BUCKET_ORDER: AgendaBucket[] = ['overdue', 'today', 'tomorrow', 'soon']
 const BUCKET_META: Record<AgendaBucket, { label: string; head: string; chip: string }> = {
   overdue:  { label: '遅延',            head: 'bg-rose-50 text-rose-700 border-rose-100',     chip: 'text-rose-600' },
@@ -29,14 +41,54 @@ export default function DashboardPage() {
   const tomorrow = useMemo(() => addDaysIso(today, 1), [today])
   const soonEnd = useMemo(() => addDaysIso(today, 7), [today]) // 近日 = up to ~a week out
 
+  // Archived (finished) master projects are excluded from every dashboard view —
+  // they stay reachable from the sidebar switcher's archive section.
+  const liveMasters = useMemo(() => state.masterProjects.filter(m => !m.archivedAt), [state.masterProjects])
+  const liveProjects = useMemo(() => {
+    const ids = new Set(liveMasters.map(m => m.id))
+    return state.projects.filter(p => ids.has(p.masterProjectId))
+  }, [state.projects, liveMasters])
+
+  // Master-project filter — narrows every dashboard view (gantt / agenda / summary)
+  // to the checked masters. Empty set = show all. Persisted; stale ids (deleted
+  // masters) are dropped on read, and "everything checked" collapses back to "all".
+  const [masterFilter, setMasterFilter] = useState<Set<string>>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('constella.dashboard.masterFilter') || '[]')
+      return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [])
+    } catch { return new Set() }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.dashboard.masterFilter', JSON.stringify([...masterFilter])) } catch { /* ignore */ }
+  }, [masterFilter])
+  const activeFilter = useMemo(() => {
+    const ids = new Set(liveMasters.map(m => m.id))
+    const v = new Set([...masterFilter].filter(id => ids.has(id)))
+    return v.size === 0 || v.size === liveMasters.length ? new Set<string>() : v
+  }, [masterFilter, liveMasters])
+  const filteredMasters = useMemo(
+    () => activeFilter.size === 0 ? liveMasters : liveMasters.filter(m => activeFilter.has(m.id)),
+    [liveMasters, activeFilter]
+  )
+  const filteredProjects = useMemo(
+    () => activeFilter.size === 0 ? liveProjects : liveProjects.filter(p => activeFilter.has(p.masterProjectId)),
+    [liveProjects, activeFilter]
+  )
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false)
+  const [filterSearch, setFilterSearch] = useState('')
+  const filterMenuRef = usePopoverDismiss<HTMLDivElement>(filterMenuOpen, () => setFilterMenuOpen(false))
+
   // Cross-master agenda: every non-done, dated task that is overdue / due today /
   // tomorrow / soon, so the dashboard can surface "what must be done" at a glance.
   const agenda = useMemo(() => {
     const items: AgendaItem[] = []
-    for (const master of state.masterProjects) {
-      state.projects.filter(p => p.masterProjectId === master.id).forEach((board, bIdx) => {
+    for (const master of filteredMasters) {
+      filteredProjects.filter(p => p.masterProjectId === master.id).forEach((board, bIdx) => {
+        const eff = effStatusLookup(board.tasks)
+        const hasKids = (t: Task) => board.tasks.some(x => x.parentId === t.id)
         for (const t of board.tasks) {
-          if (t.status === 'done') continue
+          const effStatus = eff(t)
+          if (effStatus === 'done') continue
           const due = t.endDate ?? t.startDate // end is the deadline; start-only = 1-day item
           if (!due) continue
           let bucket: AgendaBucket | null = null
@@ -45,21 +97,21 @@ export default function DashboardPage() {
           else if (due === tomorrow) bucket = 'tomorrow'
           else if (due <= soonEnd) bucket = 'soon'
           if (!bucket) continue
-          items.push({ task: t, board, bIdx, masterId: master.id, masterName: master.name, due, bucket })
+          items.push({ task: t, board, bIdx, masterId: master.id, masterName: master.name, due, bucket, effStatus, hasChildren: hasKids(t) })
         }
       })
     }
     return items
-  }, [state.masterProjects, state.projects, today, tomorrow, soonEnd])
+  }, [filteredMasters, filteredProjects, today, tomorrow, soonEnd])
   const agendaCounts = useMemo(() => {
     const c: Record<AgendaBucket, number> = { overdue: 0, today: 0, tomorrow: 0, soon: 0 }
     for (const a of agenda) c[a.bucket]++
     return c
   }, [agenda])
   const urgentTotal = agendaCounts.overdue + agendaCounts.today + agendaCounts.tomorrow + agendaCounts.soon
-  // Cross-master Gantt: aggregate every project across every master into one boards list.
+  // Cross-master Gantt: aggregate every project across the (filtered) masters into one boards list.
   // Selection is local — clicking a bar surfaces a "詳細を編集" CTA that jumps to /projects.
-  const allBoards = useMemo(() => state.projects, [state.projects])
+  const allBoards = filteredProjects
   const [ganttSelectedId, setGanttSelectedId] = useState<string | null>(null)
   const selectedTaskWithMaster = useMemo(() => {
     if (!ganttSelectedId) return null
@@ -85,43 +137,89 @@ export default function DashboardPage() {
     try { localStorage.setItem('constella.dashboard.view', view) } catch { /* ignore */ }
   }, [view])
 
+  // やること sub-tabs: 'all' renders every bucket as a collapsible section;
+  // a specific bucket tab shows only that list. Both persisted.
+  const [agendaTab, setAgendaTab] = useState<'all' | AgendaBucket>(() => {
+    try {
+      const s = localStorage.getItem('constella.dashboard.agendaTab')
+      return s && (BUCKET_ORDER as string[]).includes(s) ? s as AgendaBucket : 'all'
+    } catch { return 'all' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.dashboard.agendaTab', agendaTab) } catch { /* ignore */ }
+  }, [agendaTab])
+  const [collapsedBuckets, setCollapsedBuckets] = useState<Set<AgendaBucket>>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('constella.dashboard.agendaCollapsed') || '[]')
+      return new Set(Array.isArray(raw) ? raw.filter((x): x is AgendaBucket => (BUCKET_ORDER as string[]).includes(x)) : [])
+    } catch { return new Set() }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.dashboard.agendaCollapsed', JSON.stringify([...collapsedBuckets])) } catch { /* ignore */ }
+  }, [collapsedBuckets])
+  const toggleBucketCollapsed = (b: AgendaBucket) =>
+    setCollapsedBuckets(s => { const n = new Set(s); if (n.has(b)) n.delete(b); else n.add(b); return n })
+
   // Group projects (boards) by master. Empty masters still show with an empty card.
   const byMaster = useMemo(() => {
     const m = new Map<string, { master: typeof state.masterProjects[number]; boards: Project[]; tasks: Task[] }>()
-    for (const mp of state.masterProjects) m.set(mp.id, { master: mp, boards: [], tasks: [] })
-    for (const p of state.projects) {
+    for (const mp of filteredMasters) m.set(mp.id, { master: mp, boards: [], tasks: [] })
+    for (const p of filteredProjects) {
       const e = m.get(p.masterProjectId)
       if (e) { e.boards.push(p); for (const t of p.tasks) e.tasks.push(t) }
     }
     return [...m.values()]
-  }, [state.masterProjects, state.projects])
+  }, [filteredMasters, filteredProjects])
 
+  // Summary card order: 既定 = creation order, 要対応順 = most urgent first
+  // (slipping ≫ due this week ≫ undated), so problem projects surface on top.
+  const [summarySort, setSummarySort] = useState<'default' | 'attention'>(() => {
+    try { return localStorage.getItem('constella.dashboard.summarySort') === 'attention' ? 'attention' : 'default' } catch { return 'default' }
+  })
+  useEffect(() => {
+    try { localStorage.setItem('constella.dashboard.summarySort', summarySort) } catch { /* ignore */ }
+  }, [summarySort])
+  const summaryMasters = useMemo(() => {
+    if (summarySort === 'default') return byMaster
+    const score = (tasks: Task[]) => slipping(tasks).length * 10000 + thisWeek(tasks).length * 100 + undated(tasks).length
+    return [...byMaster].sort((a, b) => score(b.tasks) - score(a.tasks))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [byMaster, summarySort, today])
+
+  // All bucket helpers judge by effective status (parents = child aggregate), so a
+  // parent that displays as 完了/進行中 elsewhere is bucketed the same way here.
   function statusCounts(tasks: Task[]) {
+    const eff = effStatusLookup(tasks)
     let todo = 0, doing = 0, done = 0
     for (const t of tasks) {
-      if (t.status === 'done') done++
-      else if (t.status === 'in-progress') doing++
+      const s = eff(t)
+      if (s === 'done') done++
+      else if (s === 'in-progress') doing++
       else todo++
     }
     return { todo, doing, done }
   }
   function thisWeek(tasks: Task[]) {
+    const eff = effStatusLookup(tasks)
     return tasks.filter(t => {
+      if (eff(t) === 'done') return false // finished work isn't "やること" anymore
       const e = t.endDate || t.startDate
       if (!e) return false
       return e >= today && e <= weekEnd
     })
   }
   function slipping(tasks: Task[]) {
+    const eff = effStatusLookup(tasks)
     return tasks.filter(t => {
-      if (t.status === 'done') return false
+      if (eff(t) === 'done') return false
       const e = t.endDate
       if (!e) return false
       return e < today
     })
   }
   function undated(tasks: Task[]) {
-    return tasks.filter(t => !t.startDate && !t.endDate && t.status !== 'done')
+    const eff = effStatusLookup(tasks)
+    return tasks.filter(t => !t.startDate && !t.endDate && eff(t) !== 'done')
   }
   function jumpToMaster(masterId: string) {
     if (state.activeMasterProjectId !== masterId) {
@@ -139,13 +237,106 @@ export default function DashboardPage() {
   const grandTotal = useMemo(() => byMaster.reduce((n, m) => n + m.tasks.length, 0), [byMaster])
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-slate-50/50">
-      <div className="h-14 flex items-center px-6 border-b border-slate-200 bg-white shrink-0 gap-3">
+    // h-full (not flex-1): the <main> route outlet is a plain block, so the page
+    // must claim its full height itself for inner overflow-y-auto scrolling to work.
+    <div className="h-full flex flex-col min-h-0 bg-slate-50/50">
+      <div className="min-h-14 flex flex-wrap items-center px-6 py-2 border-b border-slate-200 bg-white shrink-0 gap-x-3 gap-y-2">
         <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 min-w-0 truncate">
           <Activity size={18} className="text-emerald-500 shrink-0" /> ダッシュボード
         </h2>
-        <span className="text-xs text-slate-400 truncate min-w-0">全プロジェクト横断: {byMaster.length} プロジェクト・{grandTotal} タスク</span>
-        <div className="ml-auto flex items-center gap-3 shrink-0">
+        <span className="text-xs text-slate-400 truncate min-w-0">
+          {activeFilter.size > 0
+            ? `表示中: ${filteredMasters.length}/${liveMasters.length} プロジェクト・${grandTotal} タスク`
+            : `全プロジェクト横断: ${byMaster.length} プロジェクト・${grandTotal} タスク`}
+        </span>
+        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+          {/* Master-project filter — narrows all three views at once. */}
+          <div className="relative" ref={filterMenuRef}>
+            <button
+              onClick={() => setFilterMenuOpen(o => { if (!o) setFilterSearch(''); return !o })}
+              title="表示するプロジェクトを絞り込み"
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs transition-colors ${
+                activeFilter.size > 0
+                  ? 'border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 font-semibold'
+                  : 'border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
+            >
+              <SlidersHorizontal size={13} className="shrink-0" />
+              絞り込み
+              {activeFilter.size > 0 && <span className="px-1 rounded bg-indigo-500 text-white text-[10px] leading-4">{activeFilter.size}</span>}
+            </button>
+            {filterMenuOpen && (
+              <div className="absolute right-0 mt-1 z-30 w-64 bg-white border border-slate-200 rounded-lg shadow-xl py-1 text-sm">
+                {liveMasters.length >= 6 && (
+                  <div className="px-2 pt-1 pb-1.5 border-b border-slate-100">
+                    <div className="flex items-center gap-1.5 bg-slate-100 rounded px-2 py-1">
+                      <Search size={12} className="text-slate-400 shrink-0" />
+                      <input
+                        autoFocus
+                        type="text"
+                        value={filterSearch}
+                        onChange={e => setFilterSearch(e.target.value)}
+                        placeholder="プロジェクトを検索…"
+                        className="flex-1 min-w-0 bg-transparent outline-none text-xs text-slate-700 placeholder:text-slate-400"
+                      />
+                    </div>
+                  </div>
+                )}
+                <div className="max-h-72 overflow-y-auto">
+                  {liveMasters
+                    .filter(m => !filterSearch.trim() || m.name.toLowerCase().includes(filterSearch.trim().toLowerCase()))
+                    .map(m => {
+                      const checked = activeFilter.size === 0 || activeFilter.has(m.id)
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={() => {
+                            // Same idiom as the gantt board chips: with no filter active the
+                            // first click solos the clicked master; after that clicks toggle.
+                            // Full coverage or an empty result collapse back to "show all".
+                            if (activeFilter.size === 0) { setMasterFilter(new Set([m.id])); return }
+                            const effective = new Set(activeFilter)
+                            if (effective.has(m.id)) effective.delete(m.id)
+                            else effective.add(m.id)
+                            if (effective.size === 0 || effective.size === liveMasters.length) setMasterFilter(new Set())
+                            else setMasterFilter(effective)
+                          }}
+                          title={activeFilter.size === 0 ? 'クリックでこのプロジェクトのみ表示' : 'クリックで表示/非表示を切替'}
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 hover:bg-slate-100 text-left"
+                        >
+                          <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${checked ? 'bg-indigo-500 border-indigo-500 text-white' : 'border-slate-300 bg-white'}`}>
+                            {checked && <CheckCircle2 size={10} className="text-white" />}
+                          </span>
+                          <Boxes size={13} className="text-indigo-400 shrink-0" />
+                          <span className="flex-1 min-w-0 truncate text-slate-700">{m.name}</span>
+                        </button>
+                      )
+                    })}
+                </div>
+                {activeFilter.size > 0 && (
+                  <div className="border-t border-slate-100 mt-1 pt-1">
+                    <button onClick={() => setMasterFilter(new Set())} className="w-full px-2.5 py-1.5 text-xs text-indigo-600 hover:bg-indigo-50 text-left">
+                      すべて表示に戻す
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          {/* Summary sort — only meaningful on the per-project cards view. */}
+          {view === 'summary' && (
+            <div className="flex items-center rounded-md border border-slate-200 overflow-hidden text-xs">
+              {([['default', '既定順'], ['attention', '要対応順']] as const).map(([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setSummarySort(k)}
+                  title={k === 'attention' ? '遅延・今週・未設定が多いプロジェクトを上に' : '作成順'}
+                  className={`flex items-center gap-1 px-2 py-1 transition-colors ${summarySort === k ? 'bg-indigo-500/15 text-indigo-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
+                >
+                  {k === 'attention' && <ArrowDownWideNarrow size={13} />} {label}
+                </button>
+              ))}
+            </div>
+          )}
           {/* Urgency alert — always visible; jumps to the やること agenda. */}
           {urgentTotal > 0 && view !== 'agenda' && (
             <button
@@ -188,34 +379,74 @@ export default function DashboardPage() {
       </div>
       {view === 'gantt' ? (
         <div className="flex-1 flex min-h-0 min-w-0">
-          <GanttView boards={allBoards} selectedTaskId={ganttSelectedId} onSelectTask={setGanttSelectedId} groupByMaster masters={state.masterProjects} />
+          <GanttView boards={allBoards} selectedTaskId={ganttSelectedId} onSelectTask={setGanttSelectedId} groupByMaster masters={filteredMasters} />
         </div>
       ) : view === 'agenda' ? (
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 min-h-0 overflow-y-auto p-6">
           <div className="max-w-2xl mx-auto space-y-4">
+            {/* Bucket tabs — すべて renders collapsible sections, a bucket tab shows just its list. */}
+            <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1 shadow-sm text-xs w-fit mx-auto">
+              <button
+                onClick={() => setAgendaTab('all')}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-colors ${agendaTab === 'all' ? 'bg-slate-100 text-slate-800 font-semibold' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}
+              >
+                すべて <span className="opacity-60">{urgentTotal}</span>
+              </button>
+              {BUCKET_ORDER.map(b => {
+                const meta = BUCKET_META[b]
+                const n = agendaCounts[b]
+                return (
+                  <button
+                    key={b}
+                    onClick={() => setAgendaTab(b)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-colors ${agendaTab === b ? `${meta.head} font-semibold` : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}
+                  >
+                    {b === 'overdue' ? '遅延' : b === 'today' ? '今日' : b === 'tomorrow' ? '明日' : '近日'}
+                    <span className={agendaTab === b ? 'opacity-70' : meta.chip}>{n}</span>
+                  </button>
+                )
+              })}
+            </div>
             {urgentTotal === 0 ? (
               <div className="text-center text-slate-400 py-24 flex flex-col items-center gap-2">
                 <CheckCircle2 size={32} className="text-emerald-400" />
                 <p className="text-sm">差し迫ったタスクはありません 🎉</p>
                 <p className="text-xs">遅延・今日・明日・近日（約1週間先まで）の期限タスクがここに出ます。</p>
+                {activeFilter.size > 0 && (
+                  <p className="text-xs text-indigo-500">プロジェクトを絞り込み中です（{filteredMasters.length}/{liveMasters.length}件を表示）。</p>
+                )}
               </div>
             ) : (
-              BUCKET_ORDER.map(bucket => {
+              (agendaTab === 'all' ? BUCKET_ORDER : [agendaTab]).map(bucket => {
                 const items = agenda.filter(a => a.bucket === bucket).sort((a, b) => a.due.localeCompare(b.due))
-                if (items.length === 0) return null
                 const meta = BUCKET_META[bucket]
+                if (items.length === 0) {
+                  // In すべて empty buckets vanish; on a dedicated tab show a quiet note instead.
+                  return agendaTab === 'all' ? null : (
+                    <div key={bucket} className="text-center text-slate-400 text-xs py-16">「{meta.label}」のタスクはありません</div>
+                  )
+                }
+                const collapsible = agendaTab === 'all'
+                const collapsed = collapsible && collapsedBuckets.has(bucket)
                 return (
                   <div key={bucket} className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
-                    <div className={`px-4 py-2 border-b flex items-center gap-2 ${meta.head}`}>
+                    <button
+                      onClick={() => collapsible && toggleBucketCollapsed(bucket)}
+                      className={`w-full px-4 py-2 flex items-center gap-2 text-left ${collapsed ? '' : 'border-b'} ${meta.head} ${collapsible ? 'cursor-pointer' : 'cursor-default'}`}
+                      title={collapsible ? (collapsed ? 'クリックで展開' : 'クリックで折りたたむ') : undefined}
+                    >
+                      {collapsible && (collapsed ? <ChevronRight size={14} className="shrink-0 opacity-60" /> : <ChevronDown size={14} className="shrink-0 opacity-60" />)}
                       {bucket === 'overdue' ? <AlertTriangle size={14} /> : <CalendarClock size={14} />}
                       <span className="font-semibold text-sm">{meta.label}</span>
                       <span className="text-xs opacity-70">{items.length}件</span>
-                    </div>
-                    <div className="divide-y divide-slate-50">
-                      {items.map(a => (
-                        <AgendaRow key={a.task.id} item={a} today={today} multiMaster={byMaster.length > 1} dispatch={dispatch} onClick={() => jumpToTask(a.masterId, a.task.id)} />
-                      ))}
-                    </div>
+                    </button>
+                    {!collapsed && (
+                      <div className="divide-y divide-slate-50">
+                        {items.map(a => (
+                          <AgendaRow key={a.task.id} item={a} today={today} multiMaster={byMaster.length > 1} dispatch={dispatch} onClick={() => jumpToTask(a.masterId, a.task.id)} />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )
               })
@@ -223,8 +454,11 @@ export default function DashboardPage() {
           </div>
         </div>
       ) : (
-      <div className="flex-1 overflow-y-auto p-6 grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))' }}>
-        {byMaster.map(({ master, boards, tasks }) => {
+      // auto-rows-max: without it, auto rows compress to fit the definite container
+      // height (the cards' overflow-hidden collapses their min-size), clipping cards
+      // instead of overflowing into the scrollbar.
+      <div className="flex-1 min-h-0 overflow-y-auto p-6 grid gap-4 content-start auto-rows-max" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(360px, 100%), 1fr))' }}>
+        {summaryMasters.map(({ master, boards, tasks }) => {
           const sc = statusCounts(tasks)
           const week = thisWeek(tasks)
           const slip = slipping(tasks)
@@ -303,19 +537,36 @@ function AgendaRow({ item, today, multiMaster, dispatch, onClick }: { item: Agen
   // row's jump-click doesn't also fire.
   const cycleStatus = (e: React.MouseEvent) => {
     e.stopPropagation()
+    if (item.hasChildren) return // parent status is aggregated from children — nothing to cycle
     const next: Task['status'] = task.status === 'todo' ? 'in-progress' : task.status === 'in-progress' ? 'done' : 'todo'
     dispatch({ type: 'UPDATE_TASK', payload: { projectId: board.id, task: { ...task, status: next } } })
   }
+  // Dot reflects the effective status (parents = child aggregate), matching gantt/kanban.
   const statusDotCls =
-    task.status === 'done' ? 'bg-emerald-500 border-emerald-500'
-      : task.status === 'in-progress' ? 'bg-amber-400 border-amber-400'
+    item.effStatus === 'done' ? 'bg-emerald-500 border-emerald-500'
+      : item.effStatus === 'in-progress' ? 'bg-amber-400 border-amber-400'
         : 'bg-white border-slate-400'
   return (
     <button onClick={onClick} className="w-full flex items-center gap-2 px-4 py-2 hover:bg-slate-100 text-left">
-      <span onClick={cycleStatus} title="クリックでステータス切替" className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 cursor-pointer ${statusDotCls}`} />
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cls.dot}`} />
+      <span
+        onClick={cycleStatus}
+        title={item.hasChildren ? '親タスク（状態は子から自動集計）' : 'クリックでステータス切替'}
+        className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 ${item.hasChildren ? 'cursor-default' : 'cursor-pointer'} ${statusDotCls}`}
+      />
       <span className="text-sm text-slate-800 truncate flex-1">{task.title || '(無題)'}</span>
-      <span className="text-[11px] text-slate-400 truncate max-w-[160px] shrink-0">{multiMaster ? `${masterName} / ` : ''}{board.name}</span>
+      {/* Origin, colour-coded: project = indigo (+Boxes icon, matching the switcher),
+          board = its own board colour (+dot) — the two levels read apart at a glance. */}
+      <span className="flex items-center gap-1 shrink-0 min-w-0 max-w-[220px] text-[11px]" title={`${multiMaster ? `${masterName} / ` : ''}${board.name}`}>
+        {multiMaster && (
+          <>
+            <Boxes size={10} className="text-indigo-400 shrink-0" />
+            <span className="text-indigo-500 truncate max-w-[100px]">{masterName}</span>
+            <span className="text-slate-300 shrink-0">/</span>
+          </>
+        )}
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cls.dot}`} />
+        <span className={`truncate max-w-[100px] ${cls.text}`}>{board.name}</span>
+      </span>
       <span className={`text-[11px] font-medium shrink-0 w-20 text-right ${BUCKET_META[bucket].chip}`}>{dueLabel}</span>
     </button>
   )
@@ -330,7 +581,7 @@ function TaskRow({ task, boards, onClick, suffix }: { task: Task; boards: Projec
     <button onClick={onClick} className="w-full flex items-center gap-2 px-1.5 py-1 rounded hover:bg-slate-100 text-left">
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cls.dot}`} />
       <span className="text-xs text-slate-700 truncate flex-1">{task.title || '(無題)'}</span>
-      <span className="text-[10px] text-slate-400 truncate max-w-[80px]">{board?.name}</span>
+      <span className={`text-[10px] truncate max-w-[80px] ${cls.text}`}>{board?.name}</span>
       {suffix && <span className="text-[10px] text-slate-400 shrink-0">{suffix}</span>}
     </button>
   )
