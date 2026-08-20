@@ -419,6 +419,7 @@ export default function Sidebar() {
           <h1 className="text-lg font-bold tracking-tight flex-1 truncate pl-2">
             <span className="text-indigo-600">Constel</span>
             <span className="text-slate-700">la</span>
+            <span className="ml-1.5 align-middle text-[10px] font-medium text-slate-400 tracking-normal">v{__APP_VERSION__}</span>
           </h1>
         )}
         <button
