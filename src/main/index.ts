@@ -4,6 +4,7 @@ import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir
 import { createServer, Server } from 'http'
 import { networkInterfaces } from 'os'
 import Anthropic from '@anthropic-ai/sdk'
+import { initUpdater } from './updater'
 
 // E2E hook: isolate userData (and the single-instance lock derived from it) so an
 // automated run never collides with — or writes into — the real installation.
@@ -639,6 +640,7 @@ if (!gotLock) {
     rm(join(app.getPath('temp'), 'constella'), { recursive: true, force: true }).catch(() => { /* ignore */ })
     await startEmbedServer() // before createWindow so embedBase is ready for the preload
     createWindow(await loadWindowState())
+    initUpdater(() => mainWindow) // 自動アップデート(Win)・新版通知(mac/ポータブル)
     // Auto-start LAN access if the user enabled it previously.
     if (await loadRemoteEnabled()) startLanServer().catch(() => { /* ignore */ })
     app.on('activate', async () => {

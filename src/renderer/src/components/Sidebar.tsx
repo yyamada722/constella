@@ -1,12 +1,54 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus } from 'lucide-react'
+import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus, ArrowUpCircle, RefreshCw } from 'lucide-react'
 import { useApp } from '../store'
 import { useStore as useMindtrainStore } from '../mindtrain/store/useStore'
 import { exportBackup, importBackup } from '../persistence/backup'
 import { generateId } from '../utils'
 import { SettingsModal } from './SettingsModal'
 import { confirmDialog } from './ConfirmDialog'
+import { updateApi, useUpdateState } from './UpdateNotifier'
+
+// 設定メニュー内の「アップデートを確認」行。状態に応じてクリックの意味が変わる:
+// 通常=チェック実行 / 新版あり(notify)=ページを開く / DL完了=再起動して適用。
+function UpdateMenuRow() {
+  const { current, state } = useUpdateState()
+  if (!updateApi) return null
+
+  const busy = state.phase === 'checking' || state.phase === 'downloading'
+  const label =
+    state.phase === 'checking' ? '確認中…' :
+    state.phase === 'downloading' ? `ダウンロード中… ${state.percent}%` :
+    state.phase === 'available' ? `v${state.version} をダウンロード` :
+    state.phase === 'downloaded' ? `再起動して v${state.version} に更新` :
+    'アップデートを確認'
+  const hint =
+    state.phase === 'uptodate' ? '最新です' :
+    state.phase === 'error' ? '確認できず' :
+    current ? `v${current}` : ''
+  const highlight = state.phase === 'available' || state.phase === 'downloaded'
+
+  const onClick = () => {
+    if (busy) return
+    if (state.phase === 'available') void updateApi!.openPage()
+    else if (state.phase === 'downloaded') updateApi!.install()
+    else void updateApi!.check()
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-100 disabled:opacity-60 ${highlight ? 'text-indigo-600 font-medium' : 'text-slate-700'}`}
+    >
+      {busy
+        ? <RefreshCw size={15} className="animate-spin shrink-0" />
+        : <ArrowUpCircle size={15} className={`shrink-0 ${highlight ? 'text-indigo-500' : ''}`} />}
+      <span className="flex-1 text-left truncate">{label}</span>
+      {hint && <span className={`text-[10px] shrink-0 ${state.phase === 'uptodate' ? 'text-emerald-600' : 'text-slate-400'}`}>{hint}</span>}
+    </button>
+  )
+}
 
 const navItems = [
   { path: '/dashboard', icon: Activity, label: 'ダッシュボード', color: 'text-emerald-500' },
@@ -27,6 +69,9 @@ export default function Sidebar() {
   const { state, dispatch } = useApp()
   const [menuOpen, setMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // 新版がある(またはDL完了)とき、歯車ボタンにドットを出して気付けるようにする。
+  const { state: updState } = useUpdateState()
+  const updatePending = updState.phase === 'available' || updState.phase === 'downloaded'
   const [busy, setBusy] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -605,6 +650,7 @@ export default function Sidebar() {
               >
                 <Palette size={15} /> 外観・コードテーマ…
               </button>
+              <UpdateMenuRow />
               <div className="h-px bg-slate-200 my-1" />
               <button onClick={doExport} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100">
                 <Download size={15} /> バックアップを書き出し
@@ -623,8 +669,12 @@ export default function Sidebar() {
           title={expanded ? '' : (busy ?? '設定 / バックアップ')}
           className={`w-full flex items-center rounded-lg text-sm text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-all ${expanded ? 'gap-3 px-3 py-2.5' : 'p-2 justify-center'}`}
         >
-          <Settings size={18} />
+          <span className="relative shrink-0">
+            <Settings size={18} />
+            {updatePending && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-indigo-500 ring-2 ring-white" />}
+          </span>
           {expanded && (busy ?? '設定 / バックアップ')}
+          {expanded && updatePending && <span className="ml-auto text-[10px] text-indigo-600 font-medium shrink-0">更新あり</span>}
         </button>
       </div>
       {/* Resize handle on the right edge — only when expanded */}
