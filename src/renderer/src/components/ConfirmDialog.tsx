@@ -6,9 +6,9 @@ import { useEffect, useRef, useState } from 'react'
 //
 // Mount <ConfirmHost /> once (App.tsx). confirmDialog() resolves true on 削除/OK,
 // false on cancel — which includes clicking the backdrop or pressing Escape, per
-// the app-wide "click outside to dismiss" convention. Enter activates the focused
-// button (the confirm one by default), so Tab-then-Enter cancels rather than
-// confirms.
+// the app-wide "click outside to dismiss" convention. Enter / Space activate the
+// focused button (the confirm one by default), so Tab-then-Enter cancels rather
+// than confirms.
 
 export interface ChoiceOption {
   label: string
@@ -101,16 +101,19 @@ export function ConfirmHost() {
         return
       }
 
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' || e.key === ' ') {
         // Activate whatever is focused rather than assuming "confirm". The focus
         // trap above makes Tab-to-キャンセル a reachable state, and confirmDialog
         // defaults to a destructive action — Enter there has to cancel, not delete.
         // (Stopping propagation in the capture phase also stops the event reaching
         // the button, so the native click never fires on its own.)
+        // Space is handled the same way: the canvas's Space-to-pan listener would
+        // otherwise preventDefault the keydown and swallow the button's native
+        // Space activation, so explicit handling here is required.
         e.stopPropagation(); e.preventDefault()
         const focused = document.activeElement as HTMLElement | null
         if (focused && focusables().includes(focused)) focused.click()
-        else if (!current.options) settle(true) // focus adrift — keep "Enter confirms"
+        else if (!current.options) settle(true) // focus adrift — keep "Enter/Space confirms"
         return
       }
 

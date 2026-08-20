@@ -772,6 +772,9 @@ interface DragState {
   labels?: CanvasLabel[]
   // 駅 moved alongside the drag (kind 'card'): mixed marquee selections move as one.
   stations?: CanvasStation[]
+  // グループ枠 moved alongside the drag (kind 'card'): 全選択/範囲選択に含まれた
+  // 枠は「枠だけ」動く — 中身は自身が選択されていれば cards/labels/stations 側で動く。
+  groups?: CanvasGroup[]
   label?: CanvasLabel
   startMouseX: number
   startMouseY: number
@@ -860,7 +863,8 @@ export default function CanvasPage() {
   toolRef.current = tool
   const [selectedArrowId, setSelectedArrowId] = useState<string | null>(null)
   const [editingArrowId, setEditingArrowId] = useState<string | null>(null)
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
+  // グループ枠は複数選択可（全選択・範囲選択・混在ドラッグに参加させるため配列）。
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
   const [selectedLabelIds, setSelectedLabelIds] = useState<string[]>([])
   const [editingLabelId, setEditingLabelId] = useState<string | null>(null)
   const [drawArrow, setDrawArrow] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
@@ -960,6 +964,8 @@ export default function CanvasPage() {
     () => state.canvasGroups.filter(g => g.tabId === activeTabId),
     [state.canvasGroups, activeTabId]
   )
+  const tabGroupsRef = useRef(tabGroups)
+  tabGroupsRef.current = tabGroups
 
   const tabStrokes = useMemo(
     () => state.canvasStrokes.filter(s => s.tabId === activeTabId),
@@ -1278,14 +1284,14 @@ export default function CanvasPage() {
       if (!card) return
       handledFocusRef.current = location.key
       focusTab(card.tabId)
-      setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setSelectedIds([card.id])
+      setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setSelectedIds([card.id])
       waitAndCenter(card.x + card.width / 2, card.y + card.height / 2)
     } else if (st.focusLabelId) {
       const label = state.canvasLabels.find(l => l.id === st.focusLabelId)
       if (!label) return
       handledFocusRef.current = location.key
       focusTab(label.tabId)
-      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([label.id])
+      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([label.id])
       waitAndCenter(label.x, label.y)
     } else if (st.focusStationId) {
       const station = state.canvasStations.find(s => s.id === st.focusStationId)
@@ -1293,7 +1299,7 @@ export default function CanvasPage() {
       handledFocusRef.current = location.key
       if (station.tabId !== activeTabId) skipStationResetRef.current = true
       focusTab(station.tabId)
-      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setSelectedStationIds([station.id])
+      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setSelectedStationIds([station.id])
       waitAndCenter(station.x, station.y)
     }
   }, [location, state.canvasCards, state.canvasLabels, state.canvasStations, state.canvasTabs, activeProjectId, activeTabId, dispatch, navigateTo, canvasSize])
@@ -1346,7 +1352,7 @@ export default function CanvasPage() {
     if (e.button !== 0) return
     setSelectedArrowId(null)
     setEditingArrowId(null)
-    setSelectedGroupId(null)
+    setSelectedGroupIds([])
     setSelectedLabelIds([])
     setEditingLabelId(null)
     setSelectedStationIds([])
@@ -1482,7 +1488,7 @@ export default function CanvasPage() {
     // controls live ONLY in the property panel, so make sure it is visible.
     if (tabRails.length === 0) addRail()
     else if (!activeRailId || !tabRails.some(r => r.id === activeRailId)) setActiveRailId(tabRails[0].id)
-    setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setSelectedStationIds([])
+    setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setSelectedStationIds([])
     setPropsCollapsed(false)
     setTool('rail')
   }
@@ -1509,9 +1515,9 @@ export default function CanvasPage() {
       return
     }
     const selStations = selectedStationIdsRef.current
-    const inMulti = selStations.includes(st.id) && (selStations.length + selectedIds.length + selectedLabelIds.length > 1)
+    const inMulti = selStations.includes(st.id) && (selStations.length + selectedIds.length + selectedLabelIds.length + selectedGroupIds.length > 1)
     if (!inMulti) {
-      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setEditingLabelId(null)
+      setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setEditingLabelId(null)
       setSelectedStationIds([st.id])
     }
     if (canvasLockedRef.current) return
@@ -1520,7 +1526,8 @@ export default function CanvasPage() {
       const cards = tabCards.filter(c => selectedIds.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
       const labels = tabLabels.filter(l => selectedLabelIds.includes(l.id))
       const stations = tabStations.filter(s => selStations.includes(s.id))
-      dragRef.current = { kind: 'card', cards, labels, stations, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+      const groups = tabGroups.filter(g => selectedGroupIds.includes(g.id))
+      dragRef.current = { kind: 'card', cards, labels, stations, groups, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
       e.preventDefault()
       return
     }
@@ -1558,18 +1565,18 @@ export default function CanvasPage() {
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
     e.preventDefault()
-  }, [dispatch, selectedIds, selectedLabelIds, tabCards, tabLabels, tabStations])
+  }, [dispatch, selectedIds, selectedLabelIds, selectedGroupIds, tabCards, tabLabels, tabStations, tabGroups])
 
   // ロック中も開ける — メニュー側の canvasLocked 分岐が読み取り専用表示を出す。
   const handleStationContextMenu = useCallback((e: React.MouseEvent, st: CanvasStation) => {
     e.preventDefault(); e.stopPropagation()
-    setSelectedStationIds([st.id]); setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+    setSelectedStationIds([st.id]); setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 220), kind: 'station', canvasX: 0, canvasY: 0 })
   }, [])
 
   const selectCard = useCallback((id: string, additive: boolean) => {
     setSelectedArrowId(null)
-    setSelectedGroupId(null)
+    setSelectedGroupIds([])
     if (!additive) { setSelectedLabelIds([]); setSelectedStationIds([]) } // keep labels/駅 when shift-extending a mixed selection
     if (additive) setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
     else setSelectedIds(prev => (prev.length > 1 && prev.includes(id)) ? prev : [id])
@@ -1579,21 +1586,22 @@ export default function CanvasPage() {
     if (e.button !== 0) return
     e.stopPropagation()
     setSelectedArrowId(null)
-    setSelectedGroupId(null)
-    // Keep the multi-selection (cards + labels + 駅) when grabbing one of its members.
-    const inMulti = selectedIds.includes(card.id) && (selectedIds.length > 1 || selectedLabelIds.length > 0 || selectedStationIds.length > 0)
+    // Keep the multi-selection (cards + labels + 駅 + グループ枠) when grabbing one of its members.
+    const inMulti = selectedIds.includes(card.id) && (selectedIds.length > 1 || selectedLabelIds.length > 0 || selectedStationIds.length > 0 || selectedGroupIds.length > 0)
     const movingCards = inMulti ? selectedIds : [card.id]
     const movingLabels = inMulti ? selectedLabelIds : []
     const movingStations = inMulti ? selectedStationIds : []
-    if (!inMulti) { setSelectedIds([card.id]); setSelectedLabelIds([]); setSelectedStationIds([]) }
+    const movingGroups = inMulti ? selectedGroupIds : []
+    if (!inMulti) { setSelectedIds([card.id]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]) }
     const cards = canvasLockedRef.current ? [] : tabCards.filter(c => movingCards.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
     const labels = canvasLockedRef.current ? [] : tabLabels.filter(l => movingLabels.includes(l.id))
     const stations = canvasLockedRef.current ? [] : tabStations.filter(s => movingStations.includes(s.id))
-    dragRef.current = { kind: 'card', cards, labels, stations, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+    const groups = canvasLockedRef.current ? [] : tabGroups.filter(g => movingGroups.includes(g.id))
+    dragRef.current = { kind: 'card', cards, labels, stations, groups, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
     // Don't enter "dragging" (which mounts the full-screen overlay) until the pointer
     // actually moves — otherwise the overlay intercepts the mouseup between a header
     // double-click's two clicks and title editing never opens (handled in handleMouseMove).
-  }, [selectedIds, selectedLabelIds, selectedStationIds, tabCards, tabLabels, tabStations])
+  }, [selectedIds, selectedLabelIds, selectedStationIds, selectedGroupIds, tabCards, tabLabels, tabStations, tabGroups])
 
   const handleResizeDown = useCallback((e: React.MouseEvent, card: CanvasCard) => {
     if (e.button !== 0) return
@@ -1690,6 +1698,9 @@ export default function CanvasPage() {
       setSelectedIds(tabCards.filter(c => c.x < x + w && c.x + c.width > x && c.y < y + h && c.y + c.height > y).map(c => c.id))
       setSelectedLabelIds(tabLabels.filter(l => { const b = labelBox(l); return b.x < x + w && b.x + b.w > x && b.y < y + h && b.y + b.h > y }).map(l => l.id))
       setSelectedStationIds(tabStations.filter(s => s.x >= x && s.x <= x + w && s.y >= y && s.y <= y + h).map(s => s.id))
+      // グループ枠は「全体が矩形に収まったもの」だけ選択に入れる — 交差判定だと
+      // 枠内で範囲選択するたび巨大な枠まで巻き込まれてしまう。
+      setSelectedGroupIds(tabGroups.filter(g => g.x >= x && g.y >= y && g.x + g.width <= x + w && g.y + g.height <= y + h).map(g => g.id))
       return
     }
     const d = dragRef.current
@@ -1713,6 +1724,7 @@ export default function CanvasPage() {
       d.cards?.forEach(c => dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: snap(c.x + dx / zoom), y: snap(c.y + dy / zoom) } }))
       d.labels?.forEach(l => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: snap(l.x + dx / zoom), y: snap(l.y + dy / zoom) } }))
       d.stations?.forEach(s => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...s, x: snap(s.x + dx / zoom), y: snap(s.y + dy / zoom) } }))
+      d.groups?.forEach(g => dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...g, x: snap(g.x + dx / zoom), y: snap(g.y + dy / zoom) } }))
     } else if (d.kind === 'resize' && d.cardId) {
       // Shapes may shrink far below the normal card minimum (small circles, dots).
       const isShape = tabCardsRef.current.find(c => c.id === d.cardId)?.type === 'shape'
@@ -1747,7 +1759,7 @@ export default function CanvasPage() {
     } else if (d.kind === 'label-move' && d.label) {
       dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...d.label, x: snap(d.startX + dx / zoom), y: snap(d.startY + dy / zoom) } })
     }
-  }, [dispatch, toCanvas, tabCards, tabLabels, tabStations, applyBrush, nearestPort])
+  }, [dispatch, toCanvas, tabCards, tabLabels, tabStations, tabGroups, applyBrush, nearestPort])
 
   // タスク端子 → 実タスク親子化: dragging the 端子 between two LIVE task-ref
   // cards writes the real parent-child relation (from = 親, to = 子). Invoked
@@ -1873,7 +1885,7 @@ export default function CanvasPage() {
       if (g.w >= 40 && g.h >= 40) {
         const group: CanvasGroup = { id: generateId(), tabId: activeTabId, title: 'グループ', x: g.x, y: g.y, width: g.w, height: g.h, createdAt: new Date().toISOString() }
         dispatch({ type: 'ADD_CANVAS_GROUP', payload: group })
-        setSelectedGroupId(group.id)
+        setSelectedGroupIds([group.id])
         setTool('select')
       }
       return
@@ -1963,7 +1975,25 @@ export default function CanvasPage() {
   const handleGroupHeaderDown = useCallback((e: React.MouseEvent, group: CanvasGroup) => {
     if (e.button !== 0) return
     e.stopPropagation()
-    setSelectedGroupId(group.id)
+    if (e.shiftKey) {
+      // toggle this group in/out of the multi-selection (no drag)
+      setSelectedGroupIds(prev => prev.includes(group.id) ? prev.filter(x => x !== group.id) : [...prev, group.id])
+      return
+    }
+    // 複数選択（全選択・範囲選択）のメンバーを掴んだときは選択全体をまとめて動かす。
+    // このとき枠は「枠だけ」動く — 中身の追従は選択されたカード側が担う。
+    const inMulti = selectedGroupIds.includes(group.id) && (selectedGroupIds.length + selectedIds.length + selectedLabelIds.length + selectedStationIds.length > 1)
+    if (inMulti) {
+      setSelectedArrowId(null)
+      if (canvasLockedRef.current) return
+      const cards = tabCards.filter(c => selectedIds.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
+      const labels = tabLabels.filter(l => selectedLabelIds.includes(l.id))
+      const stations = tabStations.filter(s => selectedStationIds.includes(s.id))
+      const groups = tabGroups.filter(g => selectedGroupIds.includes(g.id))
+      dragRef.current = { kind: 'card', cards, labels, stations, groups, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+      return
+    }
+    setSelectedGroupIds([group.id])
     setSelectedIds([])
     setSelectedArrowId(null)
     setSelectedLabelIds([])
@@ -1992,13 +2022,13 @@ export default function CanvasPage() {
     dragRef.current = { kind: 'group-move', group, groupCards: contained, groupGroups: containedGroups, labels: containedLabels, stations: containedStations, startMouseX: e.clientX, startMouseY: e.clientY, startX: group.x, startY: group.y, moved: false }
     // Defer the drag overlay until real movement so a double-click on the group title
     // (to rename) isn't swallowed by the overlay (handled in handleMouseMove).
-  }, [tabCards, tabGroups, tabLabels, tabStations])
+  }, [tabCards, tabGroups, tabLabels, tabStations, selectedIds, selectedLabelIds, selectedStationIds, selectedGroupIds])
 
   const handleGroupResizeDown = useCallback((e: React.MouseEvent, group: CanvasGroup) => {
     if (e.button !== 0) return
     e.stopPropagation()
     if (canvasLockedRef.current) return
-    setSelectedGroupId(group.id)
+    setSelectedGroupIds([group.id])
     dragRef.current = { kind: 'group-resize', group, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, startW: group.width, startH: group.height, moved: false }
     setIsDragging(true)
   }, [])
@@ -2007,26 +2037,27 @@ export default function CanvasPage() {
     if (e.button !== 0) return
     e.stopPropagation()
     setSelectedArrowId(null)
-    setSelectedGroupId(null)
     if (e.shiftKey) {
       // toggle this label in/out of the multi-selection (no drag)
       setSelectedLabelIds(prev => prev.includes(label.id) ? prev.filter(x => x !== label.id) : [...prev, label.id])
       return
     }
     // Clicking a member of an existing multi-selection keeps it and drags the whole
-    // set — cards, labels AND 駅 (same as grabbing a card or a station).
-    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length + selectedStationIds.length > 1)
+    // set — cards, labels, 駅 AND グループ枠 (same as grabbing a card or a station).
+    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length + selectedStationIds.length + selectedGroupIds.length > 1)
     const labelSel = inMulti ? selectedLabelIds : [label.id]
     const cardSel = inMulti ? selectedIds : []
     const stationSel = inMulti ? selectedStationIds : []
-    if (!inMulti) { setSelectedLabelIds([label.id]); setSelectedIds([]); setSelectedStationIds([]) }
+    const groupSel = inMulti ? selectedGroupIds : []
+    if (!inMulti) { setSelectedLabelIds([label.id]); setSelectedIds([]); setSelectedStationIds([]); setSelectedGroupIds([]) }
     if (canvasLockedRef.current) return
     const labels = tabLabels.filter(l => labelSel.includes(l.id))
     const cards = tabCards.filter(c => cardSel.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
     const stations = tabStations.filter(s => stationSel.includes(s.id))
-    dragRef.current = { kind: 'card', cards, labels, stations, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
+    const groups = tabGroups.filter(g => groupSel.includes(g.id))
+    dragRef.current = { kind: 'card', cards, labels, stations, groups, startMouseX: e.clientX, startMouseY: e.clientY, startX: 0, startY: 0, moved: false }
     setIsDragging(true)
-  }, [selectedLabelIds, selectedIds, selectedStationIds, tabLabels, tabCards, tabStations])
+  }, [selectedLabelIds, selectedIds, selectedStationIds, selectedGroupIds, tabLabels, tabCards, tabStations, tabGroups])
 
   const handleOverlayDown = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0) return
@@ -2126,7 +2157,7 @@ export default function CanvasPage() {
     if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
     setSelectedStationIds(clone.stationIds)
-    setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+    setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
   }, [selectedIds, selectedStationIds, tabCards, tabStations, tabRails, activeTabId, dispatch])
 
   // stations を新IDで複製し、threads（選択駅のみを順序維持で辿ったもの）のうち
@@ -2197,7 +2228,7 @@ export default function CanvasPage() {
     if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
     setSelectedStationIds(clone.stationIds)
-    setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+    setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
   }, [activeTabId, dispatch])
 
   // Align the selected cards (2+) along an edge or center
@@ -2269,7 +2300,7 @@ export default function CanvasPage() {
     dispatch({ type: 'ADD_CANVAS_GROUP', payload: group })
     setSelectedIds([])
     setSelectedLabelIds([])
-    setSelectedGroupId(group.id)
+    setSelectedGroupIds([group.id])
   }, [tabCards, tabLabels, selectedIds, selectedLabelIds, activeTabId, dispatch])
 
   const handleCardContextMenu = useCallback((e: React.MouseEvent, card: CanvasCard) => {
@@ -2277,7 +2308,7 @@ export default function CanvasPage() {
     e.stopPropagation()
     if (!selectedIds.includes(card.id)) {
       setSelectedIds([card.id])
-      setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+      setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
     }
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 300), kind: 'card', canvasX: 0, canvasY: 0 })
   }, [selectedIds])
@@ -2287,21 +2318,21 @@ export default function CanvasPage() {
   const handleLabelContextMenu = useCallback((e: React.MouseEvent, label: CanvasLabel) => {
     if (canvasLockedRef.current) return
     e.preventDefault(); e.stopPropagation()
-    setSelectedLabelIds([label.id]); setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupId(null)
+    setSelectedLabelIds([label.id]); setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([])
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 160), kind: 'label', canvasX: 0, canvasY: 0 })
   }, [])
 
   const handleArrowContextMenu = useCallback((e: React.MouseEvent, arrow: CanvasArrow) => {
     if (canvasLockedRef.current) return
     e.preventDefault(); e.stopPropagation()
-    setSelectedArrowId(arrow.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupId(null)
+    setSelectedArrowId(arrow.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([])
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 160), kind: 'arrow', canvasX: 0, canvasY: 0 })
   }, [])
 
   const handleGroupContextMenu = useCallback((e: React.MouseEvent, group: CanvasGroup) => {
     if (canvasLockedRef.current) return
     e.preventDefault(); e.stopPropagation()
-    setSelectedGroupId(group.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedArrowId(null)
+    setSelectedGroupIds([group.id]); setSelectedIds([]); setSelectedLabelIds([]); setSelectedArrowId(null)
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 160), kind: 'group', canvasX: 0, canvasY: 0 })
   }, [])
 
@@ -2317,39 +2348,40 @@ export default function CanvasPage() {
   // Open the delete-confirmation modal for whatever is currently selected
   // (cards/labels, or a single arrow or group). Every delete path funnels here.
   const requestDeleteSelection = useCallback(() => {
-    const nCards = selectedIds.length, nLabels = selectedLabelIds.length, nStations = selectedStationIds.length
-    if (nCards + nLabels + nStations > 0) {
+    const nCards = selectedIds.length, nLabels = selectedLabelIds.length, nStations = selectedStationIds.length, nGroups = selectedGroupIds.length
+    if (nCards + nLabels + nStations + nGroups > 0) {
       const parts: string[] = []
       if (nCards) parts.push(`カード${nCards}枚`)
       if (nLabels) parts.push(`ラベル${nLabels}個`)
       if (nStations) parts.push(`駅${nStations}個`)
-      const ids = [...selectedIds], lids = [...selectedLabelIds], sids = [...selectedStationIds]
+      if (nGroups) parts.push(`グループ枠${nGroups}個`)
+      const ids = [...selectedIds], lids = [...selectedLabelIds], sids = [...selectedStationIds], gids = [...selectedGroupIds]
+      // グループ枠は枠だけ消える（中のカードは、それ自体が選択されていない限り残る）。
+      const groupNote = nGroups && !nCards ? 'グループ枠は枠のみ消え、中のカードは残ります。' : ''
       setConfirmDelete({
-        message: `${parts.join('・')}を削除します。${nStations ? '駅は通っている路線からも外れます。' : ''}元に戻すには Ctrl+Z。`,
+        message: `${parts.join('・')}を削除します。${nStations ? '駅は通っている路線からも外れます。' : ''}${groupNote}元に戻すには Ctrl+Z。`,
         run: () => {
           dispatch({ type: 'BATCH', payload: [ // まとめて1 undoステップ
             ...ids.map(id => ({ type: 'DELETE_CANVAS_CARD' as const, payload: id })),
             ...lids.map(id => ({ type: 'DELETE_CANVAS_LABEL' as const, payload: id })),
             ...sids.map(id => ({ type: 'DELETE_CANVAS_STATION' as const, payload: id })),
+            ...gids.map(id => ({ type: 'DELETE_CANVAS_GROUP' as const, payload: id })),
           ] })
-          setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([])
+          setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([])
         },
       })
     } else if (selectedArrowId) {
       const id = selectedArrowId
       setConfirmDelete({ message: '矢印を削除します。元に戻すには Ctrl+Z。', run: () => { dispatch({ type: 'DELETE_CANVAS_ARROW', payload: id }); setSelectedArrowId(null) } })
-    } else if (selectedGroupId) {
-      const id = selectedGroupId
-      setConfirmDelete({ message: 'グループ枠を削除します（中のカードは残ります）。元に戻すには Ctrl+Z。', run: () => { dispatch({ type: 'DELETE_CANVAS_GROUP', payload: id }); setSelectedGroupId(null) } })
     }
-  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupId, selectedStationIds, dispatch])
+  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupIds, selectedStationIds, dispatch])
 
   // Keyboard: Delete removes the selection, Ctrl+D duplicates, Escape exits the active tool
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // While the delete-confirmation modal is open, only Enter (confirm) / Escape (cancel) apply.
+      // While the delete-confirmation modal is open, only Enter/Space (confirm) / Escape (cancel) apply.
       if (confirmDelete) {
-        if (e.key === 'Enter') { e.preventDefault(); confirmDelete.run(); setConfirmDelete(null) }
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); confirmDelete.run(); setConfirmDelete(null) }
         else if (e.key === 'Escape') { e.preventDefault(); setConfirmDelete(null) }
         return
       }
@@ -2374,12 +2406,13 @@ export default function CanvasPage() {
       if (mod && (e.key === 'g' || e.key === 'G')) {
         e.preventDefault()
         if (!locked) {
-          if (e.shiftKey) { if (selectedGroupId) { dispatch({ type: 'DELETE_CANVAS_GROUP', payload: selectedGroupId }); setSelectedGroupId(null) } }
+          if (e.shiftKey) { if (selectedGroupIds.length > 0) { selectedGroupIds.forEach(id => dispatch({ type: 'DELETE_CANVAS_GROUP', payload: id })); setSelectedGroupIds([]) } }
           else groupSelection()
         }
         return
       }
-      if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedStationIds(tabStationsRef.current.map(s => s.id)); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); return }
+      // 全選択はカード・駅だけでなくラベル・グループ枠も対象にする（移動/削除に参加させる）。
+      if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedStationIds(tabStationsRef.current.map(s => s.id)); setSelectedLabelIds(tabLabelsRef.current.map(l => l.id)); setSelectedGroupIds(tabGroupsRef.current.map(g => g.id)); setSelectedArrowId(null); return }
       if (mod && (e.key === 'c' || e.key === 'C')) {
         // 本文テキストを範囲選択中はネイティブのテキストコピーを優先する
         // （ここで preventDefault するとカード内テキストが一切コピーできない）。
@@ -2389,7 +2422,7 @@ export default function CanvasPage() {
       }
       // Ctrl+V is handled by the native 'paste' event listener (so clipboard image
       // data is available); preventing it here would suppress that event.
-      if (!locked && (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedStationIds.length > 0) && e.key.startsWith('Arrow')) {
+      if (!locked && (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedStationIds.length > 0 || selectedGroupIds.length > 0) && e.key.startsWith('Arrow')) {
         e.preventDefault()
         const base = snapRef.current ? 20 : 1
         const step = e.shiftKey ? base * 10 : base
@@ -2401,11 +2434,14 @@ export default function CanvasPage() {
         tabLabelsRef.current.forEach(l => { if (lsel.has(l.id)) dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: l.x + nx, y: l.y + ny } }) })
         const ssel = new Set(selectedStationIds)
         tabStationsRef.current.forEach(s => { if (ssel.has(s.id)) dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...s, x: s.x + nx, y: s.y + ny } }) })
+        // 選択中のグループは枠だけ動かす — 中身は自身が選択されていれば上で動いている。
+        const gsel = new Set(selectedGroupIds)
+        tabGroupsRef.current.forEach(g => { if (gsel.has(g.id)) dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...g, x: g.x + nx, y: g.y + ny } }) })
         return
       }
-      if (e.key === 'Escape') { setTool('select'); setSelectedIds([]); setSelectedArrowId(null); setEditingArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([]); setEditingLabelId(null); setSelectedStationIds([]); setEditingStationId(null); setShowAddMenu(false); setContextMenu(null); setConvertOpen(false); setPickerOpenCardId(null); setDetachOpenCardId(null); setPickerChecked([]) }
+      if (e.key === 'Escape') { setTool('select'); setSelectedIds([]); setSelectedArrowId(null); setEditingArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setEditingLabelId(null); setSelectedStationIds([]); setEditingStationId(null); setShowAddMenu(false); setContextMenu(null); setConvertOpen(false); setPickerOpenCardId(null); setDetachOpenCardId(null); setPickerChecked([]) }
       if (!locked && (e.key === 'Delete' || e.key === 'Backspace')) {
-        if (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedArrowId || selectedGroupId || selectedStationIds.length > 0) {
+        if (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedArrowId || selectedGroupIds.length > 0 || selectedStationIds.length > 0) {
           e.preventDefault()
           requestDeleteSelection() // every delete path goes through the confirm modal
         }
@@ -2439,7 +2475,7 @@ export default function CanvasPage() {
         }
         dispatch({ type: 'ADD_CANVAS_CARD', payload: newCard })
         dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
-        setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+        setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
         return
       }
       // Enter-to-extend (Flow parity): from a selected 下書き, Enter spawns a
@@ -2470,12 +2506,12 @@ export default function CanvasPage() {
           }
           dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
         }
-        setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
+        setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupId, selectedStationIds, dispatch, undo, redo, duplicateSelection, copyCards, pasteCards, groupSelection, confirmDelete, requestDeleteSelection])
+  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupIds, selectedStationIds, dispatch, undo, redo, duplicateSelection, copyCards, pasteCards, groupSelection, confirmDelete, requestDeleteSelection])
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
     if (canvasLockedRef.current) return
@@ -3958,12 +3994,12 @@ export default function CanvasPage() {
                 key={group.id}
                 group={group}
                 depth={depth}
-                selected={selectedGroupId === group.id}
+                selected={selectedGroupIds.includes(group.id)}
                 viewLocked={canvasLocked}
                 onHeaderDown={handleGroupHeaderDown}
                 onResizeDown={handleGroupResizeDown}
                 onUpdate={updates => dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...group, ...updates } })}
-                onDelete={() => { dispatch({ type: 'DELETE_CANVAS_GROUP', payload: group.id }); if (selectedGroupId === group.id) setSelectedGroupId(null) }}
+                onDelete={() => { dispatch({ type: 'DELETE_CANVAS_GROUP', payload: group.id }); setSelectedGroupIds(prev => prev.filter(x => x !== group.id)) }}
                 onContextMenu={e => handleGroupContextMenu(e, group)}
               />
               )
@@ -4082,7 +4118,7 @@ export default function CanvasPage() {
                     d={arrowGeometry(ends, a.curved, a.points).d}
                     selected={selectedArrowId === a.id}
                     interactive={tool === 'select'}
-                    onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupId(null); setSelectedStationIds([]) }}
+                    onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([]); setSelectedStationIds([]) }}
                     onEndDown={handleArrowEndDown}
                     onWayDown={handleWayDown}
                     onWayInsert={handleWayInsert}
@@ -5361,15 +5397,24 @@ export const WebFrame = forwardRef<WebFrameHandle, {
   // 早期 return したまま再実行されない。dom-ready 時に最新値でもう一度同期する。
   const effectiveUrlRef = useRef(effectiveUrl)
   useEffect(() => { effectiveUrlRef.current = effectiveUrl }, [effectiveUrl])
+  // 直近に src / loadURL で「要求した」URL。同期判定は必ずこれと行う。
+  // getURL()（リダイレクト・末尾スラッシュ正規化後の実URL）と prop を比較すると、
+  // 例えば google.com → google.com/ の恒常的な差分で dom-ready のたびに再ロード
+  // する無限ループになり、Google のボット判定を踏む（リサーチページの実害）。
+  // ついでに webview 内をユーザーが自由に遷移しても、prop が変わらない限り
+  // 元 URL へ引き戻さなくなる。
+  const lastRequestedRef = useRef(initialSrcRef.current)
   useEffect(() => {
     if (!IS_ELECTRON) return
     const wv = hostRef.current?.querySelector('webview') as (WebviewEl & { loadURL?: (u: string) => Promise<void> }) | null
     if (!wv) return
     const syncUrl = () => {
+      const want = effectiveUrlRef.current || 'about:blank'
+      if (want === lastRequestedRef.current) return
       let cur = ''
       try { cur = wv.getURL?.() || '' } catch { return }
-      const want = effectiveUrlRef.current || 'about:blank'
-      if (!cur || cur === want) return
+      if (cur === want) { lastRequestedRef.current = want; return }
+      lastRequestedRef.current = want
       try { wv.loadURL?.(want)?.catch(() => { /* ignore */ }) } catch { /* ignore */ }
     }
     wv.addEventListener('dom-ready', syncUrl)
@@ -5379,13 +5424,15 @@ export const WebFrame = forwardRef<WebFrameHandle, {
     if (!IS_ELECTRON) return
     const wv = hostRef.current?.querySelector('webview') as (WebviewEl & { loadURL?: (u: string) => Promise<void> }) | null
     if (!wv) return
+    const want = effectiveUrl || 'about:blank'
+    if (want === lastRequestedRef.current) return
     // dom-ready 前の webview はメソッド呼び出しで throw する（初回マウント直後は
     // 必ずこの状態）。その間の初回ロードは src 属性が担うので黙って抜ける。
     let cur = ''
     try { cur = wv.getURL?.() || '' } catch { return }
     if (!cur) return
-    const want = effectiveUrl || 'about:blank'
-    if (cur === want) return
+    if (cur === want) { lastRequestedRef.current = want; return }
+    lastRequestedRef.current = want
     try { wv.loadURL?.(want)?.catch(() => { /* ignore */ }) } catch { /* ignore */ }
   }, [effectiveUrl])
   if (IS_ELECTRON) {
