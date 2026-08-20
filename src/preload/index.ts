@@ -70,6 +70,19 @@ contextBridge.exposeInMainWorld('api', {
       ipcRenderer.invoke('pdf:render-html', html, margins),
     save: (bytes: Uint8Array, defaultName: string): Promise<boolean> => ipcRenderer.invoke('pdf:save', bytes, defaultName),
   },
+  // 自動アップデート。mode='auto'(Winインストーラー版)は自動DL→installで再起動適用、
+  // mode='notify'(mac/ポータブル/開発)は新版の存在を知らせてリリースページへ誘導する。
+  update: {
+    get: (): Promise<{ current: string; mode: 'auto' | 'notify'; state: unknown }> => ipcRenderer.invoke('update:get'),
+    check: (): Promise<void> => ipcRenderer.invoke('update:check'),
+    install: (): void => ipcRenderer.send('update:install'),
+    openPage: (): Promise<void> => ipcRenderer.invoke('update:open-page'),
+    onState: (cb: (state: unknown) => void): (() => void) => {
+      const h = (_e: unknown, s: unknown): void => cb(s)
+      ipcRenderer.on('update:state', h)
+      return () => { ipcRenderer.off('update:state', h) }
+    },
+  },
   localFile: {
     // `kind` (image/pdf/video/audio) pre-selects the dialog's file filter.
     pick: (kind?: string): Promise<string[] | null> => ipcRenderer.invoke('local:pick', kind),

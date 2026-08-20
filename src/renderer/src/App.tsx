@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import { WikiLinkProvider } from './components/WikiLink'
 import AIChatPanel from './components/AIChatPanel'
 import { ConfirmHost } from './components/ConfirmDialog'
+import { UpdateNotifier } from './components/UpdateNotifier'
 import { useApp } from './store'
 import { isRemote, isElectron } from './persistence/runtime'
 import MobileApp from './mobile/MobileApp'
@@ -271,6 +272,7 @@ export default function App() {
       <ConfirmHost />
       <SyncButton />
       <AILauncher />
+      <UpdateNotifier />
       <div className="flex h-screen bg-slate-50 dark:bg-slate-950">
         <Sidebar />
         <main className="flex-1 overflow-hidden">
