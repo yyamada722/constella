@@ -206,6 +206,15 @@ const initialState: AppState = {
   canvasStations: [],
 }
 
+/**
+ * アプリケーション状態にアクションを適用し、更新後の状態を生成します。
+ *
+ * 複数のアクションをまとめて適用する場合は、各アクションを順番に処理します。
+ *
+ * @param state - 現在のアプリケーション状態
+ * @param action - 適用する状態更新アクション
+ * @returns アクション適用後のアプリケーション状態
+ */
 function reducer(state: AppState, action: Action): AppState {
   // BATCH folds N actions into one reducer application. historyReducer sees a
   // single transition, so the whole batch is one undo step.

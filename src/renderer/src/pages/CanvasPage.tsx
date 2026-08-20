@@ -784,6 +784,12 @@ interface DragState {
 
 const LABEL_SIZES = [14, 20, 28]
 
+/**
+ * インタラクティブなキャンバスワークスペースを表示・操作する。
+ *
+ * カード、矢印、グループ、ラベル、手書き線、路線図要素の編集や、タブ管理、
+ * メディア操作、検索、コピー・貼り付け、Undo/Redo、画像・共有用HTMLの書き出しを提供する。
+ */
 export default function CanvasPage() {
   const { state, dispatch, undo, redo, canUndo, canRedo } = useApp()
   const canvasRef = useRef<HTMLDivElement>(null)
