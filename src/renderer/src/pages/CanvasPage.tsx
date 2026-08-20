@@ -838,6 +838,9 @@ export default function CanvasPage() {
   // 駅+路線スレッドのクリップボード（カードと並走）。threads は選択駅だけを
   // 順序を保って辿ったサブスレッド（コピー時点の駅IDのまま; ペースト時に再採番）。
   const railClipboardRef = useRef<{ stations: CanvasStation[]; threads: { name: string; color: string; stationIds: string[] }[] }>({ stations: [], threads: [] })
+  // ラベル・グループ枠のクリップボード（全選択→コピーで一緒に運ぶ）。
+  const labelClipboardRef = useRef<CanvasLabel[]>([])
+  const groupClipboardRef = useRef<CanvasGroup[]>([])
   // True while the most recent copy was an in-app card copy (no window blur since),
   // so Ctrl+V prefers pasting cards over a stale image left in the OS clipboard.
   const internalCopyFreshRef = useRef(false)
@@ -1149,7 +1152,8 @@ export default function CanvasPage() {
   function activateTab(tabId: string) {
     setActiveTabId(tabId)
     setViewport({ x: 0, y: 0, zoom: 1 })
-    setSelectedIds([])
+    // 選択IDはタブローカルではないので、残すと前タブの不可視要素を Delete で消せてしまう。
+    setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]); setSelectedArrowId(null)
   }
 
   function selectTab(tabId: string) {
@@ -1576,8 +1580,7 @@ export default function CanvasPage() {
 
   const selectCard = useCallback((id: string, additive: boolean) => {
     setSelectedArrowId(null)
-    setSelectedGroupIds([])
-    if (!additive) { setSelectedLabelIds([]); setSelectedStationIds([]) } // keep labels/駅 when shift-extending a mixed selection
+    if (!additive) { setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]) } // keep labels/駅/グループ枠 when shift-extending a mixed selection
     if (additive) setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
     else setSelectedIds(prev => (prev.length > 1 && prev.includes(id)) ? prev : [id])
   }, [])
@@ -1977,6 +1980,7 @@ export default function CanvasPage() {
     e.stopPropagation()
     if (e.shiftKey) {
       // toggle this group in/out of the multi-selection (no drag)
+      setSelectedArrowId(null) // 矢印は混在選択に参加しない — 残すと見かけ上の同時選択になる
       setSelectedGroupIds(prev => prev.includes(group.id) ? prev.filter(x => x !== group.id) : [...prev, group.id])
       return
     }
@@ -2131,7 +2135,7 @@ export default function CanvasPage() {
 
   // Duplicate the selected cards (offset by a grid step)
   const duplicateSelection = useCallback(() => {
-    if (canvasLockedRef.current || (selectedIds.length === 0 && selectedStationIds.length === 0)) return
+    if (canvasLockedRef.current || (selectedIds.length === 0 && selectedStationIds.length === 0 && selectedLabelIds.length === 0 && selectedGroupIds.length === 0)) return
     const actions: Action[] = []
     const newIds: string[] = []
     tabCards.filter(c => selectedIds.includes(c.id)).forEach(c => {
@@ -2154,11 +2158,24 @@ export default function CanvasPage() {
       activeTabId, 24, 24,
     )
     actions.push(...clone.actions)
+    // 全選択で参加するようになったラベル・グループ枠も一緒に複製する。
+    const newLabelIds: string[] = []
+    tabLabels.filter(l => selectedLabelIds.includes(l.id)).forEach(l => {
+      const copy: CanvasLabel = { ...l, id: generateId(), x: l.x + 24, y: l.y + 24, createdAt: new Date().toISOString() }
+      actions.push({ type: 'ADD_CANVAS_LABEL', payload: copy })
+      newLabelIds.push(copy.id)
+    })
+    const newGroupIds: string[] = []
+    tabGroups.filter(g => selectedGroupIds.includes(g.id)).forEach(g => {
+      const copy: CanvasGroup = { ...g, id: generateId(), x: g.x + 24, y: g.y + 24, createdAt: new Date().toISOString() }
+      actions.push({ type: 'ADD_CANVAS_GROUP', payload: copy })
+      newGroupIds.push(copy.id)
+    })
     if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
     setSelectedStationIds(clone.stationIds)
-    setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
-  }, [selectedIds, selectedStationIds, tabCards, tabStations, tabRails, activeTabId, dispatch])
+    setSelectedArrowId(null); setSelectedGroupIds(newGroupIds); setSelectedLabelIds(newLabelIds)
+  }, [selectedIds, selectedStationIds, selectedLabelIds, selectedGroupIds, tabCards, tabStations, tabRails, tabLabels, tabGroups, activeTabId, dispatch])
 
   // stations を新IDで複製し、threads（選択駅のみを順序維持で辿ったもの）のうち
   // 2駅以上残るものを新しい路線にするアクション配列を組み立てて返す（dispatch は
@@ -2189,25 +2206,31 @@ export default function CanvasPage() {
   const copyCards = useCallback(() => {
     const sel = tabCards.filter(c => selectedIds.includes(c.id))
     const selStations = tabStations.filter(s => selectedStationIds.includes(s.id))
-    if (sel.length > 0 || selStations.length > 0) {
+    const selLabels = tabLabels.filter(l => selectedLabelIds.includes(l.id))
+    const selGroups = tabGroups.filter(g => selectedGroupIds.includes(g.id))
+    if (sel.length > 0 || selStations.length > 0 || selLabels.length > 0 || selGroups.length > 0) {
       clipboardRef.current = sel.map(c => ({ ...c, pages: c.pages?.map(p => ({ ...p })) }))
       railClipboardRef.current = {
         stations: selStations.map(s => ({ ...s })),
         threads: tabRails.map(r => ({ name: r.name, color: r.color, stationIds: [...r.stationIds] })),
       }
+      labelClipboardRef.current = selLabels.map(l => ({ ...l }))
+      groupClipboardRef.current = selGroups.map(g => ({ ...g }))
       internalCopyFreshRef.current = true
     }
-  }, [tabCards, selectedIds, tabStations, selectedStationIds, tabRails])
+  }, [tabCards, selectedIds, tabStations, selectedStationIds, tabRails, tabLabels, selectedLabelIds, tabGroups, selectedGroupIds])
 
   const pasteCards = useCallback((atX?: number, atY?: number) => {
     if (canvasLockedRef.current) return
     const clip = clipboardRef.current
     const railClip = railClipboardRef.current
-    if (clip.length === 0 && railClip.stations.length === 0) return
+    const labelClip = labelClipboardRef.current
+    const groupClip = groupClipboardRef.current
+    if (clip.length === 0 && railClip.stations.length === 0 && labelClip.length === 0 && groupClip.length === 0) return
     let ox = 24, oy = 24
     if (atX != null && atY != null) {
-      const minX = Math.min(...clip.map(c => c.x), ...railClip.stations.map(s => s.x))
-      const minY = Math.min(...clip.map(c => c.y), ...railClip.stations.map(s => s.y))
+      const minX = Math.min(...clip.map(c => c.x), ...railClip.stations.map(s => s.x), ...labelClip.map(l => l.x), ...groupClip.map(g => g.x))
+      const minY = Math.min(...clip.map(c => c.y), ...railClip.stations.map(s => s.y), ...labelClip.map(l => l.y), ...groupClip.map(g => g.y))
       ox = atX - minX
       oy = atY - minY
     }
@@ -2225,10 +2248,22 @@ export default function CanvasPage() {
     })
     const clone = cloneStationsWithThreads(railClip.stations, railClip.threads, activeTabId, ox, oy)
     actions.push(...clone.actions)
+    const newLabelIds: string[] = []
+    labelClip.forEach(l => {
+      const copy: CanvasLabel = { ...l, id: generateId(), tabId: activeTabId, x: l.x + ox, y: l.y + oy, createdAt: new Date().toISOString() }
+      actions.push({ type: 'ADD_CANVAS_LABEL', payload: copy })
+      newLabelIds.push(copy.id)
+    })
+    const newGroupIds: string[] = []
+    groupClip.forEach(g => {
+      const copy: CanvasGroup = { ...g, id: generateId(), tabId: activeTabId, x: g.x + ox, y: g.y + oy, createdAt: new Date().toISOString() }
+      actions.push({ type: 'ADD_CANVAS_GROUP', payload: copy })
+      newGroupIds.push(copy.id)
+    })
     if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
     setSelectedStationIds(clone.stationIds)
-    setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
+    setSelectedArrowId(null); setSelectedGroupIds(newGroupIds); setSelectedLabelIds(newLabelIds)
   }, [activeTabId, dispatch])
 
   // Align the selected cards (2+) along an edge or center
@@ -2381,7 +2416,14 @@ export default function CanvasPage() {
     const onKey = (e: KeyboardEvent) => {
       // While the delete-confirmation modal is open, only Enter/Space (confirm) / Escape (cancel) apply.
       if (confirmDelete) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); confirmDelete.run(); setConfirmDelete(null) }
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          // ConfirmHost と同じ規約: フォーカス中のモーダル内ボタンを押す。
+          // Shift+Tab でキャンセルへ移った後の Enter/Space が削除を実行しないように。
+          const focused = document.activeElement as HTMLElement | null
+          if (focused && focused.tagName === 'BUTTON' && focused.closest('[data-canvas-confirm]')) focused.click()
+          else { confirmDelete.run(); setConfirmDelete(null) }
+        }
         else if (e.key === 'Escape') { e.preventDefault(); setConfirmDelete(null) }
         return
       }
@@ -2406,7 +2448,12 @@ export default function CanvasPage() {
       if (mod && (e.key === 'g' || e.key === 'G')) {
         e.preventDefault()
         if (!locked) {
-          if (e.shiftKey) { if (selectedGroupIds.length > 0) { selectedGroupIds.forEach(id => dispatch({ type: 'DELETE_CANVAS_GROUP', payload: id })); setSelectedGroupIds([]) } }
+          if (e.shiftKey) {
+            if (selectedGroupIds.length > 0) {
+              dispatch({ type: 'BATCH', payload: selectedGroupIds.map(id => ({ type: 'DELETE_CANVAS_GROUP' as const, payload: id })) }) // まとめて1 undoステップ
+              setSelectedGroupIds([])
+            }
+          }
           else groupSelection()
         }
         return
@@ -2648,7 +2695,7 @@ export default function CanvasPage() {
       if (canvasLockedRef.current) return
       const items = e.clipboardData?.items
       const imgItem = items && Array.from(items).find(i => i.kind === 'file' && i.type.startsWith('image/'))
-      const hasCards = clipboardRef.current.length > 0 || railClipboardRef.current.stations.length > 0
+      const hasCards = clipboardRef.current.length > 0 || railClipboardRef.current.stations.length > 0 || labelClipboardRef.current.length > 0 || groupClipboardRef.current.length > 0
       // A fresh in-app card copy wins over a stale OS-clipboard image (keeps card duplication working).
       if (imgItem && !(internalCopyFreshRef.current && hasCards)) {
         const file = imgItem.getAsFile()
@@ -4387,7 +4434,7 @@ export default function CanvasPage() {
             >
               {contextMenu.kind === 'canvas' ? (
                 <>
-                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={clipboardRef.current.length === 0 && railClipboardRef.current.stations.length === 0} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
+                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={clipboardRef.current.length === 0 && railClipboardRef.current.stations.length === 0 && labelClipboardRef.current.length === 0 && groupClipboardRef.current.length === 0} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
                     <span className="flex items-center gap-2"><ClipboardPaste size={14} /> ここに貼り付け</span><kbd className="text-[10px] text-slate-400">Ctrl+V</kbd>
                   </button>
                   <div className="h-px bg-slate-200 my-1" />
@@ -4558,6 +4605,7 @@ export default function CanvasPage() {
           onMouseDown={() => setConfirmDelete(null)}
         >
           <div
+            data-canvas-confirm
             className="bg-white rounded-xl shadow-2xl border border-slate-200 p-5 w-[340px] max-w-[90vw]"
             onMouseDown={e => e.stopPropagation()}
           >
