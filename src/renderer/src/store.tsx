@@ -116,6 +116,10 @@ export type Action =
   | { type: 'DELETE_CANVAS_STATION'; payload: string }
   | { type: 'APPEND_STATION_TO_RAIL'; payload: { railId: string; stationId: string } }
   | { type: 'DETACH_STATION_FROM_RAIL'; payload: { railId: string; stationId: string } }
+  // Apply a list of actions as ONE state transition — and therefore one undo
+  // step. Used by multi-select deletes on the canvas so a single Ctrl+Z
+  // restores every card/label/station at once.
+  | { type: 'BATCH'; payload: Action[] }
 
 const now = new Date().toISOString()
 
@@ -203,6 +207,9 @@ const initialState: AppState = {
 }
 
 function reducer(state: AppState, action: Action): AppState {
+  // BATCH folds N actions into one reducer application. historyReducer sees a
+  // single transition, so the whole batch is one undo step.
+  if (action.type === 'BATCH') return action.payload.reduce(reducer, state)
   switch (action.type) {
     case 'ADD_MASTER_PROJECT':
       // Ignore a re-add of an existing id: the mindtrain reconciliation can fire
@@ -601,7 +608,7 @@ const NO_HISTORY = new Set<Action['type']>(['SET_CANVAS_CARD_VIEW', 'SET_ACTIVE_
 // into the add, so one UNDO removes the whole card instead of the last edit.
 // NB: intentionally excludes the multi-dispatch タスク化 conversion, which relies
 // on its trailing UPDATE_FLOW coalescing into ADD_PROJECT/SET_PROJECT_TASKS.
-const CLOSES_COALESCE_WINDOW = new Set<Action['type']>(['SET_FLOW'])
+const CLOSES_COALESCE_WINDOW = new Set<Action['type']>(['SET_FLOW', 'BATCH'])
 
 interface History {
   past: AppState[]

@@ -2319,9 +2319,13 @@ export default function CanvasPage() {
       setConfirmDelete({
         message: `${parts.join('・')}を削除します。${nStations ? '駅は通っている路線からも外れます。' : ''}元に戻すには Ctrl+Z。`,
         run: () => {
-          ids.forEach(id => dispatch({ type: 'DELETE_CANVAS_CARD', payload: id }))
-          lids.forEach(id => dispatch({ type: 'DELETE_CANVAS_LABEL', payload: id }))
-          sids.forEach(id => dispatch({ type: 'DELETE_CANVAS_STATION', payload: id }))
+          // One BATCH dispatch = one undo step, so a single Ctrl+Z restores the
+          // whole selection (the dialog promises exactly that).
+          dispatch({ type: 'BATCH', payload: [
+            ...ids.map(id => ({ type: 'DELETE_CANVAS_CARD' as const, payload: id })),
+            ...lids.map(id => ({ type: 'DELETE_CANVAS_LABEL' as const, payload: id })),
+            ...sids.map(id => ({ type: 'DELETE_CANVAS_STATION' as const, payload: id })),
+          ] })
           setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([])
         },
       })
