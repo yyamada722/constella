@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus } from 'lucide-react'
-import { useApp } from '../store'
+import { useApp, type Action } from '../store'
 import { CanvasCard, CanvasTab, CanvasBoard, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
@@ -2101,6 +2101,7 @@ export default function CanvasPage() {
   // Duplicate the selected cards (offset by a grid step)
   const duplicateSelection = useCallback(() => {
     if (canvasLockedRef.current || (selectedIds.length === 0 && selectedStationIds.length === 0)) return
+    const actions: Action[] = []
     const newIds: string[] = []
     tabCards.filter(c => selectedIds.includes(c.id)).forEach(c => {
       const copy: CanvasCard = {
@@ -2110,44 +2111,48 @@ export default function CanvasPage() {
         pages: c.pages ? c.pages.map(p => ({ ...p, id: generateId() })) : undefined,
         createdAt: new Date().toISOString(),
       }
-      dispatch({ type: 'ADD_CANVAS_CARD', payload: copy })
+      actions.push({ type: 'ADD_CANVAS_CARD', payload: copy })
       newIds.push(copy.id)
     })
     // 選択中の駅も複製 — 選択駅を2つ以上通る路線は、そのサブスレッドごと
     // 新しい路線として複製する（路線図を丸ごと選んで Ctrl+D した時の期待動作）。
     const selStations = tabStations.filter(s => selectedStationIds.includes(s.id))
-    const newStationIds = cloneStationsWithThreads(
+    const clone = cloneStationsWithThreads(
       selStations,
       tabRails.map(r => ({ name: r.name, color: r.color, stationIds: r.stationIds })),
       activeTabId, 24, 24,
     )
+    actions.push(...clone.actions)
+    if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
-    setSelectedStationIds(newStationIds)
+    setSelectedStationIds(clone.stationIds)
     setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
   }, [selectedIds, selectedStationIds, tabCards, tabStations, tabRails, activeTabId, dispatch])
 
   // stations を新IDで複製し、threads（選択駅のみを順序維持で辿ったもの）のうち
-  // 2駅以上残るものを新しい路線として dispatch する。新しい駅IDの配列を返す。
+  // 2駅以上残るものを新しい路線にするアクション配列を組み立てて返す（dispatch は
+  // 呼び出し側が BATCH でまとめる）。stationIds は新しい駅IDの配列。
   function cloneStationsWithThreads(
     stations: CanvasStation[],
     threads: { name: string; color: string; stationIds: string[] }[],
     targetTabId: string, ox: number, oy: number,
-  ): string[] {
-    if (stations.length === 0) return []
+  ): { actions: Action[]; stationIds: string[] } {
+    if (stations.length === 0) return { actions: [], stationIds: [] }
     const now = new Date().toISOString()
+    const actions: Action[] = []
     const idMap = new Map<string, string>()
     for (const s of stations) {
       const id = generateId()
       idMap.set(s.id, id)
-      dispatch({ type: 'ADD_CANVAS_STATION', payload: { station: { ...s, id, tabId: targetTabId, x: s.x + ox, y: s.y + oy, createdAt: now } } })
+      actions.push({ type: 'ADD_CANVAS_STATION', payload: { station: { ...s, id, tabId: targetTabId, x: s.x + ox, y: s.y + oy, createdAt: now } } })
     }
     for (const t of threads) {
       const thread = t.stationIds.filter(id => idMap.has(id)).map(id => idMap.get(id)!)
       if (thread.length >= 2) {
-        dispatch({ type: 'ADD_CANVAS_RAIL', payload: { id: generateId(), tabId: targetTabId, name: t.name, color: t.color, stationIds: thread, createdAt: now } })
+        actions.push({ type: 'ADD_CANVAS_RAIL', payload: { id: generateId(), tabId: targetTabId, name: t.name, color: t.color, stationIds: thread, createdAt: now } })
       }
     }
-    return [...idMap.values()]
+    return { actions, stationIds: [...idMap.values()] }
   }
 
   const copyCards = useCallback(() => {
@@ -2175,6 +2180,7 @@ export default function CanvasPage() {
       ox = atX - minX
       oy = atY - minY
     }
+    const actions: Action[] = []
     const newIds: string[] = []
     clip.forEach(c => {
       const copy: CanvasCard = {
@@ -2183,12 +2189,14 @@ export default function CanvasPage() {
         pages: c.pages?.map(p => ({ ...p, id: generateId() })),
         createdAt: new Date().toISOString(),
       }
-      dispatch({ type: 'ADD_CANVAS_CARD', payload: copy })
+      actions.push({ type: 'ADD_CANVAS_CARD', payload: copy })
       newIds.push(copy.id)
     })
-    const newStationIds = cloneStationsWithThreads(railClip.stations, railClip.threads, activeTabId, ox, oy)
+    const clone = cloneStationsWithThreads(railClip.stations, railClip.threads, activeTabId, ox, oy)
+    actions.push(...clone.actions)
+    if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
-    setSelectedStationIds(newStationIds)
+    setSelectedStationIds(clone.stationIds)
     setSelectedArrowId(null); setSelectedGroupId(null); setSelectedLabelIds([])
   }, [activeTabId, dispatch])
 
@@ -2319,9 +2327,11 @@ export default function CanvasPage() {
       setConfirmDelete({
         message: `${parts.join('・')}を削除します。${nStations ? '駅は通っている路線からも外れます。' : ''}元に戻すには Ctrl+Z。`,
         run: () => {
-          ids.forEach(id => dispatch({ type: 'DELETE_CANVAS_CARD', payload: id }))
-          lids.forEach(id => dispatch({ type: 'DELETE_CANVAS_LABEL', payload: id }))
-          sids.forEach(id => dispatch({ type: 'DELETE_CANVAS_STATION', payload: id }))
+          dispatch({ type: 'BATCH', payload: [ // まとめて1 undoステップ
+            ...ids.map(id => ({ type: 'DELETE_CANVAS_CARD' as const, payload: id })),
+            ...lids.map(id => ({ type: 'DELETE_CANVAS_LABEL' as const, payload: id })),
+            ...sids.map(id => ({ type: 'DELETE_CANVAS_STATION' as const, payload: id })),
+          ] })
           setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([])
         },
       })
