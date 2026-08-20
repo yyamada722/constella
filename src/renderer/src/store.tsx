@@ -116,6 +116,10 @@ export type Action =
   | { type: 'DELETE_CANVAS_STATION'; payload: string }
   | { type: 'APPEND_STATION_TO_RAIL'; payload: { railId: string; stationId: string } }
   | { type: 'DETACH_STATION_FROM_RAIL'; payload: { railId: string; stationId: string } }
+  // 複数アクションを1回の dispatch = 1 undo ステップとして適用する（複数カードの
+  // 複製・貼り付け・一括削除など）。historyReducer は BATCH を1アクションとして
+  // 見るので、past には適用前のスナップショットが1つだけ積まれる。
+  | { type: 'BATCH'; payload: Action[] }
 
 const now = new Date().toISOString()
 
@@ -203,6 +207,7 @@ const initialState: AppState = {
 }
 
 function reducer(state: AppState, action: Action): AppState {
+  if (action.type === 'BATCH') return action.payload.reduce(reducer, state)
   switch (action.type) {
     case 'ADD_MASTER_PROJECT':
       // Ignore a re-add of an existing id: the mindtrain reconciliation can fire
@@ -601,7 +606,9 @@ const NO_HISTORY = new Set<Action['type']>(['SET_CANVAS_CARD_VIEW', 'SET_ACTIVE_
 // into the add, so one UNDO removes the whole card instead of the last edit.
 // NB: intentionally excludes the multi-dispatch タスク化 conversion, which relies
 // on its trailing UPDATE_FLOW coalescing into ADD_PROJECT/SET_PROJECT_TASKS.
-const CLOSES_COALESCE_WINDOW = new Set<Action['type']>(['SET_FLOW'])
+// BATCH も同様: 複製/貼り付け直後のドラッグが複製ステップに吸収されると、
+// 1回の UNDO で「移動＋複製」がまとめて消えてしまう。
+const CLOSES_COALESCE_WINDOW = new Set<Action['type']>(['SET_FLOW', 'BATCH'])
 
 interface History {
   past: AppState[]
