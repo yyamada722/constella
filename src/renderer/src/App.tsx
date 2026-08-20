@@ -132,10 +132,11 @@ function GlobalUX({ onCheatSheet }: { onCheatSheet: () => void }) {
   const selfUndoRef = useRef(selfUndo)
   selfUndoRef.current = selfUndo
 
-  // Window title: Constella — <active project>
+  // Window title: Constella v<version> — <active project>
   useEffect(() => {
     const name = state.masterProjects.find(p => p.id === state.activeMasterProjectId)?.name
-    document.title = name ? `Constella — ${name}` : 'Constella'
+    const base = `Constella v${__APP_VERSION__}`
+    document.title = name ? `${base} — ${name}` : base
   }, [state.activeMasterProjectId, state.masterProjects])
 
   useEffect(() => {
