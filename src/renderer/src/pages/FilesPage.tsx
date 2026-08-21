@@ -7,10 +7,10 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Plus, Trash2, Folder, FolderPlus, ChevronDown, ChevronRight, Search, X,
   LayoutGrid, List as ListIcon, Download, ChevronLeft, Loader2,
-  FileText, Share2, Boxes, Tag, HardDrive, Paperclip, Files as FilesGlyph, MessageSquare,
+  FileText, Share2, Boxes, Tag, HardDrive, Paperclip, Files as FilesGlyph, MessageSquare, FolderKanban,
 } from 'lucide-react'
 import { useApp, type Action } from '../store'
-import { FileItem, FileFolder, Note } from '../types'
+import { FileItem, FileFolder, Note, Task, Project } from '../types'
 import { generateId } from '../utils'
 import { putMedia, useMediaState } from '../persistence/media'
 import { isImageFile, normalizeImageBlob } from '../utils/image'
@@ -24,6 +24,10 @@ import { SearchInput } from '../components/SearchInput'
 import { confirmDialog, alertDialog } from '../components/ConfirmDialog'
 
 type RailSel = 'all' | 'unfiled' | 'linked' | { folderId: string }
+// このファイルを参照している場所（ノート添付 + タスクの資料リンク）
+type FileUsage = { notes: Note[]; tasks: { task: Task; board: Project }[] }
+const EMPTY_USAGE: FileUsage = { notes: [], tasks: [] }
+const usageCount = (u: FileUsage) => u.notes.length + u.tasks.length
 type SortMode = 'date' | 'name' | 'size'
 type ViewMode = 'grid' | 'list'
 const TYPE_FILTERS: ('all' | FileKind)[] = ['all', 'image', 'video', 'pdf', 'audio', 'other']
@@ -54,12 +58,12 @@ function FileThumb({ file, className }: { file: FileItem; className?: string }) 
 
 /* ── ライトボックス（大プレビュー + メタ編集） ── */
 
-function FileLightbox({ file, list, masterName, isReference, usage, masters, folders, onNav, onUpdate, onDelete, onClose, onJumpNote }: {
+function FileLightbox({ file, list, masterName, isReference, usage, masters, folders, onNav, onUpdate, onDelete, onClose, onJumpNote, onJumpTask }: {
   file: FileItem
   list: FileItem[] // 前後ナビの並び（現在のフィルタ結果）
   masterName: (id: string) => string
   isReference: boolean // 参照（他プロジェクト所有）として見ているか
-  usage: { note: Note }[]
+  usage: FileUsage
   masters: { id: string; name: string }[] // 紐づけ候補（所有以外のアクティブなプロジェクト）
   folders: FileFolder[] // 所有プロジェクトのフォルダ（参照表示中は空）
   onNav: (next: FileItem) => void
@@ -67,6 +71,7 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   onDelete: () => void
   onClose: () => void
   onJumpNote: (note: Note) => void
+  onJumpTask: (task: Task) => void
 }) {
   const kind = fileKind(file.mime, file.name)
   const { url: src, status } = useMediaState(file.url)
@@ -225,14 +230,14 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
             )}
           </div>
 
-          {/* 使用先（このファイルを添付しているノート） */}
+          {/* 使用先（このファイルを参照しているノート添付 + タスク） */}
           <div>
-            <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-1"><Paperclip size={10} /> 使用先 {usage.length}件</label>
-            {usage.length === 0 ? (
-              <p className="mt-1 text-[11px] text-slate-400">まだどのノートにも添付されていません</p>
+            <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-1"><Paperclip size={10} /> 使用先 {usageCount(usage)}件</label>
+            {usageCount(usage) === 0 ? (
+              <p className="mt-1 text-[11px] text-slate-400">まだどのノート・タスクにも参照されていません</p>
             ) : (
               <div className="mt-1 space-y-0.5">
-                {usage.map(({ note }) => (
+                {usage.notes.map(note => (
                   <button
                     key={note.id}
                     onClick={() => onJumpNote(note)}
@@ -241,6 +246,18 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
                   >
                     <FileText size={11} className="shrink-0" />
                     <span className="truncate">{note.title || '(無題)'}</span>
+                  </button>
+                ))}
+                {usage.tasks.map(({ task, board }) => (
+                  <button
+                    key={`${board.id}/${task.id}`}
+                    onClick={() => onJumpTask(task)}
+                    title={`${board.name} のタスク「${task.title || '(無題)'}」を開く`}
+                    className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 hover:brightness-95 text-left"
+                  >
+                    <FolderKanban size={11} className="shrink-0" />
+                    <span className="truncate flex-1">{task.title || '(無題)'}</span>
+                    <span className="text-[9px] opacity-60 truncate shrink-0 max-w-[80px]">{board.name}</span>
                   </button>
                 ))}
               </div>
@@ -342,19 +359,28 @@ export default function FilesPage() {
 
   const totalSize = useMemo(() => ownFiles.reduce((s, f) => s + (f.size || 0), 0), [ownFiles])
 
-  // 使用先: fileId → このファイルを添付しているノート（アーカイブ除く）
+  // 使用先: fileId → このファイルを参照しているノート添付 + タスク
   const usageByFile = useMemo(() => {
-    const m = new Map<string, { note: Note }[]>()
+    const m = new Map<string, FileUsage>()
+    const get = (id: string) => {
+      let u = m.get(id)
+      if (!u) { u = { notes: [], tasks: [] }; m.set(id, u) }
+      return u
+    }
     for (const n of state.notes) {
       if (n.archivedAt) continue
       for (const a of n.attachments ?? []) {
-        const arr = m.get(a.fileId) ?? []
-        if (!arr.some(u => u.note.id === n.id)) arr.push({ note: n })
-        m.set(a.fileId, arr)
+        const u = get(a.fileId)
+        if (!u.notes.some(x => x.id === n.id)) u.notes.push(n)
+      }
+    }
+    for (const p of state.projects) {
+      for (const t of p.tasks) {
+        for (const fid of t.fileIds ?? []) get(fid).tasks.push({ task: t, board: p })
       }
     }
     return m
-  }, [state.notes])
+  }, [state.notes, state.projects])
 
   const openFile = useMemo(
     () => (openId ? state.files.find(f => f.id === openId) ?? null : null),
@@ -414,9 +440,13 @@ export default function FilesPage() {
   }
 
   async function deleteFile(f: FileItem) {
-    const used = usageByFile.get(f.id)?.length ?? 0
-    const msg = used > 0
-      ? `「${f.name || '(無名)'}」をライブラリから削除しますか？\n${used}件のノートの付随資料からも外れます。`
+    const u = usageByFile.get(f.id) ?? EMPTY_USAGE
+    const parts = [
+      u.notes.length > 0 ? `${u.notes.length}件のノート添付` : '',
+      u.tasks.length > 0 ? `${u.tasks.length}件のタスク` : '',
+    ].filter(Boolean)
+    const msg = parts.length > 0
+      ? `「${f.name || '(無名)'}」をライブラリから削除しますか？\n${parts.join('・')}の参照からも外れます。`
       : `「${f.name || '(無名)'}」をライブラリから削除しますか？`
     if (!(await confirmDialog(msg, { danger: true }))) return
     // メディア実体はここでは消さない — undo で戻せるよう、参照が消えたブロブは
@@ -685,7 +715,7 @@ export default function FilesPage() {
               {visibleFiles.map(f => {
                 const kind = fileKind(f.mime, f.name)
                 const Icon = FILE_KIND_ICON[kind]
-                const used = usageByFile.get(f.id)?.length ?? 0
+                const used = usageCount(usageByFile.get(f.id) ?? EMPTY_USAGE)
                 return (
                   <div
                     key={f.id}
@@ -702,7 +732,7 @@ export default function FilesPage() {
                         <span className="absolute top-1 left-1 inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-indigo-500/85 text-white text-[8px]"><Share2 size={8} /> 参照</span>
                       )}
                       {used > 0 && (
-                        <span className="absolute top-1 right-1 inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-slate-900/60 text-white text-[8px]" title={`${used}件のノートで使用中`}><Paperclip size={8} />{used}</span>
+                        <span className="absolute top-1 right-1 inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-slate-900/60 text-white text-[8px]" title={`${used}件のノート/タスクで使用中`}><Paperclip size={8} />{used}</span>
                       )}
                     </div>
                     <div className="px-2 py-1.5">
@@ -727,7 +757,7 @@ export default function FilesPage() {
               {visibleFiles.map((f, i) => {
                 const kind = fileKind(f.mime, f.name)
                 const Icon = FILE_KIND_ICON[kind]
-                const used = usageByFile.get(f.id)?.length ?? 0
+                const used = usageCount(usageByFile.get(f.id) ?? EMPTY_USAGE)
                 return (
                   <div
                     key={f.id}
@@ -757,7 +787,7 @@ export default function FilesPage() {
                         </div>
                       )}
                     </div>
-                    {used > 0 && <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-400 shrink-0" title={`${used}件のノートで使用中`}><Paperclip size={10} />{used}</span>}
+                    {used > 0 && <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-400 shrink-0" title={`${used}件のノート/タスクで使用中`}><Paperclip size={10} />{used}</span>}
                     <span className="text-[10px] text-slate-400 shrink-0 w-16 text-right inline-flex items-center justify-end gap-1"><Icon size={10} className={FILE_KIND_TINT[kind]} />{FILE_KIND_LABEL[kind]}</span>
                     <span className="text-[10px] text-slate-400 tabular-nums shrink-0 w-14 text-right">{formatSize(f.size) || '—'}</span>
                     <span className="text-[10px] text-slate-400 tabular-nums shrink-0 w-20 text-right">{new Date(f.createdAt).toLocaleDateString()}</span>
@@ -775,7 +805,7 @@ export default function FilesPage() {
           list={lightboxList}
           masterName={masterName}
           isReference={openFile.masterProjectId !== active}
-          usage={usageByFile.get(openFile.id) ?? []}
+          usage={usageByFile.get(openFile.id) ?? EMPTY_USAGE}
           masters={linkCandidates(openFile)}
           folders={folders}
           onNav={f => setOpenId(f.id)}
@@ -783,6 +813,7 @@ export default function FilesPage() {
           onDelete={() => deleteFile(openFile)}
           onClose={() => setOpenId(null)}
           onJumpNote={note => navigate('/', { state: { focusNoteId: note.id } })}
+          onJumpTask={task => navigate(`/projects?taskId=${task.id}`)}
         />
       )}
     </div>

@@ -91,6 +91,7 @@ export interface Task {
   endDate?: string   // YYYY-MM-DD (optional, inclusive). If only one of start/end is set, the task is a 1-day item on that date.
   parentId?: string  // task hierarchy: when set, this task is a subtask of `parentId` (within the same board).
   linkedNoteIds?: string[] // ids of Notes that hold richer detail for this task (contact info, references, etc.)
+  fileIds?: string[] // ids of library FileItems attached to this task (資料の参照リンク)
   priority?: 1 | 2 | 3 | 4 // 1 = highest (P1 / urgent), 4 = lowest. undefined = unset.
   completedAt?: string // ISO timestamp when status flipped to 'done'. Surfaces in "hide done" filtering and history.
   // Cross-project schedule sharing: when true, this task's date span also shows on

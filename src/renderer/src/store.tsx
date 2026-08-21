@@ -246,13 +246,23 @@ function reducer(state: AppState, action: Action): AppState {
           return { ...n, attachments: next.length > 0 ? next : undefined }
         }),
         noteFolders: state.noteFolders.filter(f => f.masterProjectId !== mid),
+        projects: state.projects.filter(p => p.masterProjectId !== mid).map(p => {
+          if (!p.tasks.some(t => t.fileIds?.some(id => doomedFileIds.has(id)))) return p
+          return {
+            ...p,
+            tasks: p.tasks.map(t => {
+              if (!t.fileIds?.some(id => doomedFileIds.has(id))) return t
+              const next = t.fileIds.filter(id => !doomedFileIds.has(id))
+              return { ...t, fileIds: next.length > 0 ? next : undefined }
+            }),
+          }
+        }),
         files: state.files.filter(f => f.masterProjectId !== mid).map(f => {
           if (!f.linkedMasterIds?.includes(mid)) return f
           const linked = f.linkedMasterIds.filter(id => id !== mid)
           return { ...f, linkedMasterIds: linked.length > 0 ? linked : undefined }
         }),
         fileFolders: state.fileFolders.filter(f => f.masterProjectId !== mid),
-        projects: state.projects.filter(p => p.masterProjectId !== mid),
         research: state.research.filter(r => r.masterProjectId !== mid),
         researchFolders: state.researchFolders.filter(f => f.masterProjectId !== mid),
         sketches: state.sketches.filter(s => s.masterProjectId !== mid),
@@ -317,8 +327,8 @@ function reducer(state: AppState, action: Action): AppState {
     case 'UPDATE_FILE_ITEM':
       return { ...state, files: state.files.map(f => f.id === action.payload.id ? action.payload : f) }
     case 'DELETE_FILE_ITEM': {
-      // Cascade: strip every note-attachment link that references this file —
-      // otherwise notes keep "broken" attachment chips pointing at nothing.
+      // Cascade: strip every note-attachment link AND task file link that
+      // references this file — otherwise they keep "broken" chips pointing at nothing.
       const fid = action.payload
       return {
         ...state,
@@ -327,6 +337,17 @@ function reducer(state: AppState, action: Action): AppState {
           if (!n.attachments?.some(a => a.fileId === fid)) return n
           const next = n.attachments.filter(a => a.fileId !== fid)
           return { ...n, attachments: next.length > 0 ? next : undefined }
+        }),
+        projects: state.projects.map(p => {
+          if (!p.tasks.some(t => t.fileIds?.includes(fid))) return p
+          return {
+            ...p,
+            tasks: p.tasks.map(t => {
+              if (!t.fileIds?.includes(fid)) return t
+              const next = t.fileIds.filter(id => id !== fid)
+              return { ...t, fileIds: next.length > 0 ? next : undefined }
+            }),
+          }
         }),
       }
     }

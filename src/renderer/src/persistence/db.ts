@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS note_folders (ord INTEGER, id TEXT PRIMARY KEY, maste
 CREATE TABLE IF NOT EXISTS files (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, linkedMasterIds TEXT, name TEXT, url TEXT, mime TEXT, size REAL, tags TEXT, folderId TEXT, comment TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS file_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT);
-CREATE TABLE IF NOT EXISTS tasks (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, title TEXT, description TEXT, status TEXT, tags TEXT, createdAt TEXT, startDate TEXT, endDate TEXT, parentId TEXT, linkedNoteIds TEXT, priority INTEGER, completedAt TEXT, shared INTEGER, sharedAlias TEXT);
+CREATE TABLE IF NOT EXISTS tasks (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, title TEXT, description TEXT, status TEXT, tags TEXT, createdAt TEXT, startDate TEXT, endDate TEXT, parentId TEXT, linkedNoteIds TEXT, priority INTEGER, completedAt TEXT, shared INTEGER, sharedAlias TEXT, fileIds TEXT);
 CREATE TABLE IF NOT EXISTS research (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, url TEXT, description TEXT, tags TEXT, category TEXT, createdAt TEXT, folderId TEXT, archivedAt TEXT);
 CREATE TABLE IF NOT EXISTS research_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS sketches (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, strokes TEXT, createdAt TEXT, updatedAt TEXT);
@@ -265,6 +265,7 @@ async function getDb(): Promise<Database> {
     try { db.run('ALTER TABLE notes ADD COLUMN refByMasterIds TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE notes ADD COLUMN attachments TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE files ADD COLUMN comment TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE tasks ADD COLUMN fileIds TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN priority INTEGER') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN completedAt TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
@@ -383,6 +384,7 @@ export async function loadState(): Promise<AppState | null> {
   const tasksByProject = new Map<string, Task[]>()
   for (const r of rows(db, 'SELECT * FROM tasks ORDER BY ord')) {
     const linkedNoteIds = parseArr<string>(r.linkedNoteIds)
+    const fileIds = parseArr<string>(r.fileIds)
     const priRaw = r.priority == null ? undefined : Number(r.priority)
     const task: Task = {
       id: str(r.id), title: str(r.title), description: str(r.description),
@@ -390,6 +392,7 @@ export async function loadState(): Promise<AppState | null> {
       startDate: optStr(r.startDate), endDate: optStr(r.endDate),
       parentId: optStr(r.parentId),
       linkedNoteIds: linkedNoteIds.length > 0 ? linkedNoteIds : undefined,
+      fileIds: fileIds.length > 0 ? fileIds : undefined,
       priority: (priRaw === 1 || priRaw === 2 || priRaw === 3 || priRaw === 4) ? priRaw as Task['priority'] : undefined,
       completedAt: optStr(r.completedAt),
       shared: bool(r.shared) ? true : undefined,
@@ -643,10 +646,10 @@ async function doSaveState(state: AppState): Promise<void> {
     const taskRows: (string | number | null)[][] = []
     for (const p of state.projects) {
       for (const t of p.tasks) {
-        taskRows.push([taskOrd++, t.id, p.id, t.title, t.description, t.status, JSON.stringify(t.tags ?? []), t.createdAt, t.startDate ?? null, t.endDate ?? null, t.parentId ?? null, JSON.stringify(t.linkedNoteIds ?? []), t.priority ?? null, t.completedAt ?? null, t.shared ? 1 : 0, t.sharedAlias ?? null].map(B))
+        taskRows.push([taskOrd++, t.id, p.id, t.title, t.description, t.status, JSON.stringify(t.tags ?? []), t.createdAt, t.startDate ?? null, t.endDate ?? null, t.parentId ?? null, JSON.stringify(t.linkedNoteIds ?? []), t.priority ?? null, t.completedAt ?? null, t.shared ? 1 : 0, t.sharedAlias ?? null, JSON.stringify(t.fileIds ?? [])].map(B))
       }
     }
-    insert('INSERT INTO tasks (ord,id,projectId,title,description,status,tags,createdAt,startDate,endDate,parentId,linkedNoteIds,priority,completedAt,shared,sharedAlias) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', taskRows)
+    insert('INSERT INTO tasks (ord,id,projectId,title,description,status,tags,createdAt,startDate,endDate,parentId,linkedNoteIds,priority,completedAt,shared,sharedAlias,fileIds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', taskRows)
 
     insert('INSERT INTO research (ord,id,masterProjectId,title,url,description,tags,category,createdAt,folderId,archivedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
       state.research.map((r, i) => [i, r.id, r.masterProjectId, r.title, r.url, r.description, JSON.stringify(r.tags ?? []), r.category, r.createdAt, r.folderId ?? null, r.archivedAt ?? null].map(B)))
