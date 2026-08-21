@@ -15,6 +15,7 @@ import { putMedia, useMediaState } from '../persistence/media'
 import { isImageFile, normalizeImageBlob } from '../utils/image'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, formatSize } from '../utils/fileKind'
 import { PdfViewer } from './PdfViewer'
+import { AudioPlayer } from './AudioPlayer'
 import { MediaFallback } from './MediaFallback'
 import { confirmDialog, alertDialog } from './ConfirmDialog'
 
@@ -51,7 +52,7 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
   } else if (kind === 'video') {
     body = <video src={src} controls loop className="w-full max-h-[440px] bg-black" />
   } else if (kind === 'audio') {
-    body = <audio src={src} controls className="w-full px-3 py-4" />
+    body = <div className="p-3"><AudioPlayer src={src} /></div>
   } else {
     body = <div className="h-16 flex items-center justify-center text-xs text-slate-400">プレビュー非対応の形式です（ダウンロードして開いてください）</div>
   }

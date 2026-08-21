@@ -16,6 +16,7 @@ import { putMedia, useMediaState } from '../persistence/media'
 import { isImageFile, normalizeImageBlob } from '../utils/image'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, FILE_KIND_LABEL, formatSize, type FileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
+import { AudioPlayer } from '../components/AudioPlayer'
 import { MediaFallback } from '../components/MediaFallback'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
@@ -94,7 +95,7 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   } else if (kind === 'pdf') {
     body = <div className="flex-1 min-h-0 overflow-hidden p-4 flex items-stretch justify-center"><div className="w-full max-w-[880px] bg-white rounded overflow-hidden"><PdfViewer url={src} fixedHeight={Math.max(320, window.innerHeight - 120)} /></div></div>
   } else if (kind === 'audio') {
-    body = <div className="flex-1 flex items-center justify-center p-8"><audio src={src} controls autoPlay className="w-full max-w-[560px]" /></div>
+    body = <div className="flex-1 flex items-center justify-center p-8"><div className="w-full max-w-[640px]"><AudioPlayer src={src} autoPlay /></div></div>
   } else {
     body = (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-300">
