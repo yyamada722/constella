@@ -32,12 +32,14 @@ export interface FenceState { char: string; len: number }
 const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/
 
 // 1行ぶんフェンス状態を進める。CommonMark: 閉じフェンスは開きと同じ文字で
-// 開きと同じ長さ以上（``` の中の ```` は閉じない）。
+// 開きと同じ長さ以上（``` の中の ```` は閉じない）、かつフェンス記号の後は
+// 空白のみ（```info 付きの行は開きにはなるが閉じにはならない）。
 export function updateFence(state: FenceState | null, line: string): FenceState | null {
   const m = FENCE_RE.exec(line)
   if (!m) return state
   if (state === null) return { char: m[1][0], len: m[1].length }
-  return m[1][0] === state.char && m[1].length >= state.len ? null : state
+  const closes = m[1][0] === state.char && m[1].length >= state.len && line.slice(m[0].length).trim() === ''
+  return closes ? null : state
 }
 
 /** offset を含む行がコードフェンスの内側（閉じフェンス行を含む）かどうか。 */

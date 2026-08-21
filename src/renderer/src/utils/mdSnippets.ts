@@ -3,15 +3,15 @@
 
 export const MD_CALLOUT = '> [!NOTE] タイトル\n> 内容\n'
 
-export const jpDate = (): string => {
-  const d = new Date()
+export const jpDate = (d: Date = new Date()): string => {
   const wd = '日月火水木金土'[d.getDay()]
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}(${wd})`
 }
 
 export const jpDateTime = (): string => {
+  // 日付と時刻は同一インスタンスから（日付変更をまたぐと別々の Date では不整合になる）
   const d = new Date()
-  return `${jpDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  return `${jpDate(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
 export const TPL_MINUTES = (): string =>

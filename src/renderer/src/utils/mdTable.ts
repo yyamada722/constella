@@ -28,12 +28,33 @@ function dispWidth(s: string): number {
 
 interface Row { indent: string; cells: string[] }
 
+// 直前に奇数個の \ が連続する | だけをエスケープ済み（セル内容）として扱う。
+// \| はセル内のパイプ、\\| はエスケープ済みバックスラッシュ+区切り。
+function isEscapedAt(s: string, i: number): boolean {
+  let n = 0
+  for (let j = i - 1; j >= 0 && s[j] === '\\'; j--) n++
+  return n % 2 === 1
+}
+
+function splitCells(body: string): string[] {
+  const cells: string[] = []
+  let last = 0
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === '|' && !isEscapedAt(body, i)) {
+      cells.push(body.slice(last, i).trim())
+      last = i + 1
+    }
+  }
+  cells.push(body.slice(last).trim())
+  // 行末の | 由来の末尾空セルを落とす（従来の trailing-pipe 除去と同じ挙動）
+  if (cells.length > 1 && cells[cells.length - 1] === '') cells.pop()
+  return cells
+}
+
 function splitRow(line: string): Row {
   const m = /^(\s*)\|(.*)$/.exec(line)
   if (!m) return { indent: '', cells: [line.trim()] }
-  // エスケープされた \| はセル内容（richPaste が出力する）— 区切りとして割らない
-  const body = m[2].replace(/(?<!\\)\|\s*$/, '')
-  return { indent: m[1], cells: body.split(/(?<!\\)\|/).map(c => c.trim()) }
+  return { indent: m[1], cells: splitCells(m[2]) }
 }
 
 const isSepRow = (r: Row) => r.cells.length > 0 && r.cells.every(c => /^:?-+:?$/.test(c) || c === '') && r.cells.some(c => c.includes('-'))
@@ -70,8 +91,12 @@ export function tableKeydown(value: string, selStart: number, key: 'Tab' | 'Shif
   if (!rows.some(isSepRow)) return null
   const rowIdx = value.slice(blockStart, lineStart).split('\n').length - 1
   const nCols = Math.max(...rows.map(r => r.cells.length))
-  // caret の列 = 行頭〜caret の '|' の数 - 1
-  const pipesBefore = (value.slice(lineStart, selStart).match(/\|/g) ?? []).length
+  // caret の列 = 行頭〜caret のエスケープされていない '|' の数 - 1
+  const beforeCaret = value.slice(lineStart, selStart)
+  let pipesBefore = 0
+  for (let i = 0; i < beforeCaret.length; i++) {
+    if (beforeCaret[i] === '|' && !isEscapedAt(beforeCaret, i)) pipesBefore++
+  }
   const colIdx = Math.max(0, Math.min(pipesBefore - 1, nCols - 1))
 
   // 目標セル
