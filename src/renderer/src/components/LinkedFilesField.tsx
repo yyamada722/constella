@@ -9,7 +9,6 @@ import { FileItem, Task } from '../types'
 import { useApp, type Action } from '../store'
 import { generateId } from '../utils'
 import { putMedia } from '../persistence/media'
-import { isImageFile, normalizeImageBlob } from '../utils/image'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, formatSize } from '../utils/fileKind'
 import { alertDialog } from './ConfirmDialog'
 
@@ -20,12 +19,16 @@ export default function LinkedFilesField({ task, onChange }: {
   const { state, dispatch } = useApp()
   const navigate = useNavigate()
   const active = state.activeMasterProjectId
-  // アップロードの await 中にタスクが編集されても巻き戻さないよう、完了時は最新の
-  // task/onChange（親の最新レンダーのクロージャ）で確定する。
-  const taskRef = useRef(task)
-  taskRef.current = task
-  const onChangeRef = useRef(onChange)
-  onChangeRef.current = onChange
+  // チップ表示は常にストアの生きたタスクから読む — ガントの編集ポップオーバーは
+  // タスクのスナップショットを渡してくるため、非同期アップロード(APPEND)後も
+  // ここが最新を映す。ストアに見つからない（作成直後など）場合のみプロップに従う。
+  const liveTask = useMemo(() => {
+    for (const p of state.projects) {
+      const t = p.tasks.find(x => x.id === task.id)
+      if (t) return t
+    }
+    return task
+  }, [state.projects, task])
   // このプロジェクトで使えるファイル: 所有 + 他プロジェクトからの参照リンク
   const filesInScope = useMemo(
     () => state.files
@@ -33,7 +36,7 @@ export default function LinkedFilesField({ task, onChange }: {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [state.files, active]
   )
-  const linkedIds = task.fileIds ?? []
+  const linkedIds = liveTask.fileIds ?? []
   const linkedFiles = useMemo(() => {
     const m = new Map(state.files.map(f => [f.id, f]))
     return linkedIds.map(id => m.get(id)).filter((f): f is FileItem => !!f)
@@ -62,20 +65,19 @@ export default function LinkedFilesField({ task, onChange }: {
       const actions: Action[] = []
       const ids: string[] = []
       for (const f of list) {
-        const blob = isImageFile(f) ? await normalizeImageBlob(f) : f
-        const url = await putMedia(blob)
+        // ライブラリは原本をそのまま保存（PNG正規化しない — 原本バイト温存）
+        const url = await putMedia(f)
         const item: FileItem = {
           id: generateId(), masterProjectId: active, name: f.name, url,
-          mime: blob.type || f.type || '', size: blob.size, tags: [],
+          mime: f.type || '', size: f.size, tags: [],
           createdAt: new Date().toISOString(),
         }
         actions.push({ type: 'ADD_FILE_ITEM', payload: item })
         ids.push(item.id)
       }
-      // ライブラリ登録をまとめて 1 undo ステップに（NoteAttachments と同じ流儀）。
-      if (actions.length) dispatch(actions.length === 1 ? actions[0] : { type: 'BATCH', payload: actions })
-      // 完了時点の最新タスクのリンク集合に足す — await 中の編集を巻き戻さない。
-      onChangeRef.current([...(taskRef.current.fileIds ?? []), ...ids])
+      // 登録＋タスクへの追記を 1 undo ステップで。APPEND は reducer が現在の
+      // タスクに足すので、await 中の編集や並行アップロードを clobber しない。
+      dispatch({ type: 'BATCH', payload: [...actions, { type: 'APPEND_TASK_FILE_IDS', payload: { taskId: task.id, fileIds: ids } }] })
     } catch (e) {
       await alertDialog(`ファイルの追加に失敗しました: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

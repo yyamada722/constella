@@ -15,7 +15,6 @@ import { FileItem, FileVersion, FileFolder, Note, Task, Project, CanvasCard } fr
 import { generateId } from '../utils'
 import { putMedia, useMediaState, getMediaBlob } from '../persistence/media'
 import { isLocalRef, localRefPath, localFileName, toLocalRef, localFileApi } from '../utils/localFile'
-import { isImageFile, normalizeImageBlob } from '../utils/image'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, FILE_KIND_LABEL, formatSize, type FileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
 import { AudioPlayer } from '../components/AudioPlayer'
@@ -48,8 +47,11 @@ function FileThumb({ file, className }: { file: FileItem; className?: string }) 
   // 画像/動画だけバイトを読む（PDF/音声/その他はアイコン表示なのでロードしない）
   const wantsMedia = kind === 'image' || kind === 'video'
   const { url } = useMediaState(wantsMedia ? file.url : undefined)
-  if (kind === 'image' && url) {
-    return <img src={url} alt={file.name} draggable={false} className={`object-cover ${className ?? ''}`} />
+  // 原本保存のため TIFF 等はブラウザで描画できない → アイコンにフォールバック
+  const [imgError, setImgError] = useState(false)
+  useEffect(() => { setImgError(false) }, [file.url])
+  if (kind === 'image' && url && !imgError) {
+    return <img src={url} alt={file.name} draggable={false} onError={() => setImgError(true)} className={`object-cover ${className ?? ''}`} />
   }
   if (kind === 'video' && url) {
     // preload=metadata で最初のフレームをサムネイルに使う（再生はライトボックスで）
@@ -67,7 +69,7 @@ function FileThumb({ file, className }: { file: FileItem; className?: string }) 
 
 /* ── ライトボックス（大プレビュー + メタ編集） ── */
 
-function FileLightbox({ file, list, masterName, isReference, usage, masters, folders, attachableNotes, linkableTasks, onNav, onUpdate, onDelete, onClose, onJumpNote, onJumpTask, onJumpCard, onAttachNote, onLinkTask }: {
+function FileLightbox({ file, list, masterName, isReference, usage, masters, folders, attachableNotes, linkableTasks, onNav, onUpdate, onDelete, onDetachReference, onClose, onJumpNote, onJumpTask, onJumpCard, onAttachNote, onLinkTask }: {
   file: FileItem
   list: FileItem[] // 前後ナビの並び（現在のフィルタ結果）
   masterName: (id: string) => string
@@ -80,9 +82,10 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   onNav: (next: FileItem) => void
   onUpdate: (next: FileItem) => void
   onDelete: () => void
+  onDetachReference: () => void // 参照ビュー時: このプロジェクトを linkedMasterIds から外す
   onClose: () => void
   onJumpNote: (note: Note) => void
-  onJumpTask: (task: Task) => void
+  onJumpTask: (task: Task, board: Project) => void
   onJumpCard: (card: CanvasCard) => void
   onAttachNote: (note: Note) => void
   onLinkTask: (board: Project, task: Task) => void
@@ -96,15 +99,26 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   const replaceInputRef = useRef<HTMLInputElement>(null)
   const [noteQ, setNoteQ] = useState('')
   const [taskQ, setTaskQ] = useState('')
+  // 原本保存のため TIFF 等はブラウザで描画できないことがある → フォールバック表示
+  const [imgError, setImgError] = useState(false)
+  useEffect(() => { setImgError(false) }, [file.url])
+  // 差し替えの await 中に入った名前/タグ/コメント編集を巻き戻さないよう、確定は
+  // 最新の file から組み立てる（commit 後に useEffect で更新した ref を読む）。
+  const fileRef = useRef(file)
+  useEffect(() => { fileRef.current = file }, [file])
+  // 現行版が「現行になった」時刻: 直近の差し替えイベント時刻、なければ登録時刻。
+  // versions[i].createdAt の系譜（2回目以降の差し替え/復元）を正しく保つ。
+  const becameCurrentAt = (f: FileItem) => f.versions?.[0]?.replacedAt ?? f.createdAt
 
   // 差し替え: 新しい実体をメディアストアへ、旧版は versions 履歴の先頭へ。
+  // 原本をそのまま保存（PNG正規化しない）。
   async function replaceWith(f: File) {
     setReplacing(true)
     try {
-      const blob = isImageFile(f) ? await normalizeImageBlob(f) : f
-      const url = await putMedia(blob)
-      const old: FileVersion = { url: file.url, mime: file.mime, size: file.size, createdAt: file.createdAt, replacedAt: new Date().toISOString() }
-      onUpdate({ ...file, url, mime: blob.type || f.type || '', size: blob.size, versions: [old, ...(file.versions ?? [])] })
+      const url = await putMedia(f)
+      const cur = fileRef.current
+      const old: FileVersion = { url: cur.url, mime: cur.mime, size: cur.size, createdAt: becameCurrentAt(cur), replacedAt: new Date().toISOString() }
+      onUpdate({ ...cur, url, mime: f.type || '', size: f.size, versions: [old, ...(cur.versions ?? [])] })
     } catch (e) {
       await alertDialog(`差し替えに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
@@ -113,10 +127,11 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   }
   // 旧版を現行に戻す（現行はそのまま履歴の先頭に退避 — 何も失われない）。
   function restoreVersion(v: FileVersion) {
-    const cur: FileVersion = { url: file.url, mime: file.mime, size: file.size, createdAt: file.createdAt, replacedAt: new Date().toISOString() }
+    const curFile = fileRef.current
+    const cur: FileVersion = { url: curFile.url, mime: curFile.mime, size: curFile.size, createdAt: becameCurrentAt(curFile), replacedAt: new Date().toISOString() }
     onUpdate({
-      ...file, url: v.url, mime: v.mime, size: v.size,
-      versions: [cur, ...(file.versions ?? []).filter(x => x.url !== v.url)],
+      ...curFile, url: v.url, mime: v.mime, size: v.size,
+      versions: [cur, ...(curFile.versions ?? []).filter(x => x.url !== v.url)],
     })
   }
   // OSの既定アプリで開く（idb:は一時ファイル化、local:は原本をそのまま）。
@@ -136,7 +151,7 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const ae = document.activeElement as HTMLElement | null
-      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.isContentEditable)) {
         if (e.key === 'Escape') { e.preventDefault(); ae.blur() }
         return
       }
@@ -151,8 +166,8 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   let body: React.ReactNode
   if (!src) {
     body = <div className="flex-1 flex items-center justify-center"><MediaFallback status={status} refUrl={file.url} /></div>
-  } else if (kind === 'image') {
-    body = <div className="flex-1 min-h-0 flex items-center justify-center p-4"><img src={src} alt={file.name} className="max-w-full max-h-full object-contain rounded shadow-2xl" /></div>
+  } else if (kind === 'image' && !imgError) {
+    body = <div className="flex-1 min-h-0 flex items-center justify-center p-4"><img src={src} alt={file.name} onError={() => setImgError(true)} className="max-w-full max-h-full object-contain rounded shadow-2xl" /></div>
   } else if (kind === 'video') {
     body = <div className="flex-1 min-h-0 flex items-center justify-center p-4"><video src={src} controls autoPlay loop className="max-w-full max-h-full rounded shadow-2xl bg-black" /></div>
   } else if (kind === 'pdf') {
@@ -359,7 +374,7 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
                 {(usage.tasks ?? []).map(({ task, board }) => (
                   <button
                     key={`${board.id}/${task.id}`}
-                    onClick={() => onJumpTask(task)}
+                    onClick={() => onJumpTask(task, board)}
                     title={`${board.name} のタスク「${task.title || '(無題)'}」を開く`}
                     className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 hover:brightness-95 text-left"
                   >
@@ -439,12 +454,24 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
             </div>
           </div>
 
-          <button
-            onClick={onDelete}
-            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-rose-200 text-rose-500 hover:bg-rose-50 text-xs transition-colors"
-          >
-            <Trash2 size={13} /> ライブラリから削除
-          </button>
+          {isReference ? (
+            // 参照ビューからは実体を消させない（所有プロジェクトのライブラリ/添付ごと
+            // 消えてしまう）— このプロジェクトへの参照だけを外す。
+            <button
+              onClick={onDetachReference}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-indigo-200 text-indigo-500 hover:bg-indigo-50 text-xs transition-colors"
+              title="このプロジェクトでの表示をやめます（所有プロジェクトのファイルは残ります）"
+            >
+              <Share2 size={13} /> このプロジェクトの参照を外す
+            </button>
+          ) : (
+            <button
+              onClick={onDelete}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md border border-rose-200 text-rose-500 hover:bg-rose-50 text-xs transition-colors"
+            >
+              <Trash2 size={13} /> ライブラリから削除
+            </button>
+          )}
         </div>
       </aside>
     </div>
@@ -662,7 +689,15 @@ export default function FilesPage() {
     const actions: Action[] = []
     for (const p of paths) {
       const ref = toLocalRef(p)
-      if (state.files.some(f => f.url === ref)) continue // 同一パスの二重登録は防ぐ
+      const existing = state.files.find(f => f.url === ref)
+      if (existing) {
+        // 同一パスの二重登録は防ぐ。ただし他プロジェクト所有でこのプロジェクトから
+        // 見えない場合は、黙ってスキップせず参照リンクを張って見えるようにする。
+        if (existing.masterProjectId !== active && !(existing.linkedMasterIds ?? []).includes(active)) {
+          actions.push({ type: 'UPDATE_FILE_ITEM', payload: { ...existing, linkedMasterIds: [...(existing.linkedMasterIds ?? []), active] } })
+        }
+        continue
+      }
       const st = await api.stat(p).catch(() => ({ exists: false as const }))
       actions.push({
         type: 'ADD_FILE_ITEM',
@@ -710,13 +745,14 @@ export default function FilesPage() {
     try {
       const actions: Action[] = []
       for (const f of list) {
-        const blob = isImageFile(f) ? await normalizeImageBlob(f) : f
-        const url = await putMedia(blob)
+        // ライブラリは原本をそのまま保存する（PNG正規化しない — TIFF等の原本バイトと
+        // メタデータを温存。プレビュー不能な形式は表示側でアイコンにフォールバック）。
+        const url = await putMedia(f)
         actions.push({
           type: 'ADD_FILE_ITEM',
           payload: {
             id: generateId(), masterProjectId: active, name: f.name, url,
-            mime: blob.type || f.type || '', size: blob.size, tags: [], folderId,
+            mime: f.type || '', size: f.size, tags: [], folderId,
             createdAt: new Date().toISOString(),
           },
         })
@@ -1210,10 +1246,27 @@ export default function FilesPage() {
           onNav={f => setOpenId(f.id)}
           onUpdate={updateFile}
           onDelete={() => deleteFile(openFile)}
+          onDetachReference={() => {
+            const linked = (openFile.linkedMasterIds ?? []).filter(id => id !== active)
+            updateFile({ ...openFile, linkedMasterIds: linked.length > 0 ? linked : undefined })
+            setOpenId(null)
+          }}
           onClose={() => setOpenId(null)}
-          onJumpNote={note => navigate('/', { state: { focusNoteId: note.id } })}
-          onJumpTask={task => navigate(`/projects?taskId=${task.id}`)}
-          onJumpCard={card => navigate('/canvas', { state: { focusCardId: card.id } })}
+          // 使用先は他プロジェクトのノート/タスク/カードも含む — 各ページはアクティブ
+          // プロジェクトしか表示しないので、必要なら先に切り替えてからジャンプする。
+          onJumpNote={note => {
+            if (note.masterProjectId !== active) dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: note.masterProjectId })
+            navigate('/', { state: { focusNoteId: note.id } })
+          }}
+          onJumpTask={(task, board) => {
+            if (board.masterProjectId !== active) dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: board.masterProjectId })
+            navigate(`/projects?taskId=${task.id}`)
+          }}
+          onJumpCard={card => {
+            const tab = state.canvasTabs.find(t => t.id === card.tabId)
+            if (tab && tab.projectId !== active) dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: tab.projectId })
+            navigate('/canvas', { state: { focusCardId: card.id } })
+          }}
           onAttachNote={note => attachToNote(openFile, note)}
           onLinkTask={(board, task) => linkToTask(openFile, board, task)}
         />

@@ -52,6 +52,10 @@ export type Action =
   | { type: 'ADD_FILE_ITEM'; payload: FileItem }
   | { type: 'UPDATE_FILE_ITEM'; payload: FileItem }
   | { type: 'DELETE_FILE_ITEM'; payload: string }
+  // 非同期アップロード完了時の「追記」— reducer が現在のノート/タスクから足すので、
+  // await 中の編集や並行アップロードを clobber しない（stale spread 対策）。
+  | { type: 'APPEND_NOTE_ATTACHMENTS'; payload: { noteId: string; links: NoteAttachment[] } }
+  | { type: 'APPEND_TASK_FILE_IDS'; payload: { taskId: string; fileIds: string[] } }
   | { type: 'ADD_FILE_FOLDER'; payload: FileFolder }
   | { type: 'UPDATE_FILE_FOLDER'; payload: FileFolder }
   | { type: 'DELETE_FILE_FOLDER'; payload: string }
@@ -331,8 +335,55 @@ function reducer(state: AppState, action: Action): AppState {
       }
     case 'ADD_FILE_ITEM':
       return { ...state, files: [action.payload, ...state.files] }
-    case 'UPDATE_FILE_ITEM':
-      return { ...state, files: state.files.map(f => f.id === action.payload.id ? action.payload : f) }
+    case 'UPDATE_FILE_ITEM': {
+      const next = action.payload
+      const prev = state.files.find(f => f.id === next.id)
+      // 版の差し替え/復元で実体URLが変わったら、そのファイルを参照している
+      // キャンバスカードのURLコピーも追随させる（ノート/タスクは fileId 解決なので
+      // 自動追随 — カードだけ旧版で止まる非対称を防ぐ）。手動で別メディアに
+      // 差し替え済みのカード（url がすでに一致しない）は触らない。
+      const urlChanged = !!prev && prev.url !== next.url
+      return {
+        ...state,
+        files: state.files.map(f => f.id === next.id ? next : f),
+        canvasCards: urlChanged
+          ? state.canvasCards.map(c => c.refFileId === next.id && c.url === prev!.url ? { ...c, url: next.url } : c)
+          : state.canvasCards,
+      }
+    }
+    case 'APPEND_NOTE_ATTACHMENTS': {
+      const { noteId, links } = action.payload
+      return {
+        ...state,
+        notes: state.notes.map(n => {
+          if (n.id !== noteId) return n
+          // 二重適用防止（同じ fileId+id のリンクは足さない）
+          const have = new Set((n.attachments ?? []).map(a => a.id))
+          const add = links.filter(l => !have.has(l.id))
+          if (add.length === 0) return n
+          return { ...n, attachments: [...(n.attachments ?? []), ...add], updatedAt: new Date().toISOString() }
+        }),
+      }
+    }
+    case 'APPEND_TASK_FILE_IDS': {
+      const { taskId, fileIds } = action.payload
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (!p.tasks.some(t => t.id === taskId)) return p
+          return {
+            ...p,
+            tasks: p.tasks.map(t => {
+              if (t.id !== taskId) return t
+              const have = new Set(t.fileIds ?? [])
+              const add = fileIds.filter(id => !have.has(id))
+              if (add.length === 0) return t
+              return { ...t, fileIds: [...(t.fileIds ?? []), ...add] }
+            }),
+          }
+        }),
+      }
+    }
     case 'DELETE_FILE_ITEM': {
       // Cascade: strip every note-attachment link AND task file link that
       // references this file — otherwise they keep "broken" chips pointing at nothing.
@@ -810,6 +861,10 @@ function migrateLegacyAttachments(s: AppState): AppState {
           tags: [], createdAt: a.createdAt,
         }
         byUrl.set(a.url, file)
+      } else if (file.masterProjectId !== n.masterProjectId && !(file.linkedMasterIds ?? []).includes(n.masterProjectId)) {
+        // 同一URLが別プロジェクトのノートにも現れた → 集約先を参照リンクで見えるようにする
+        // （こうしないと2つ目以降のプロジェクトのライブラリ/ピッカーから辿れない）。
+        file.linkedMasterIds = [...(file.linkedMasterIds ?? []), n.masterProjectId]
       }
       return { id: a.id, fileId: file.id, group: a.group, createdAt: a.createdAt } satisfies NoteAttachment
     })

@@ -3,7 +3,7 @@
 // (FileItem) にあり、添付はそこへの参照リンク: 同じ資料を複数ノートで使い回せる。
 // ここでのアップロードはライブラリへの登録＋リンクを1 undoステップ (BATCH) で行う。
 // グループ（先方資料 / 自分の資料 / 自由入力）はリンク側に持つノート内の仕分け。
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Paperclip, Plus, Trash2, X, Download, Loader2, FolderInput, Search, Library, MessageSquare,
@@ -12,7 +12,6 @@ import type { Note, NoteAttachment, FileItem } from '../types'
 import { generateId } from '../utils'
 import { useApp, type Action } from '../store'
 import { putMedia, useMediaState } from '../persistence/media'
-import { isImageFile, normalizeImageBlob } from '../utils/image'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, formatSize } from '../utils/fileKind'
 import { PdfViewer } from './PdfViewer'
 import { AudioPlayer } from './AudioPlayer'
@@ -37,6 +36,9 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
   const navigate = useNavigate()
   const kind = fileKind(file.mime, file.name)
   const { url: src, status } = useMediaState(file.url)
+  // 原本保存のため TIFF 等はブラウザで描画できないことがある — その場合はフォールバック
+  const [imgError, setImgError] = useState(false)
+  useEffect(() => { setImgError(false) }, [file.url])
   const groupOptions = useMemo(
     () => [...new Set([...PRESET_GROUPS, ...groups])].filter(g => g !== UNGROUPED),
     [groups]
@@ -47,8 +49,8 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
     body = <div className="h-24 flex items-center justify-center"><MediaFallback status={status} refUrl={file.url} compact /></div>
   } else if (kind === 'pdf') {
     body = <PdfViewer url={src} fixedHeight={440} />
-  } else if (kind === 'image') {
-    body = <div className="flex justify-center bg-slate-100 max-h-[440px] overflow-auto"><img src={src} alt={file.name} className="max-w-full object-contain" /></div>
+  } else if (kind === 'image' && !imgError) {
+    body = <div className="flex justify-center bg-slate-100 max-h-[440px] overflow-auto"><img src={src} alt={file.name} onError={() => setImgError(true)} className="max-w-full object-contain" /></div>
   } else if (kind === 'video') {
     body = <video src={src} controls loop className="w-full max-h-[440px] bg-black" />
   } else if (kind === 'audio') {
@@ -122,10 +124,11 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
 export function NoteAttachments({ note }: { note: Note }) {
   const { state, dispatch } = useApp()
   const attachments = note.attachments ?? []
-  // アップロードの await 中にノートが編集されても巻き戻さないよう、dispatch 時は
-  // 常に最新の note から組み立てる（クロージャに固定された古い note を spread しない）。
+  // 同期操作（グループ変更/リンク解除）の dispatch を常に最新の note から組み立てる
+  // ための ref。render 中の書き込みは React 18 で破棄 render の値が残り得るため、
+  // commit 後（useEffect）に更新する。
   const noteRef = useRef(note)
-  noteRef.current = note
+  useEffect(() => { noteRef.current = note }, [note])
   const fileInputRef = useRef<HTMLInputElement>(null)
   // 「＋追加」を押したグループ（ファイル選択ダイアログをまたいで保持する）
   const addTargetGroup = useRef<string | undefined>(undefined)
@@ -182,27 +185,27 @@ export function NoteAttachments({ note }: { note: Note }) {
       const actions: Action[] = []
       const newLinks: NoteAttachment[] = []
       for (const f of list) {
-        // TIFF/TGA など native 表示できない画像は PNG に正規化してから保存
-        const blob = isImageFile(f) ? await normalizeImageBlob(f) : f
-        const url = await putMedia(blob)
+        // ライブラリは原本をそのまま保存する（PNG正規化しない — TIFF等の原本バイトや
+        // メタデータを失わないため）。プレビュー不能な形式は表示側でフォールバック。
+        const url = await putMedia(f)
         const item: FileItem = {
           id: generateId(),
           masterProjectId: note.masterProjectId, // ノートのプロジェクトに登録
           name: f.name,
           url,
-          mime: blob.type || f.type || '',
-          size: blob.size,
+          mime: f.type || '',
+          size: f.size,
           tags: [],
           createdAt: new Date().toISOString(),
         }
         actions.push({ type: 'ADD_FILE_ITEM', payload: item })
         newLinks.push({ id: generateId(), fileId: item.id, group, createdAt: item.createdAt })
       }
-      // ライブラリ登録＋ノートへのリンクを 1 undo ステップで。添付リストは
-      // アップロード完了時点の最新ノートを基に組む（並行ドロップのリンクも失わない）。
-      const links = [...(noteRef.current.attachments ?? []), ...newLinks]
-      dispatch({ type: 'BATCH', payload: [...actions, noteUpdateAction(links)] })
-      if (list.length === 1) setOpenId(links[links.length - 1].id)
+      // ライブラリ登録＋ノートへのリンクを 1 undo ステップで。リンクは APPEND
+      // アクションで reducer が現在のノートに追記する — await 中の本文編集や
+      // 並行アップロード同士でも clobber しない。
+      dispatch({ type: 'BATCH', payload: [...actions, { type: 'APPEND_NOTE_ATTACHMENTS', payload: { noteId: note.id, links: newLinks } }] })
+      if (newLinks.length === 1) setOpenId(newLinks[0].id)
     } catch (e) {
       await alertDialog(`資料の追加に失敗しました: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

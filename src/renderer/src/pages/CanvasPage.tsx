@@ -2243,11 +2243,20 @@ export default function CanvasPage() {
     const actions: Action[] = []
     const newIds: string[] = []
     clip.forEach(c => {
-      const copy: CanvasCard = {
+      let copy: CanvasCard = {
         ...c, id: generateId(), tabId: activeTabId, locked: false,
         x: c.x + ox, y: c.y + oy,
         pages: c.pages?.map(p => ({ ...p, id: generateId() })),
         createdAt: new Date().toISOString(),
+      }
+      // ライブラリ参照カードの越境ガード: クリップボードはプロジェクト切替後も残る
+      // ため、貼り付け先プロジェクトから参照できないファイル（非所有かつ未リンク、
+      // または消滅済み）のカードは url ごと落とす（fail-closed — ピッカーの
+      // プロジェクトフィルターを貼り付けで迂回させない）。
+      if (copy.refFileId) {
+        const f = state.files.find(x => x.id === copy.refFileId)
+        const accessible = !!f && (f.masterProjectId === activeProjectId || (f.linkedMasterIds ?? []).includes(activeProjectId))
+        if (!accessible) copy = { ...copy, url: '', content: '', refFileId: undefined, bookmarks: undefined, pdf: undefined, crop: undefined }
       }
       actions.push({ type: 'ADD_CANVAS_CARD', payload: copy })
       newIds.push(copy.id)
@@ -2270,7 +2279,7 @@ export default function CanvasPage() {
     setSelectedIds(newIds)
     setSelectedStationIds(clone.stationIds)
     setSelectedArrowId(null); setSelectedGroupIds(newGroupIds); setSelectedLabelIds(newLabelIds)
-  }, [activeTabId, dispatch])
+  }, [activeTabId, dispatch, state.files, activeProjectId])
 
   // Align the selected cards (2+) along an edge or center
   const alignSelection = useCallback((mode: 'left' | 'center-h' | 'right' | 'top' | 'middle-v' | 'bottom') => {

@@ -95,6 +95,9 @@ function darkValue(prop, family, shade, alpha) {
   if (family === 'black') return null
   if (family === 'white') {
     if (!BG_LIKE.has(prop)) return null // text-white on accent buttons stays
+    // 低アルファの白背景 (bg-white/10 など) は「暗い面の上の薄い明色レイヤー」
+    // というライトボックス系のイディオム — 暗色に変換すると不可視になるので残す。
+    if (alpha != null && Number(alpha) <= 30) return null
     return cssColor(DARK_NEUTRAL, prop === 'bg' ? 800 : 700, alpha)
   }
   const s = shade == null ? null : Number(shade)

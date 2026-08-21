@@ -90,8 +90,12 @@ async function computePeaks(src: string): Promise<Float32Array | null> {
 
 async function computePeaksUncached(src: string): Promise<Float32Array | null> {
   try {
-    const buf = await (await fetch(src)).arrayBuffer()
-    if (buf.byteLength > PEAKS_MAX_BYTES) return null
+    // サイズ判定は ArrayBuffer 実体化の前に行う — blob URL への fetch では
+    // res.blob() が元 Blob を参照するだけでコピーしないので、巨大ファイルでも
+    // ここまではメモリを食わない。
+    const blob = await (await fetch(src)).blob()
+    if (blob.size > PEAKS_MAX_BYTES) return null
+    const buf = await blob.arrayBuffer()
     // OfflineAudioContext(=8kHz) でデコードすると PCM がその場で 8kHz にリサンプル
     // され、44.1kHz フルデコード比 ~1/5 のメモリで済む（ピーク抽出には十分な解像度）。
     let audio: AudioBuffer
@@ -293,14 +297,17 @@ export function AudioPlayer({ src, autoPlay = false }: { src: string; autoPlay?:
       />
       {/* 波形ストリップ */}
       <div
-        style={{ position: 'relative', height: 96, borderRadius: 6, overflow: 'hidden', cursor: 'pointer', background: '#0c0a08' }}
-        onMouseDown={e => {
+        style={{ position: 'relative', height: 96, borderRadius: 6, overflow: 'hidden', cursor: 'pointer', background: '#0c0a08', touchAction: 'none' }}
+        // pointer イベントでマウスとタッチ（iPadのLANアクセス）両対応のドラッグシーク
+        onPointerDown={e => {
           const el = e.currentTarget
+          el.setPointerCapture(e.pointerId)
           seekTo(e.clientX, el)
-          const onMove = (ev: MouseEvent) => seekTo(ev.clientX, el)
-          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
-          window.addEventListener('mousemove', onMove)
-          window.addEventListener('mouseup', onUp)
+          const onMove = (ev: PointerEvent) => seekTo(ev.clientX, el)
+          const onUp = () => { el.removeEventListener('pointermove', onMove); el.removeEventListener('pointerup', onUp); el.removeEventListener('pointercancel', onUp) }
+          el.addEventListener('pointermove', onMove)
+          el.addEventListener('pointerup', onUp)
+          el.addEventListener('pointercancel', onUp)
         }}
         title="クリック/ドラッグでシーク"
       >
@@ -332,8 +339,8 @@ export function AudioPlayer({ src, autoPlay = false }: { src: string; autoPlay?:
         </div>
         {/* ブロック式プログレス */}
         <div
-          style={{ display: 'flex', gap: 3, marginTop: 10, cursor: 'pointer' }}
-          onMouseDown={e => seekTo(e.clientX, e.currentTarget)}
+          style={{ display: 'flex', gap: 3, marginTop: 10, cursor: 'pointer', touchAction: 'none' }}
+          onPointerDown={e => seekTo(e.clientX, e.currentTarget)}
           title="クリックでシーク"
         >
           {Array.from({ length: N_BLOCKS }, (_, i) => (
