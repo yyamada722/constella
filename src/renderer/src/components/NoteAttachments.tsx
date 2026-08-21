@@ -6,7 +6,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Paperclip, Plus, Trash2, X, Download, Loader2, FolderInput, Search, Library, ExternalLink,
+  Paperclip, Plus, Trash2, X, Download, Loader2, FolderInput, Search, Library, MessageSquare,
 } from 'lucide-react'
 import type { Note, NoteAttachment, FileItem } from '../types'
 import { generateId } from '../utils'
@@ -102,6 +102,13 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
           <X size={12} />
         </button>
       </div>
+      {/* ライブラリ側のコメント（編集は「ライブラリで表示」から） */}
+      {file.comment && (
+        <div className="px-2.5 py-1 border-b border-slate-100 bg-amber-50/60 flex items-start gap-1.5">
+          <MessageSquare size={11} className="shrink-0 text-amber-500 mt-0.5" />
+          <p className="text-[10px] text-slate-600 whitespace-pre-wrap flex-1">{file.comment}</p>
+        </div>
+      )}
       {body}
     </div>
   )
@@ -147,7 +154,7 @@ export function NoteAttachments({ note }: { note: Note }) {
     return state.files
       .filter(f => f.masterProjectId === note.masterProjectId || (f.linkedMasterIds ?? []).includes(note.masterProjectId))
       .filter(f => !attachedFileIds.has(f.id))
-      .filter(f => !q || f.name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q)))
+      .filter(f => !q || f.name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q)) || (f.comment || '').toLowerCase().includes(q))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   }, [state.files, note.masterProjectId, attachedFileIds, pickerQ])
 

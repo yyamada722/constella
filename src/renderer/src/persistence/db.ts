@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS master_projects (ord INTEGER, id TEXT PRIMARY KEY, name TEXT, createdAt TEXT, archivedAt TEXT, folder TEXT);
 CREATE TABLE IF NOT EXISTS notes (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, content TEXT, tags TEXT, createdAt TEXT, updatedAt TEXT, folderId TEXT, pinned INTEGER, archivedAt TEXT, shared INTEGER, refByMasterIds TEXT, attachments TEXT);
 CREATE TABLE IF NOT EXISTS note_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
-CREATE TABLE IF NOT EXISTS files (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, linkedMasterIds TEXT, name TEXT, url TEXT, mime TEXT, size REAL, tags TEXT, folderId TEXT, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS files (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, linkedMasterIds TEXT, name TEXT, url TEXT, mime TEXT, size REAL, tags TEXT, folderId TEXT, comment TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS file_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS tasks (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, title TEXT, description TEXT, status TEXT, tags TEXT, createdAt TEXT, startDate TEXT, endDate TEXT, parentId TEXT, linkedNoteIds TEXT, priority INTEGER, completedAt TEXT, shared INTEGER, sharedAlias TEXT);
@@ -264,6 +264,7 @@ async function getDb(): Promise<Database> {
     try { db.run('ALTER TABLE notes ADD COLUMN shared INTEGER') } catch { /* column already present */ }
     try { db.run('ALTER TABLE notes ADD COLUMN refByMasterIds TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE notes ADD COLUMN attachments TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE files ADD COLUMN comment TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN priority INTEGER') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN completedAt TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
@@ -367,7 +368,9 @@ export async function loadState(): Promise<AppState | null> {
       id: str(r.id), masterProjectId: str(r.masterProjectId),
       linkedMasterIds: linked.length > 0 ? linked : undefined,
       name: str(r.name), url: str(r.url), mime: str(r.mime), size: num(r.size),
-      tags: parseArr<string>(r.tags), folderId: optStr(r.folderId), createdAt: str(r.createdAt),
+      tags: parseArr<string>(r.tags), folderId: optStr(r.folderId),
+      comment: optStr(r.comment),
+      createdAt: str(r.createdAt),
     }
   })
 
@@ -627,8 +630,8 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO note_folders (ord,id,masterProjectId,name,createdAt,parentId,color) VALUES (?,?,?,?,?,?,?)',
       state.noteFolders.map((f, i) => [i, f.id, f.masterProjectId, f.name, f.createdAt, f.parentId ?? null, f.color ?? null].map(B)))
 
-    insert('INSERT INTO files (ord,id,masterProjectId,linkedMasterIds,name,url,mime,size,tags,folderId,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      state.files.map((f, i) => [i, f.id, f.masterProjectId, JSON.stringify(f.linkedMasterIds ?? []), f.name, f.url, f.mime, f.size, JSON.stringify(f.tags ?? []), f.folderId ?? null, f.createdAt].map(B)))
+    insert('INSERT INTO files (ord,id,masterProjectId,linkedMasterIds,name,url,mime,size,tags,folderId,comment,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      state.files.map((f, i) => [i, f.id, f.masterProjectId, JSON.stringify(f.linkedMasterIds ?? []), f.name, f.url, f.mime, f.size, JSON.stringify(f.tags ?? []), f.folderId ?? null, f.comment ?? null, f.createdAt].map(B)))
 
     insert('INSERT INTO file_folders (ord,id,masterProjectId,name,createdAt,parentId,color) VALUES (?,?,?,?,?,?,?)',
       state.fileFolders.map((f, i) => [i, f.id, f.masterProjectId, f.name, f.createdAt, f.parentId ?? null, f.color ?? null].map(B)))

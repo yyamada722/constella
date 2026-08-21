@@ -25,6 +25,7 @@ export interface FileItem {
   size: number               // bytes
   tags: string[]
   folderId?: string          // folder within the OWNING project (undefined = 未分類)
+  comment?: string           // 自由記入のメモ（"先方からのMTG資料" 等）。検索対象
   createdAt: string
 }
 

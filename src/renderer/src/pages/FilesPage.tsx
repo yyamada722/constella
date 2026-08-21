@@ -7,7 +7,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Plus, Trash2, Folder, FolderPlus, ChevronDown, ChevronRight, Search, X,
   LayoutGrid, List as ListIcon, Download, ChevronLeft, Loader2,
-  FileText, Share2, Boxes, Tag, HardDrive, Paperclip, Files as FilesGlyph,
+  FileText, Share2, Boxes, Tag, HardDrive, Paperclip, Files as FilesGlyph, MessageSquare,
 } from 'lucide-react'
 import { useApp, type Action } from '../store'
 import { FileItem, FileFolder, Note } from '../types'
@@ -154,6 +154,18 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
             <span>{FILE_KIND_LABEL[kind]}{file.mime ? ` · ${file.mime}` : ''}</span>
           </div>
           <div className="text-[11px] text-slate-400">登録: {new Date(file.createdAt).toLocaleDateString()} · <span className="inline-flex items-center gap-1"><Boxes size={10} className="text-indigo-400" />{masterName(file.masterProjectId)}</span>{isReference && <span className="ml-1 text-indigo-500">（参照）</span>}</div>
+
+          {/* コメント（自由記入メモ — 検索対象） */}
+          <div>
+            <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-1"><MessageSquare size={10} /> コメント</label>
+            <textarea
+              value={file.comment ?? ''}
+              onChange={e => { const v = e.target.value; onUpdate({ ...file, comment: v || undefined }) }}
+              placeholder="このファイルについてのメモ…（例: 8/21 MTGで先方から受領）"
+              rows={3}
+              className="mt-1 w-full px-2 py-1.5 text-xs border border-slate-200 focus:border-indigo-300 rounded-md outline-none text-slate-700 resize-y placeholder:text-slate-400"
+            />
+          </div>
 
           {/* タグ */}
           <div>
@@ -320,7 +332,7 @@ export default function FilesPage() {
     const q = search.trim().toLowerCase()
     return baseFiles
       .filter(f => typeFilter === 'all' || fileKind(f.mime, f.name) === typeFilter)
-      .filter(f => !q || f.name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q)))
+      .filter(f => !q || f.name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q)) || (f.comment || '').toLowerCase().includes(q))
       .sort((a, b) => {
         if (sortMode === 'name') return (a.name || '').localeCompare(b.name || '')
         if (sortMode === 'size') return b.size - a.size
@@ -681,7 +693,7 @@ export default function FilesPage() {
                     onDragStart={e => { draggingFileRef.current = f.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', f.name) }}
                     onDragEnd={() => { draggingFileRef.current = null; setDragOverFolderId(null) }}
                     onClick={() => setOpenId(f.id)}
-                    title={`${f.name}${f.size ? ` (${formatSize(f.size)})` : ''}`}
+                    title={`${f.name}${f.size ? ` (${formatSize(f.size)})` : ''}${f.comment ? `\n${f.comment}` : ''}`}
                     className="group rounded-lg border border-slate-200 bg-white overflow-hidden cursor-pointer hover:border-slate-300 hover:shadow-md transition-all"
                   >
                     <div className="aspect-square w-full overflow-hidden relative">
@@ -699,6 +711,12 @@ export default function FilesPage() {
                         <span className="truncate">{f.name || '(無名)'}</span>
                       </p>
                       <p className="text-[9px] text-slate-400 tabular-nums">{formatSize(f.size) || '—'}</p>
+                      {f.comment && (
+                        <p className="text-[9px] text-slate-500 truncate flex items-center gap-0.5 mt-0.5">
+                          <MessageSquare size={8} className="shrink-0 text-slate-400" />
+                          <span className="truncate">{f.comment}</span>
+                        </p>
+                      )}
                     </div>
                   </div>
                 )
@@ -727,9 +745,15 @@ export default function FilesPage() {
                         <span className="truncate">{f.name || '(無名)'}</span>
                         {f.masterProjectId !== active && <span className="shrink-0 inline-flex items-center gap-0.5 px-1 py-px rounded bg-indigo-50 border border-indigo-200 text-indigo-500 text-[8px]"><Share2 size={8} /> {masterName(f.masterProjectId)}</span>}
                       </p>
-                      {f.tags.length > 0 && (
-                        <div className="flex gap-1 mt-0.5">
-                          {f.tags.map(t => <span key={t} className="text-[9px] px-1 py-px rounded bg-amber-400/10 text-amber-600">{t}</span>)}
+                      {(f.comment || f.tags.length > 0) && (
+                        <div className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                          {f.tags.map(t => <span key={t} className="shrink-0 text-[9px] px-1 py-px rounded bg-amber-400/10 text-amber-600">{t}</span>)}
+                          {f.comment && (
+                            <span className="text-[9px] text-slate-500 truncate flex items-center gap-0.5">
+                              <MessageSquare size={8} className="shrink-0 text-slate-400" />
+                              <span className="truncate">{f.comment}</span>
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
