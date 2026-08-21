@@ -1,14 +1,18 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink } from 'lucide-react'
+import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote } from 'lucide-react'
 import { useApp } from '../store'
-import { Note, NoteFolder } from '../types'
+import { Note, NoteFolder, CanvasCard } from '../types'
 import { generateId } from '../utils'
 import { TypolMarkdown as MarkdownText } from '../components/typol/TypolMarkdown'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
-import { confirmDialog } from '../components/ConfirmDialog'
+import { confirmDialog, alertDialog } from '../components/ConfirmDialog'
+import { SlideShow } from '../components/SlideShow'
+import { exportNotePdf, exportNoteSlidesPdf, splitSlides } from '../utils/notePdf'
+import { updateFence, type FenceState } from '../utils/mdTask'
+import { pdfApi } from '../utils/planPdf'
 
 export default function NotesPage() {
   const { state, dispatch } = useApp()
@@ -36,6 +40,29 @@ export default function NotesPage() {
     '--tp-edit-size': `${Math.round(14 * fontScale)}px`,
     '--tp-preview-size': `${Math.round(15 * fontScale)}px`,
   }) as React.CSSProperties, [fontScale])
+
+  // PDF書き出し / スライドショー（--- 区切り）
+  const [exportingPdf, setExportingPdf] = useState(false)
+  const [slideshowOpen, setSlideshowOpen] = useState(false)
+  const canPdf = pdfApi() != null
+  const doExportPdf = async (note: Note) => {
+    if (exportingPdf) return
+    setExportingPdf(true)
+    try {
+      await exportNotePdf(note)
+    } catch (e) {
+      await alertDialog(`PDFの書き出しに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setExportingPdf(false)
+    }
+  }
+  const doExportSlidesPdf = async (note: Note) => {
+    try {
+      await exportNoteSlidesPdf(note)
+    } catch (e) {
+      await alertDialog(`スライドPDFの書き出しに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
 
   const allNotes = useMemo(() => state.notes.filter(n => n.masterProjectId === active), [state.notes, active])
   // Apply archive visibility + search.
@@ -114,6 +141,9 @@ export default function NotesPage() {
     [state.notes, selectedId, active]
   )
   const isReference = !!selectedNote && selectedNote.masterProjectId !== active
+  // 検索/アウトライン等のイベントハンドラから最新の選択ノートを読むための ref
+  const selectedNoteRef = useRef(selectedNote)
+  selectedNoteRef.current = selectedNote
 
   // Reverse lookup: which tasks (across all boards in the active master project) link to this note?
   // Computed lazily per selectedId so list interactions stay snappy as the user clicks around.
@@ -174,6 +204,168 @@ export default function NotesPage() {
       payload: { ...selectedNote, ...updates, updatedAt: new Date().toISOString() }
     })
   }
+
+  // ── ノート内検索・置換 (Ctrl+F / Ctrl+H) ──
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQ, setFindQ] = useState('')
+  const [replQ, setReplQ] = useState('')
+  const [findIdx, setFindIdx] = useState(0)
+  const [showRepl, setShowRepl] = useState(false)
+  const findInputRef = useRef<HTMLInputElement>(null)
+  const editorTa = () => document.querySelector<HTMLTextAreaElement>('textarea.typol-editor')
+
+  const findMatches = useMemo(() => {
+    if (!findOpen || !findQ || !selectedNote) return [] as number[]
+    const hay = selectedNote.content.toLowerCase()
+    const needle = findQ.toLowerCase()
+    const out: number[] = []
+    let i = 0
+    while (out.length < 2000) {
+      i = hay.indexOf(needle, i)
+      if (i === -1) break
+      out.push(i)
+      i += Math.max(1, needle.length)
+    }
+    return out
+  }, [findOpen, findQ, selectedNote])
+
+  // マッチ位置へジャンプ（選択表示はエディタでのみ可能なのでプレビュー時は編集へ）
+  const jumpToMatch = (k: number) => {
+    if (findMatches.length === 0) return
+    const idx = ((k % findMatches.length) + findMatches.length) % findMatches.length
+    setFindIdx(idx)
+    if (viewMode === 'preview') setViewMode('edit')
+    // プレビュー→編集切替直後はエディタ未マウントのことがあるので少しリトライ
+    const apply = (attempt: number) => {
+      const ta = editorTa()
+      if (!ta) {
+        if (attempt < 4) setTimeout(() => apply(attempt + 1), 50)
+        return
+      }
+      const content = selectedNoteRef.current?.content ?? ''
+      const pos = findMatches[idx]
+      ta.setSelectionRange(pos, pos + findQ.length)
+      const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22
+      const lineNo = content.slice(0, pos).split('\n').length - 1
+      ta.scrollTop = Math.max(0, lineNo * lh - ta.clientHeight / 2)
+    }
+    setTimeout(() => apply(0), 0)
+  }
+  useEffect(() => { setFindIdx(0) }, [findQ, selectedId])
+  // 入力のたびに先頭マッチへライブジャンプ
+  useEffect(() => {
+    if (findOpen && findQ && findMatches.length > 0) jumpToMatch(0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findQ])
+
+  const replaceCurrent = () => {
+    if (!selectedNote || findMatches.length === 0) return
+    const pos = findMatches[Math.min(findIdx, findMatches.length - 1)]
+    updateNote({ content: selectedNote.content.slice(0, pos) + replQ + selectedNote.content.slice(pos + findQ.length) })
+  }
+  // findMatches は表示用に 2000 件で打ち切るので、すべて置換は自前で全走査する
+  const replaceAll = () => {
+    if (!selectedNote || !findQ) return
+    const hay = selectedNote.content
+    const lower = hay.toLowerCase()
+    const needle = findQ.toLowerCase()
+    let out = ''
+    let i = 0
+    for (;;) {
+      const j = lower.indexOf(needle, i)
+      if (j === -1) { out += hay.slice(i); break }
+      out += hay.slice(i, j) + replQ
+      i = j + Math.max(1, needle.length)
+    }
+    if (out !== hay) updateNote({ content: out })
+  }
+  const closeFind = () => { setFindOpen(false); setShowRepl(false) }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      const k = e.key.toLowerCase()
+      if ((k === 'f' || k === 'h') && selectedNoteRef.current) {
+        e.preventDefault()
+        setFindOpen(true)
+        if (k === 'h') setShowRepl(true)
+        const ta = editorTa()
+        if (ta && ta.selectionEnd > ta.selectionStart) setFindQ(ta.value.slice(ta.selectionStart, ta.selectionEnd))
+        setTimeout(() => findInputRef.current?.select(), 0)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // ── アウトライン（見出しの目次） ──
+  const [outlineOpen, setOutlineOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('constella.notes.outline') === '1' } catch { return false }
+  })
+  useEffect(() => { try { localStorage.setItem('constella.notes.outline', outlineOpen ? '1' : '0') } catch { /* ignore */ } }, [outlineOpen])
+  const outline = useMemo(() => {
+    // パネルが閉じているときは走査しない（大きいノートのキー入力ホットパス）
+    if (!outlineOpen || !selectedNote) return [] as { level: number; text: string; line: number }[]
+    const out: { level: number; text: string; line: number }[] = []
+    let fence: FenceState | null = null
+    selectedNote.content.split('\n').forEach((l, i) => {
+      const next = updateFence(fence, l)
+      if (fence === null && next === fence) {
+        const m = /^(#{1,6})\s+(.+)/.exec(l)
+        if (m) out.push({ level: m[1].length, text: m[2].replace(/\s#+\s*$/, '').trim(), line: i })
+      }
+      fence = next
+    })
+    return out
+  }, [outlineOpen, selectedNote])
+
+  const jumpToHeading = (h: { text: string; line: number }, idx: number) => {
+    const prev = document.querySelector('.typol-preview')
+    if (prev) {
+      const els = [...prev.querySelectorAll('h1,h2,h3,h4,h5,h6')]
+      // 同名見出しが複数ある場合に備え、n番目の同名を選ぶ（テキスト一致優先、崩れたら index）
+      const nth = outline.slice(0, idx).filter(o => o.text === h.text).length
+      const sameText = els.filter(x => (x.textContent || '').trim() === h.text)
+      const el = sameText[nth] ?? sameText[0] ?? els[idx]
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+    const ta = editorTa()
+    const content = selectedNoteRef.current?.content
+    if (ta && content != null) {
+      const lines = content.split('\n')
+      let pos = 0
+      for (let i = 0; i < h.line && i < lines.length; i++) pos += lines[i].length + 1
+      ta.setSelectionRange(pos, pos + (lines[h.line]?.length ?? 0))
+      const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22
+      ta.scrollTop = Math.max(0, h.line * lh - 40)
+    }
+  }
+
+  // ── バックリンク: このノートを [[タイトル]] で言及するノート/カード + 参照カード ──
+  // 全ノート+全カードの全文走査になるため、タイピングの緊急レンダーを塞がないよう
+  // 遅延値で評価する（deps は選択ノートの id/title だけ — 本文編集では再計算しない）。
+  const deferredNotes = useDeferredValue(state.notes)
+  const deferredCards = useDeferredValue(state.canvasCards)
+  const selTitle = (selectedNote?.title || '').trim().toLowerCase()
+  const backlinks = useMemo(() => {
+    if (!selectedId) return { notes: [] as Note[], cards: [] as CanvasCard[] }
+    const mentions = (content?: string) =>
+      !!selTitle && !!content && [...content.matchAll(/\[\[([^[\]\n]+)\]\]/g)].some(m => m[1].trim().toLowerCase() === selTitle)
+    // テキスト/メモ系カードは複数ページ制: 本文は card.content ではなく pages[].content 側に
+    // あることが多いので、両方を言及判定の対象にする。
+    const cardMentions = (c: CanvasCard) =>
+      mentions(c.content) || (c.pages ?? []).some(p => mentions(p.content))
+    return {
+      notes: deferredNotes.filter(n => n.id !== selectedId && !n.archivedAt && mentions(n.content)),
+      cards: deferredCards.filter(c => c.refNoteId === selectedId || cardMentions(c)),
+    }
+  }, [selectedId, selTitle, deferredNotes, deferredCards])
+
+  // スライド配列の identity を安定させる（毎レンダー生成すると SlideShow が現在スライドを再パースする）
+  const slideshowSlides = useMemo(
+    () => (slideshowOpen && selectedNote ? splitSlides(selectedNote.content) : []),
+    [slideshowOpen, selectedNote]
+  )
 
   async function deleteNote(id: string) {
     const title = state.notes.find(n => n.id === id)?.title
@@ -620,6 +812,30 @@ export default function NotesPage() {
                   >
                     <Download size={16} />
                   </button>
+                  {canPdf && (
+                    <button
+                      onClick={() => doExportPdf(selectedNote)}
+                      disabled={exportingPdf}
+                      title="PDFとして書き出し"
+                      className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 hover:text-rose-600 transition-colors disabled:opacity-40"
+                    >
+                      {exportingPdf ? <Loader2 size={16} className="animate-spin" /> : <FileDown size={16} />}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setSlideshowOpen(true)}
+                    title="スライドショー（--- の行でスライドに分割）"
+                    className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 hover:text-indigo-600 transition-colors"
+                  >
+                    <Presentation size={16} />
+                  </button>
+                  <button
+                    onClick={() => setOutlineOpen(v => !v)}
+                    title="アウトライン（見出しの目次）"
+                    className={`p-1.5 rounded-md hover:bg-slate-100 transition-colors ${outlineOpen ? 'text-indigo-600' : 'text-slate-500 hover:text-indigo-600'}`}
+                  >
+                    <ListTree size={16} />
+                  </button>
                   <button
                     onClick={() => removeReference(selectedNote)}
                     title="この参照を解除（元ノートは削除されません）"
@@ -650,6 +866,30 @@ export default function NotesPage() {
                     className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 hover:text-amber-600 transition-colors"
                   >
                     <Download size={16} />
+                  </button>
+                  {canPdf && (
+                    <button
+                      onClick={() => doExportPdf(selectedNote)}
+                      disabled={exportingPdf}
+                      title="PDFとして書き出し"
+                      className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 hover:text-rose-600 transition-colors disabled:opacity-40"
+                    >
+                      {exportingPdf ? <Loader2 size={16} className="animate-spin" /> : <FileDown size={16} />}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setSlideshowOpen(true)}
+                    title="スライドショー（--- の行でスライドに分割）"
+                    className="p-1.5 rounded-md hover:bg-slate-100 text-slate-500 hover:text-indigo-600 transition-colors"
+                  >
+                    <Presentation size={16} />
+                  </button>
+                  <button
+                    onClick={() => setOutlineOpen(v => !v)}
+                    title="アウトライン（見出しの目次）"
+                    className={`p-1.5 rounded-md hover:bg-slate-100 transition-colors ${outlineOpen ? 'text-indigo-600' : 'text-slate-500 hover:text-indigo-600'}`}
+                  >
+                    <ListTree size={16} />
                   </button>
                   <button
                     onClick={() => toggleArchive(selectedNote)}
@@ -720,36 +960,122 @@ export default function NotesPage() {
                 })}
               </div>
             )}
-            {viewMode === 'split' ? (
-              <div className="flex-1 flex min-h-0 overflow-hidden" style={fontVars}>
-                <MarkdownText
-                  key={selectedNote.id + '-edit'}
-                  value={selectedNote.content}
-                  onChange={v => updateNote({ content: v })}
-                  editing={true}
-                  extraClass="flex-1 min-h-0 px-6 py-4 border-r border-slate-200"
-                  placeholder="ここにメモを書く…（マークダウン対応）"
-                />
-                <MarkdownText
-                  key={selectedNote.id + '-preview'}
-                  value={selectedNote.content}
-                  editing={false}
-                  extraClass="flex-1 min-h-0 px-6 py-4"
-                  placeholder="プレビュー"
-                />
-              </div>
-            ) : (
-              <div className="flex-1 flex flex-col min-h-0" style={fontVars}>
-                <MarkdownText
-                  key={selectedNote.id}
-                  value={selectedNote.content}
-                  onChange={v => updateNote({ content: v })}
-                  editing={viewMode === 'edit'}
-                  extraClass="flex-1 min-h-0 px-6 py-4"
-                  placeholder="ここにメモを書く…（マークダウン対応）"
-                />
+            {(backlinks.notes.length > 0 || backlinks.cards.length > 0) && (
+              <div className="px-6 py-2 border-b border-slate-200 flex items-center gap-2 flex-wrap">
+                <Link2 size={14} className="text-slate-500 shrink-0" />
+                <span className="text-[11px] text-slate-500 shrink-0">バックリンク {backlinks.notes.length + backlinks.cards.length}件</span>
+                {backlinks.notes.map(n => (
+                  <button
+                    key={n.id}
+                    onClick={() => setSelectedId(n.id)}
+                    title={`ノート「${n.title || '(無題)'}」を開く`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border border-amber-200 text-amber-700 bg-amber-50 hover:brightness-95 transition-all max-w-[200px]"
+                  >
+                    <FileText size={10} className="shrink-0" />
+                    <span className="truncate">{n.title || '(無題)'}</span>
+                  </button>
+                ))}
+                {backlinks.cards.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => navigate('/canvas', { state: { focusCardId: c.id } })}
+                    title={`キャンバスのカード「${c.title || '(無題)'}」へジャンプ`}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] border border-indigo-200 text-indigo-700 bg-indigo-50 hover:brightness-95 transition-all max-w-[200px]"
+                  >
+                    <StickyNote size={10} className="shrink-0" />
+                    <span className="truncate">{c.title || '(無題)'}</span>
+                  </button>
+                ))}
               </div>
             )}
+            {findOpen && (
+              <div className="px-6 py-1.5 border-b border-slate-200 bg-slate-50 flex items-center gap-1.5 flex-wrap">
+                <Search size={13} className="text-slate-400 shrink-0" />
+                <input
+                  ref={findInputRef}
+                  value={findQ}
+                  onChange={e => setFindQ(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') { e.preventDefault(); jumpToMatch(e.shiftKey ? findIdx - 1 : findIdx + 1) }
+                    else if (e.key === 'Escape') { e.preventDefault(); closeFind() }
+                  }}
+                  placeholder="ノート内を検索"
+                  className="px-2 py-0.5 text-xs border border-slate-300 rounded w-44 outline-none focus:border-indigo-400 bg-white"
+                />
+                <span className="text-[11px] text-slate-500 tabular-nums min-w-[52px]">
+                  {findMatches.length ? `${Math.min(findIdx + 1, findMatches.length)} / ${findMatches.length}` : findQ ? '0 件' : ''}
+                </span>
+                <button onClick={() => jumpToMatch(findIdx - 1)} disabled={!findMatches.length} title="前へ (Shift+Enter)" className="p-1 rounded hover:bg-slate-200 text-slate-500 disabled:opacity-30"><ChevronUp size={13} /></button>
+                <button onClick={() => jumpToMatch(findIdx + 1)} disabled={!findMatches.length} title="次へ (Enter)" className="p-1 rounded hover:bg-slate-200 text-slate-500 disabled:opacity-30"><ChevronDown size={13} /></button>
+                <button onClick={() => setShowRepl(v => !v)} className={`px-1.5 py-0.5 rounded text-[11px] ${showRepl ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:bg-slate-200'}`}>置換</button>
+                {showRepl && (
+                  <>
+                    <input
+                      value={replQ}
+                      onChange={e => setReplQ(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); closeFind() } }}
+                      placeholder="置換後のテキスト"
+                      className="px-2 py-0.5 text-xs border border-slate-300 rounded w-44 outline-none focus:border-indigo-400 bg-white"
+                    />
+                    <button onClick={replaceCurrent} disabled={!findMatches.length} className="px-1.5 py-0.5 rounded text-[11px] text-slate-600 hover:bg-slate-200 disabled:opacity-30">1件置換</button>
+                    <button onClick={replaceAll} disabled={!findMatches.length} className="px-1.5 py-0.5 rounded text-[11px] text-slate-600 hover:bg-slate-200 disabled:opacity-30">すべて置換</button>
+                  </>
+                )}
+                <button onClick={closeFind} title="閉じる (Esc)" className="ml-auto p-1 rounded hover:bg-slate-200 text-slate-500"><X size={13} /></button>
+              </div>
+            )}
+            <div className="flex-1 flex min-h-0">
+              <div className="flex-1 flex flex-col min-h-0 min-w-0">
+                {viewMode === 'split' ? (
+                  <div className="flex-1 flex min-h-0 overflow-hidden" style={fontVars}>
+                    <MarkdownText
+                      key={selectedNote.id + '-edit'}
+                      value={selectedNote.content}
+                      onChange={v => updateNote({ content: v })}
+                      editing={true}
+                      extraClass="flex-1 min-h-0 px-6 py-4 border-r border-slate-200"
+                      placeholder="ここにメモを書く…（マークダウン対応）"
+                    />
+                    <MarkdownText
+                      key={selectedNote.id + '-preview'}
+                      value={selectedNote.content}
+                      onChange={v => updateNote({ content: v })}
+                      editing={false}
+                      extraClass="flex-1 min-h-0 px-6 py-4"
+                      placeholder="プレビュー"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col min-h-0" style={fontVars}>
+                    <MarkdownText
+                      key={selectedNote.id}
+                      value={selectedNote.content}
+                      onChange={v => updateNote({ content: v })}
+                      editing={viewMode === 'edit'}
+                      extraClass="flex-1 min-h-0 px-6 py-4"
+                      placeholder="ここにメモを書く…（マークダウン対応）"
+                    />
+                  </div>
+                )}
+              </div>
+              {outlineOpen && (
+                <aside className="w-52 shrink-0 border-l border-slate-200 overflow-y-auto py-2 px-1.5 bg-slate-50/50">
+                  <div className="px-2 pb-1 text-[10px] font-medium text-slate-400">アウトライン</div>
+                  {outline.length === 0 && <div className="px-2 text-[11px] text-slate-400">見出しがありません</div>}
+                  {outline.map((h, i) => (
+                    <button
+                      key={`${h.line}-${i}`}
+                      onClick={() => jumpToHeading(h, i)}
+                      title={h.text}
+                      className="w-full text-left py-1 pr-2 rounded text-[12px] text-slate-600 hover:bg-slate-100 hover:text-slate-900 truncate block"
+                      style={{ paddingLeft: 8 + (h.level - 1) * 12 }}
+                    >
+                      {h.text}
+                    </button>
+                  ))}
+                </aside>
+              )}
+            </div>
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center text-slate-400">
@@ -757,6 +1083,13 @@ export default function NotesPage() {
           </div>
         )}
       </div>
+      {slideshowOpen && selectedNote && (
+        <SlideShow
+          slides={slideshowSlides}
+          onClose={() => setSlideshowOpen(false)}
+          onExportPdf={canPdf ? () => doExportSlidesPdf(selectedNote) : undefined}
+        />
+      )}
     </div>
   )
 }

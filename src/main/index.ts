@@ -235,7 +235,13 @@ ipcMain.handle('local:reveal', async (_e, p: string): Promise<void> => {
 // The renderer builds a self-contained print HTML (all user text escaped there)
 // and we rasterize it via a hidden BrowserWindow + printToPDF. JS is disabled in
 // the window since the document never needs it. Margins are in inches.
-ipcMain.handle('pdf:render-html', async (_e, html: string, margins: { top: number; bottom: number; left: number; right: number }): Promise<Buffer> => {
+ipcMain.handle('pdf:render-html', async (
+  _e,
+  html: string,
+  margins: { top: number; bottom: number; left: number; right: number },
+  // pageSizeInch: カスタムページ寸法（インチ）。スライド書き出しの 16:9 などに使う。
+  opts?: { pageSizeInch?: { width: number; height: number } },
+): Promise<Buffer> => {
   const dir = join(app.getPath('temp'), 'constella')
   await mkdir(dir, { recursive: true })
   const p = join(dir, `print-${Date.now()}-${Math.random().toString(36).slice(2)}.html`)
@@ -247,7 +253,7 @@ ipcMain.handle('pdf:render-html', async (_e, html: string, margins: { top: numbe
   try {
     await win.loadFile(p)
     return await win.webContents.printToPDF({
-      pageSize: 'A4',
+      pageSize: opts?.pageSizeInch ? { width: opts.pageSizeInch.width, height: opts.pageSizeInch.height } : 'A4',
       printBackground: true,
       margins: { top: margins.top, bottom: margins.bottom, left: margins.left, right: margins.right },
     })
@@ -264,9 +270,9 @@ ipcMain.handle('pdf:save', async (_e, bytes: Uint8Array, defaultName: string): P
     return true
   }
   if (!mainWindow || mainWindow.isDestroyed()) return false
-  const safe = (defaultName || '計画').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)
+  const safe = (defaultName || 'ドキュメント').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80)
   const r = await dialog.showSaveDialog(mainWindow, {
-    title: '計画をPDFに書き出し',
+    title: 'PDFに書き出し',
     defaultPath: safe + '.pdf',
     filters: [{ name: 'PDF', extensions: ['pdf'] }],
   })

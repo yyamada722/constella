@@ -26,6 +26,9 @@ import { putMedia, resolveMediaUrl } from '../../persistence/media'
 import { resolveLocalUrl, releaseLocalUrl, isLocalRef, localRefPath, localFileApi } from '../../utils/localFile'
 import { decodeMdHref } from '../../utils/mdLink'
 import { IMAGE_ACCEPT, normalizeImageBlob } from '../../utils/image'
+import { toggleTaskAt } from '../../utils/mdTask'
+import { htmlClipboardToMarkdown, tsvToMarkdownTable } from '../../utils/richPaste'
+import { MD_CALLOUT, jpDate, jpDateTime, TPL_MINUTES, TPL_DAILY } from '../../utils/mdSnippets'
 import { useWikiLink } from '../WikiLink'
 
 export interface TypolMarkdownProps {
@@ -102,6 +105,8 @@ const mdFootnote: MdTransform = (v, s, e) => {
 const MD_TABLE = '| 見出し1 | 見出し2 |\n| --- | --- |\n| セル | セル |\n'
 const MD_MATH_BLOCK = '$$\nx = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\n$$\n'
 const MD_MERMAID = '```mermaid\nflowchart LR\n  A --> B\n  B --> C\n```\n'
+// テンプレート（挿入時に日付を確定させるため遅延評価）
+const mdDynSnippet = (fn: () => string): MdTransform => (v, s, e) => mdSnippet(fn())(v, s, e)
 
 const MD_ITEMS: { label: string; run?: MdTransform; special?: 'image-file'; divider?: boolean }[] = [
   { label: '見出し 1 (#)', run: mdPrefix('# ') },
@@ -111,6 +116,7 @@ const MD_ITEMS: { label: string; run?: MdTransform; special?: 'image-file'; divi
   { label: '斜体', run: mdWrap('*', '*', '斜体') },
   { label: '取り消し線', run: mdWrap('~~', '~~', 'テキスト') },
   { label: 'インラインコード', run: mdWrap('`', '`', 'code') },
+  { label: 'ハイライト', run: mdWrap('==', '==', 'ハイライト') },
   { label: '箇条書きリスト', run: mdPrefix('- '), divider: true },
   { label: '番号付きリスト', run: mdPrefix('1. ') },
   { label: 'チェックリスト', run: mdPrefix('- [ ] ') },
@@ -124,7 +130,12 @@ const MD_ITEMS: { label: string; run?: MdTransform; special?: 'image-file'; divi
   { label: 'Mermaid 図', run: mdSnippet(MD_MERMAID) },
   { label: '数式ブロック (KaTeX)', run: mdSnippet(MD_MATH_BLOCK) },
   { label: '表', run: mdSnippet(MD_TABLE) },
+  { label: 'コールアウト (NOTE)', run: mdSnippet(MD_CALLOUT) },
   { label: '水平線', run: mdSnippet('---\n') },
+  { label: '今日の日付', run: mdDynSnippet(jpDate), divider: true },
+  { label: '現在日時', run: mdDynSnippet(jpDateTime) },
+  { label: '議事録テンプレート', run: mdDynSnippet(TPL_MINUTES) },
+  { label: '日報テンプレート', run: mdDynSnippet(TPL_DAILY) },
 ]
 
 export function TypolMarkdown({
@@ -137,6 +148,7 @@ export function TypolMarkdown({
   editing,
 }: TypolMarkdownProps) {
   const taRef = useRef<HTMLTextAreaElement | null>(null)
+  const plainPasteRef = useRef(false) // Ctrl+Shift+V 直後はリッチ変換をスキップ
   const previewRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<Editor | null>(null)
   const imgInputRef = useRef<HTMLInputElement | null>(null)
@@ -146,23 +158,38 @@ export function TypolMarkdown({
   const onWiki = useWikiLink()
   const onWikiRef = useRef(onWiki)
   onWikiRef.current = onWiki
+  // Latest source + toggleability for the preview's click delegation (the handler
+  // is attached once per preview mount, so it reads through refs).
+  const canToggleTasks = !readOnly && !!onChange
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const canToggleRef = useRef(canToggleTasks)
+  canToggleRef.current = canToggleTasks
 
   const [mdMenu, setMdMenu] = useState<{ x: number; y: number; start: number; end: number } | null>(null)
 
   const effectiveEditing = !!editing && !readOnly
 
-  // Instantiate the Typol Editor once per mount (when in edit mode).
+  // Instantiate the Typol Editor once per mount (when in edit mode). The cleanup
+  // is required: without destroy(), StrictMode's double-mount (and HMR) leaves a
+  // second keydown listener on the same textarea, and toggle commands (bold etc.)
+  // then run twice per keystroke and cancel out.
   useEffect(() => {
     if (!effectiveEditing || !taRef.current) {
       editorRef.current = null
       return
     }
     const ta = taRef.current
-    editorRef.current = new Editor({
+    const editor = new Editor({
       textarea: ta,
       onChange: () => onChangeRef.current?.(ta.value),
     })
+    editorRef.current = editor
     if (ta.value !== value) ta.value = value
+    return () => {
+      editor.destroy()
+      if (editorRef.current === editor) editorRef.current = null
+    }
   }, [effectiveEditing])
 
   // Push external value updates into the uncontrolled textarea. `ta.value = ...`
@@ -231,18 +258,43 @@ export function TypolMarkdown({
     host.querySelectorAll<HTMLAnchorElement>('a[href^="wiki:"]').forEach(a => {
       a.classList.add('wiki-link')
     })
+    // Task checkboxes: re-enable them so a click can toggle [ ]/[x] in the source
+    // (handled by the delegation effect below), and tag their list items with the
+    // GFM classes typol.css styles — marked itself emits plain <ul><li>, which
+    // would show a bullet in front of every checkbox.
+    host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach(i => {
+      if (canToggleTasks) i.disabled = false
+      const li = i.closest('li')
+      if (li) {
+        li.classList.add('task-list-item')
+        li.parentElement?.classList.add('contains-task-list')
+      }
+    })
     return () => {
       live = false
       retained.forEach(releaseLocalUrl)
     }
-  }, [value, effectiveEditing])
+  }, [value, effectiveEditing, canToggleTasks])
 
   // Delegate clicks on wiki:/external links inside the preview.
   useEffect(() => {
     if (effectiveEditing || !previewRef.current) return
     const host = previewRef.current
     const onClick = (e: MouseEvent) => {
-      const a = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
+      // Task checkbox → flip the matching [ ]/[x] in the source.
+      const t = e.target as HTMLElement | null
+      if (t instanceof HTMLInputElement && t.type === 'checkbox') {
+        e.preventDefault()
+        e.stopPropagation()
+        if (!canToggleRef.current) return
+        const boxes = Array.from(host.querySelectorAll('input[type="checkbox"]'))
+        const next = toggleTaskAt(valueRef.current, boxes.indexOf(t), boxes.length)
+        // Update the ref immediately so a second toggle in the same tick (before
+        // the re-render refreshes it) composes instead of overwriting this one.
+        if (next !== null) { valueRef.current = next; onChangeRef.current?.(next) }
+        return
+      }
+      const a = t?.closest?.('a') as HTMLAnchorElement | null
       if (!a) return
       const href = a.getAttribute('href') ?? ''
       if (href.startsWith('wiki:')) {
@@ -337,10 +389,10 @@ export function TypolMarkdown({
           className="flex items-center gap-0.5 pb-1.5 mb-2 border-b border-slate-200 shrink-0 flex-wrap"
           onMouseDown={e => e.preventDefault()}
         >
-          <TbBtn icon={Bold}          onClick={() => exec('bold')}   title="太字 (**)" />
-          <TbBtn icon={Italic}        onClick={() => exec('italic')} title="斜体 (*)" />
-          <TbBtn icon={Strikethrough} onClick={() => exec('strike')} title="取り消し線 (~~)" />
-          <TbBtn icon={Code}          onClick={() => exec('code')}   title="インラインコード (`)" />
+          <TbBtn icon={Bold}          onClick={() => exec('bold')}   title="太字 (**) — Ctrl+B" />
+          <TbBtn icon={Italic}        onClick={() => exec('italic')} title="斜体 (*) — Ctrl+I" />
+          <TbBtn icon={Strikethrough} onClick={() => exec('strike')} title="取り消し線 (~~) — Ctrl+Shift+X" />
+          <TbBtn icon={Code}          onClick={() => exec('code')}   title="インラインコード (`) — Ctrl+E" />
           <TbDivider />
           <TbBtn icon={Heading1}      onClick={() => exec('h1')}     title="見出し 1 (#)" />
           <TbBtn icon={Heading2}      onClick={() => exec('h2')}     title="見出し 2 (##)" />
@@ -351,7 +403,7 @@ export function TypolMarkdown({
           <TbBtn icon={ListOrdered}   onClick={() => exec('ol')}     title="番号付きリスト" />
           <TbBtn icon={ListChecks}    onClick={() => exec('task')}   title="チェックリスト" />
           <TbDivider />
-          <TbBtn icon={Link2}         onClick={() => exec('link')}   title="リンク" />
+          <TbBtn icon={Link2}         onClick={() => exec('link')}   title="リンク — Ctrl+K" />
           <TbBtn icon={ImageIcon}     onClick={pickImage}            title="画像を挿入…（ファイル）" />
           <TbBtn icon={Table}         onClick={() => exec('table')}  title="表" />
           <TbBtn icon={FileCode2}     onClick={() => exec('codeblock')} title="コードブロック (```)" />
@@ -364,6 +416,13 @@ export function TypolMarkdown({
           spellCheck={false}
           onChange={e => onChange?.(e.target.value)}
           onMouseDown={e => e.stopPropagation()}
+          onKeyDown={e => {
+            // Ctrl+Shift+V: 直後の paste ではリッチ変換を行わない（プレーン貼り付け）
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
+              plainPasteRef.current = true
+              setTimeout(() => { plainPasteRef.current = false }, 800)
+            }
+          }}
           onContextMenu={e => {
             e.preventDefault()
             e.stopPropagation()
@@ -400,18 +459,37 @@ export function TypolMarkdown({
                 return
               }
             }
+            const plain = plainPasteRef.current
+            plainPasteRef.current = false
+            const insertMd = (md: string) => {
+              const start = ta.selectionStart, end = ta.selectionEnd
+              const next = ta.value.slice(0, start) + md + ta.value.slice(end)
+              ta.value = next
+              const caret = start + md.length
+              ta.setSelectionRange(caret, caret)
+              onChangeRef.current?.(next)
+            }
             const text = dt.getData('text/plain').trim()
+            // 選択範囲への URL 貼り付け = リンク化。リッチ変換より先に判定する —
+            // ブラウザからコピーしたリンクは text/html に <a> を含むため。
             if (text && isHttpUrl(text) && ta.selectionEnd > ta.selectionStart) {
               e.preventDefault()
               const start = ta.selectionStart, end = ta.selectionEnd
               const sel = ta.value.slice(start, end)
-              const ins = `[${sel}](${text})`
-              const next = ta.value.slice(0, start) + ins + ta.value.slice(end)
-              ta.value = next
-              const caret = start + ins.length
-              ta.setSelectionRange(caret, caret)
-              onChangeRef.current?.(next)
+              insertMd(`[${sel}](${text})`)
               return
+            }
+            // リッチペースト: 構造のある HTML / タブ区切り → Markdown（Ctrl+Shift+V ではスキップ）
+            if (!plain) {
+              const html = dt.getData('text/html')
+              if (html) {
+                const md = htmlClipboardToMarkdown(html)
+                if (md) { e.preventDefault(); insertMd(md); return }
+              }
+              if (text) {
+                const table = tsvToMarkdownTable(text)
+                if (table) { e.preventDefault(); insertMd(table); return }
+              }
             }
           }}
           className={`typol-root typol-editor flex-1 min-h-0 ${textSize}`}

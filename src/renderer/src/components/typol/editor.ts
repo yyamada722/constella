@@ -1,3 +1,5 @@
+import { tableKeydown } from "../../utils/mdTable";
+
 export interface EditorRefs {
   textarea: HTMLTextAreaElement;
   onChange: () => void;
@@ -11,11 +13,21 @@ export type CommandName =
 export class Editor {
   private el: HTMLTextAreaElement;
   private notify: () => void;
+  private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(refs: EditorRefs) {
     this.el = refs.textarea;
     this.notify = refs.onChange;
     this.attachSmartInput();
+  }
+
+  /** Detach the keydown listener. The owning effect MUST call this on cleanup —
+   *  a leaked listener means duplicated smart-input handling on the same
+   *  textarea (StrictMode double-mount, HMR), where a toggle command like bold
+   *  runs twice and cancels itself out. */
+  destroy() {
+    if (this.keydownHandler) this.el.removeEventListener("keydown", this.keydownHandler);
+    this.keydownHandler = null;
   }
 
   get value() { return this.el.value; }
@@ -29,6 +41,19 @@ export class Editor {
       end: this.el.selectionEnd,
       value: this.el.value,
     };
+  }
+
+  // 値全体の置き換えを最小 diff の replaceRange に落とす（native undo を保つ）
+  private applyValue(next: string, selStart: number, selEnd: number) {
+    const old = this.el.value;
+    if (old === next) { this.el.setSelectionRange(selStart, selEnd); return; }
+    let p = 0;
+    const maxP = Math.min(old.length, next.length);
+    while (p < maxP && old[p] === next[p]) p++;
+    let s = 0;
+    const maxS = Math.min(old.length, next.length) - p;
+    while (s < maxS && old[old.length - 1 - s] === next[next.length - 1 - s]) s++;
+    this.replaceRange(p, old.length - s, next.slice(p, next.length - s), selStart, selEnd);
   }
 
   private replaceRange(start: number, end: number, text: string, selStart?: number, selEnd?: number) {
@@ -48,7 +73,12 @@ export class Editor {
     if (sel) {
       const before = value.slice(Math.max(0, start - prefix.length), start);
       const after = value.slice(end, end + suffix.length);
-      if (before === prefix && after === suffix) {
+      // さらに外側にも同じデリミタ文字が続く場合はアンラップしない —
+      // **bold** の内側で斜体(*)を実行したときに太字の * を剥がさない。
+      const partOfLonger =
+        value[start - prefix.length - 1] === prefix[0] &&
+        value[end + suffix.length] === suffix[suffix.length - 1];
+      if (before === prefix && after === suffix && !partOfLonger) {
         this.replaceRange(start - prefix.length, end + suffix.length, sel,
           start - prefix.length, end - prefix.length);
         return;
@@ -146,11 +176,33 @@ export class Editor {
   }
 
   private attachSmartInput() {
-    this.el.addEventListener("keydown", (e) => {
+    this.keydownHandler = (e: KeyboardEvent) => {
       // Skip everything while an IME is composing (Japanese/Chinese kana→kanji,
       // Korean jamo, etc.). Enter and Tab are used by IMEs to confirm candidates,
       // and intercepting them here mangles the composed text.
       if (e.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return
+      // Formatting shortcuts (mirrors the canvas MarkdownText bindings).
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const k = e.key.toLowerCase();
+        const cmd: CommandName | undefined = e.shiftKey
+          ? (k === "x" ? "strike" : undefined)
+          : ({ b: "bold", i: "italic", e: "code", k: "link" } as Record<string, CommandName>)[k];
+        if (cmd) {
+          e.preventDefault();
+          e.stopPropagation();
+          this.exec(cmd);
+        }
+        return;
+      }
+      // 表の中: Tab=セル移動 / Enter=行追加（表ブロック全体を桁揃え）
+      if (!e.altKey && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+        const r = tableKeydown(this.el.value, this.el.selectionStart, e.key === "Enter" ? "Enter" : e.shiftKey ? "ShiftTab" : "Tab");
+        if (r) {
+          e.preventDefault();
+          this.applyValue(r.value, r.selStart, r.selEnd);
+          return;
+        }
+      }
       if (e.key === "Tab") {
         e.preventDefault();
         const { start, end } = this.getSel();
@@ -170,7 +222,8 @@ export class Editor {
         const lineStart = value.lastIndexOf("\n", start - 1) + 1;
         const line = value.slice(lineStart, start);
         const m =
-          /^(\s*)([-*+]\s\[[ x]\]\s)(.*)$/.exec(line) ||
+          /^(\s*)([-*+]\s\[[ xX]\]\s)(.*)$/.exec(line) ||
+          /^(\s*)(\[[ xX]?\]\s)(.*)$/.exec(line) ||   // bare-line task: "[ ] foo" / "[] foo"
           /^(\s*)([-*+]\s)(.*)$/.exec(line) ||
           /^(\s*)(\d+\.\s)(.*)$/.exec(line) ||
           /^(\s*)(>\s?)(.*)$/.exec(line);
@@ -185,11 +238,12 @@ export class Editor {
           let next = marker;
           const olm = /^(\d+)\.\s/.exec(marker);
           if (olm) next = (Number(olm[1]) + 1) + ". ";
-          if (/\[x\]/.test(marker)) next = marker.replace("[x]", "[ ]");
+          if (/\[[xX]\]/.test(marker)) next = marker.replace(/\[[xX]\]/, "[ ]");
           const insert = "\n" + indent + next;
           this.replaceRange(start, start, insert, start + insert.length);
         }
       }
-    });
+    };
+    this.el.addEventListener("keydown", this.keydownHandler);
   }
 }

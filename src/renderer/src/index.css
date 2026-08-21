@@ -107,6 +107,7 @@ body {
 .md-content ul.contains-task-list { list-style: none; padding-left: 0.2em; }
 .md-content li.task-list-item { display: flex; align-items: flex-start; gap: 0.4em; }
 .md-content input[type="checkbox"] { margin-top: 0.28em; }
+.md-content input[type="checkbox"]:not(:disabled) { cursor: pointer; }
 .md-content code { background: rgba(100,116,139,0.16); padding: 0.08em 0.32em; border-radius: 4px; font-size: 0.88em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .md-content pre { background: rgba(100,116,139,0.12); padding: 0.6em 0.8em; border-radius: 6px; overflow-x: auto; margin: 0.45em 0; }
 .md-content pre code { background: none; padding: 0; font-size: 0.85em; }
@@ -120,3 +121,39 @@ body {
 .md-content th, .md-content td { border: 1px solid rgba(100,116,139,0.3); padding: 0.22em 0.55em; text-align: left; }
 .md-content th { background: rgba(100,116,139,0.08); font-weight: 600; }
 .md-content img { max-width: 100%; border-radius: 4px; }
+.md-content .mermaid-block { margin: 0.6em 0; padding: 0.6em; display: flex; align-items: center; justify-content: center; overflow-x: auto; background: rgba(100,116,139,0.08); border: 1px solid rgba(100,116,139,0.25); border-radius: 6px; min-height: 48px; }
+.md-content .mermaid-block:empty::before { content: "Mermaid を読み込み中…"; color: #94a3b8; font-size: 11px; }
+.md-content .mermaid-block svg { max-width: 100%; height: auto; }
+.md-content .mermaid-error { color: #e11d48; font-size: 0.85em; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.md-content .katex-display { overflow-x: auto; margin: 0.6em 0; padding: 0.2em 0; }
+.md-content mark { background: rgba(250, 204, 21, 0.45); color: inherit; padding: 0 0.15em; border-radius: 3px; }
+.dark .md-content mark { background: rgba(202, 138, 4, 0.45); color: inherit; }
+/* コールアウト (> [!NOTE] 等)。背景は常にライトの淡色なので中の文字色を固定する */
+.md-content .md-callout { border: 1px solid; border-radius: 8px; padding: 0.5em 0.85em; margin: 0.5em 0; color: #334155; }
+.md-content .md-callout > p { margin: 0.15em 0; }
+.md-content .md-callout-title { font-size: 0.72em; font-weight: 700; letter-spacing: 0.09em; margin-bottom: 0.15em; opacity: 0.85; }
+.md-content .md-callout-note { background: #f0f9ff; border-color: #7dd3fc; }
+.md-content .md-callout-note .md-callout-title { color: #075985; }
+.md-content .md-callout-tip { background: #ecfdf5; border-color: #6ee7b7; }
+.md-content .md-callout-tip .md-callout-title { color: #065f46; }
+.md-content .md-callout-important { background: #f5f3ff; border-color: #c4b5fd; }
+.md-content .md-callout-important .md-callout-title { color: #5b21b6; }
+.md-content .md-callout-warning { background: #fffbeb; border-color: #fcd34d; }
+.md-content .md-callout-warning .md-callout-title { color: #92400e; }
+.md-content .md-callout-caution { background: #fff1f2; border-color: #fda4af; }
+.md-content .md-callout-caution .md-callout-title { color: #9f1239; }
+.dark .md-content .md-callout { color: #334155; }
+.dark .md-content .md-callout code { background: rgba(100, 116, 139, 0.16); }
+
+/* スライドショー: 常にライトな 16:9 キャンバス。ダークテーマの .md-content
+   上書きが白地に効かないよう、明示的に打ち消す。 */
+.slideshow-slide { font-size: 21px; line-height: 1.6; }
+.slideshow-slide h1 { font-size: 2.1em; border-bottom: 3px solid #4f46e5; padding-bottom: 0.25em; margin: 0 0 0.5em; }
+.slideshow-slide h2 { font-size: 1.6em; margin: 0 0 0.5em; }
+.slideshow-slide pre { font-size: 0.85em; }
+.slideshow-slide a, .dark .slideshow-slide a { color: #4f46e5; }
+.slideshow-slide mark, .dark .slideshow-slide mark { background: rgba(250, 204, 21, 0.45); }
+.dark .slideshow-slide blockquote { color: #64748b; }
+.dark .slideshow-slide del { color: #94a3b8; }
+.dark .slideshow-slide code { background: rgba(100,116,139,0.16); }
+.dark .slideshow-slide pre { background: rgba(100,116,139,0.12); }
