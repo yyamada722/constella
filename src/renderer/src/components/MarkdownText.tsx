@@ -1,11 +1,19 @@
-import { useState, useMemo, useRef, ReactNode } from 'react'
+import { useState, useMemo, useRef, useEffect, isValidElement, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import hljs from 'highlight.js'
+import { renderMermaidIn } from './typol/mermaid'
 import { putMedia, useMediaUrl } from '../persistence/media'
 import { IMAGE_ACCEPT, normalizeImageBlob } from '../utils/image'
 import { isLocalRef, localFileApi, localRefPath } from '../utils/localFile'
 import { decodeMdHref } from '../utils/mdLink'
+import { normalizeTasks, toggleTaskAt } from '../utils/mdTask'
+import { remarkConstellaSyntax } from '../utils/mdSyntax'
+import { tableKeydown } from '../utils/mdTable'
+import { htmlClipboardToMarkdown, tsvToMarkdownTable } from '../utils/richPaste'
 import { useWikiLink } from './WikiLink'
 
 // Resolve idb: image refs (pasted images stored in IndexedDB) to a usable URL;
@@ -16,6 +24,34 @@ function MdImage({ src, alt }: { src?: string; alt?: string }) {
   const resolved = useMediaUrl(isLocalRef(src) ? decodeMdHref(src as string) : src)
   if (!resolved) return null
   return <img src={resolved} alt={alt ?? ''} />
+}
+
+// ```mermaid fences render as diagrams via the shared lazy renderer (same
+// pipeline as the Typol note preview, so its SVG cache is shared too).
+function MermaidBlock({ source }: { source: string }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (ref.current) void renderMermaidIn(ref.current)
+  }, [source])
+  return (
+    <div ref={ref}>
+      <div key={source} className="mermaid-block" data-source={encodeURIComponent(source)} />
+    </div>
+  )
+}
+
+// Fenced code with a language tag gets highlight.js markup (class names match the
+// Typol note preview, so the user-selected code theme applies here as well).
+function MdCode({ className, children }: { className?: string; children?: ReactNode }) {
+  const lang = /language-([\w+-]+)/.exec(className ?? '')?.[1]
+  if (lang && lang !== 'mermaid') {
+    const language = hljs.getLanguage(lang) ? lang : 'plaintext'
+    try {
+      const html = hljs.highlight(String(children ?? '').replace(/\n$/, ''), { language }).value
+      return <code className={`hljs language-${language}`} dangerouslySetInnerHTML={{ __html: html }} />
+    } catch { /* fall through to plain rendering */ }
+  }
+  return <code className={className}>{children}</code>
 }
 
 // Mirror react-markdown's safe URL handling but allow our idb:/local: refs (images) and wiki: links.
@@ -38,8 +74,13 @@ const isHttpUrl = (s: string) => /^https?:\/\/\S+$/i.test(s)
 type MdTransform = (v: string, s: number, e: number) => { value: string; selStart: number; selEnd: number }
 
 const mdWrap = (pre: string, post: string, ph: string): MdTransform => (v, s, e) => {
-  const sel = v.slice(s, e) || ph
-  return { value: v.slice(0, s) + pre + sel + post + v.slice(e), selStart: s + pre.length, selEnd: s + pre.length + sel.length }
+  const sel = v.slice(s, e)
+  // Toggle: if the selection is already wrapped (e.g. **sel**), unwrap instead.
+  if (sel && s >= pre.length && v.slice(s - pre.length, s) === pre && v.slice(e, e + post.length) === post) {
+    return { value: v.slice(0, s - pre.length) + sel + v.slice(e + post.length), selStart: s - pre.length, selEnd: e - pre.length }
+  }
+  const body = sel || ph
+  return { value: v.slice(0, s) + pre + body + post + v.slice(e), selStart: s + pre.length, selEnd: s + pre.length + body.length }
 }
 // Prefix every line touched by the selection (headings, lists, quote).
 const mdPrefix = (p: string): MdTransform => (v, s, e) => {
@@ -95,27 +136,65 @@ const mdFootnote: MdTransform = (v, s, e) => {
   return { value, selStart: value.length - note.length, selEnd: value.length }
 }
 const MD_TABLE = '| 見出し1 | 見出し2 |\n| --- | --- |\n| セル | セル |\n'
+const MD_CALLOUT = '> [!NOTE] タイトル\n> 内容\n'
 
-const MD_ITEMS: { label: string; run?: MdTransform; special?: 'image-file'; divider?: boolean }[] = [
+// テンプレート（挿入時に日付を確定させるため遅延評価）
+const mdDynSnippet = (fn: () => string): MdTransform => (v, s, e) => mdSnippet(fn())(v, s, e)
+const jpDate = () => {
+  const d = new Date()
+  const wd = '日月火水木金土'[d.getDay()]
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}(${wd})`
+}
+const jpDateTime = () => {
+  const d = new Date()
+  return `${jpDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+const TPL_MINUTES = () => `## 議事録 ${jpDate()}\n\n**参加者**: \n**目的**: \n\n### 決定事項\n\n- \n\n### TODO\n\n- [ ] \n\n### メモ\n\n- \n`
+const TPL_DAILY = () => `## 日報 ${jpDate()}\n\n### 今日やったこと\n\n- \n\n### 明日やること\n\n- [ ] \n\n### 気づき・メモ\n\n- \n`
+
+// Ctrl/Cmd shortcuts in the edit textarea. Keyed by `${shift ? 'S' : ''}${key}`.
+const MD_SHORTCUTS: Record<string, MdTransform> = {
+  b: mdWrap('**', '**', '太字'),
+  i: mdWrap('*', '*', '斜体'),
+  e: mdWrap('`', '`', 'code'),
+  k: mdLink,
+  Sx: mdWrap('~~', '~~', 'テキスト'),
+}
+
+// A list/quote/task marker at the head of `line`, for smart-Enter continuation.
+const lineMarker = (line: string) =>
+  /^(\s*)([-*+]\s\[[ xX]\]\s)(.*)$/.exec(line) ||
+  /^(\s*)(\[[ xX]?\]\s)(.*)$/.exec(line) ||
+  /^(\s*)([-*+]\s)(.*)$/.exec(line) ||
+  /^(\s*)(\d+\.\s)(.*)$/.exec(line) ||
+  /^(\s*)(>\s?)(.*)$/.exec(line)
+
+const MD_ITEMS: { label: string; run?: MdTransform; special?: 'image-file'; divider?: boolean; hint?: string }[] = [
   { label: '見出し 1 (#)', run: mdPrefix('# ') },
   { label: '見出し 2 (##)', run: mdPrefix('## ') },
   { label: '見出し 3 (###)', run: mdPrefix('### ') },
-  { label: '太字', run: mdWrap('**', '**', '太字'), divider: true },
-  { label: '斜体', run: mdWrap('*', '*', '斜体') },
-  { label: '取り消し線', run: mdWrap('~~', '~~', 'テキスト') },
-  { label: 'インラインコード', run: mdWrap('`', '`', 'code') },
+  { label: '太字', run: mdWrap('**', '**', '太字'), divider: true, hint: 'Ctrl+B' },
+  { label: '斜体', run: mdWrap('*', '*', '斜体'), hint: 'Ctrl+I' },
+  { label: '取り消し線', run: mdWrap('~~', '~~', 'テキスト'), hint: 'Ctrl+Shift+X' },
+  { label: 'インラインコード', run: mdWrap('`', '`', 'code'), hint: 'Ctrl+E' },
+  { label: 'ハイライト', run: mdWrap('==', '==', 'ハイライト') },
   { label: '箇条書きリスト', run: mdPrefix('- '), divider: true },
   { label: '番号付きリスト', run: mdPrefix('1. ') },
   { label: 'チェックリスト', run: mdPrefix('- [ ] ') },
   { label: '引用', run: mdPrefix('> ') },
-  { label: 'リンク', run: mdLink, divider: true },
+  { label: 'リンク', run: mdLink, divider: true, hint: 'Ctrl+K' },
   { label: '画像 (URL)', run: mdImage },
   { label: '画像を挿入…（ファイル）', special: 'image-file' },
   { label: '参照リンク', run: mdRefLink },
   { label: '脚注', run: mdFootnote },
   { label: 'コードブロック', run: mdBlock, divider: true },
   { label: '表', run: mdSnippet(MD_TABLE) },
+  { label: 'コールアウト (NOTE)', run: mdSnippet(MD_CALLOUT) },
   { label: '水平線', run: mdSnippet('---\n') },
+  { label: '今日の日付', run: mdDynSnippet(jpDate), divider: true },
+  { label: '現在日時', run: mdDynSnippet(jpDateTime) },
+  { label: '議事録テンプレート', run: mdDynSnippet(TPL_MINUTES) },
+  { label: '日報テンプレート', run: mdDynSnippet(TPL_DAILY) },
 ]
 
 // An editable text area with Markdown support: shows rendered Markdown when not
@@ -123,6 +202,9 @@ const MD_ITEMS: { label: string; run?: MdTransform; special?: 'image-file'; divi
 // the rendered view). When readOnly (e.g. a locked card) it stays rendered.
 // Pasting: an image is stored and inserted as ![](idb:id); a URL pasted over a
 // text selection becomes [selection](url).
+// Editing extras: Ctrl+B/I/E/K & Ctrl+Shift+X shortcuts, smart Enter (list/quote/
+// task continuation, numbered increment, empty item exits), Tab/Shift+Tab indent.
+// In the rendered view, task-list checkboxes toggle [ ]/[x] in the source directly.
 export function MarkdownText({ value, onChange, placeholder, readOnly, textSize = 'text-sm', extraClass, editing: editingProp }: {
   value: string
   onChange?: (v: string) => void
@@ -141,6 +223,7 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
   const editing = readOnly ? false : (controlled ? !!editingProp : editingState)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const imgInputRef = useRef<HTMLInputElement>(null)
+  const plainPasteRef = useRef(false) // Ctrl+Shift+V 直後はリッチ変換をスキップ
   const onWiki = useWikiLink()
   // Layout (flex/min-height/padding) comes from extraClass so the same component
   // works in the canvas card body (flex column) and the list view (min-height).
@@ -149,16 +232,30 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
   // Parse Markdown only when actually showing the rendered view (skip while editing,
   // so typing doesn't re-parse on every keystroke; skip re-parsing on drag re-renders).
   const showRendered = readOnly || !editing
+  // Rendered-view checkboxes are directly toggleable when the text is editable at all.
+  const canToggleTasks = !readOnly && !!onChange
   const rendered: ReactNode = useMemo(() => {
     if (!showRendered) return null
     if (!value.trim()) return <span className="text-slate-400">{placeholder}</span>
     // [[Card Title]] -> a wiki: link that jumps to that canvas card.
-    const processed = value.replace(/\[\[([^[\]\n]+)\]\]/g, (_, t: string) => `[${t}](wiki:${encodeURIComponent(t.trim())})`)
+    // normalizeTasks: bare "[ ] foo" lines also render as checkboxes.
+    const processed = normalizeTasks(value.replace(/\[\[([^[\]\n]+)\]\]/g, (_, t: string) => `[${t}](wiki:${encodeURIComponent(t.trim())})`))
     return (
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkConstellaSyntax]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false }]]}
         urlTransform={urlTransform}
         components={{
+          code: MdCode,
+          // ```mermaid fences: swap the whole <pre> for the rendered diagram.
+          pre: ({ children, node: _node, ...rest }) => {
+            const child = Array.isArray(children) ? children[0] : children
+            if (isValidElement(child)) {
+              const p = child.props as { className?: string; children?: ReactNode }
+              if (/language-mermaid/.test(p.className ?? '')) return <MermaidBlock source={String(p.children ?? '')} />
+            }
+            return <pre {...rest}>{children}</pre>
+          },
           a: ({ href, children }) => {
             if (href && href.startsWith('wiki:')) {
               return <a className="text-indigo-600 underline decoration-dotted cursor-pointer" onClick={e => { e.preventDefault(); e.stopPropagation(); onWiki(decodeURIComponent(href.slice(5))) }}>{children}</a>
@@ -184,20 +281,146 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
             return <a href={href} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}>{children}</a>
           },
           img: MdImage,
+          // Task-list checkboxes: react-markdown emits them disabled; re-enable so a
+          // click can toggle the source text (handled by delegation on the container).
+          input: ({ node: _node, type, checked, disabled: _disabled, ...rest }) =>
+            type === 'checkbox'
+              ? <input type="checkbox" checked={!!checked} readOnly disabled={!canToggleTasks} {...rest} />
+              : <input type={type} {...rest} />,
         }}
       >
         {processed}
       </ReactMarkdown>
     )
-  }, [value, placeholder, showRendered, onWiki])
+  }, [value, placeholder, showRendered, onWiki, canToggleTasks])
+
+  // Restore focus + selection after a controlled value change re-renders the textarea.
+  // setTimeout(0) rather than rAF: the React commit happens before the next macrotask,
+  // and rAF is suspended entirely while the window is hidden/minimized.
+  const setCaret = (start: number, end = start) => {
+    setTimeout(() => {
+      const ta = taRef.current
+      if (ta) { ta.focus(); ta.selectionStart = start; ta.selectionEnd = end }
+    }, 0)
+  }
+
+  // Apply a programmatic edit (shortcut, smart Enter/Tab, menu snippet, image insert).
+  // Routed through execCommand so the edit lands in the textarea's NATIVE undo stack —
+  // a plain controlled-value swap would make Ctrl+Z inside the textarea skip it.
+  // Diff old vs new value to find the replaced range (execCommand needs a range, and
+  // the MdTransform helpers all return whole-value results).
+  const applyEdit = (next: string, selStart: number, selEnd = selStart) => {
+    const ta = taRef.current
+    if (ta && ta.value !== next) {
+      const old = ta.value
+      let p = 0
+      const maxP = Math.min(old.length, next.length)
+      while (p < maxP && old[p] === next[p]) p++
+      let s = 0
+      const maxS = Math.min(old.length, next.length) - p
+      while (s < maxS && old[old.length - 1 - s] === next[next.length - 1 - s]) s++
+      const insert = next.slice(p, next.length - s)
+      ta.focus()
+      ta.setSelectionRange(p, old.length - s)
+      let ok = false
+      try {
+        ok = document.execCommand(insert ? 'insertText' : 'delete', false, insert || undefined)
+      } catch { /* fall through */ }
+      if (!ok || ta.value !== next) ta.value = next // undo is lost, but the edit still applies
+      ta.setSelectionRange(selStart, selEnd)
+      onChange?.(ta.value)
+    } else {
+      if (!ta) onChange?.(next)
+      setCaret(selStart, selEnd)
+    }
+  }
+
+  // Keyboard editing helpers: Ctrl shortcuts, smart Enter (list continuation),
+  // Tab / Shift+Tab (indent / outdent).
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Never intercept while an IME is composing — Enter/Tab confirm candidates.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return
+    const ta = e.currentTarget
+    const s = ta.selectionStart, en = ta.selectionEnd
+
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      // Ctrl+Shift+V: 直後の paste ではリッチ変換を行わない（プレーン貼り付け）
+      if (e.shiftKey && e.key.toLowerCase() === 'v') {
+        plainPasteRef.current = true
+        setTimeout(() => { plainPasteRef.current = false }, 800)
+        return
+      }
+      const fn = MD_SHORTCUTS[(e.shiftKey ? 'S' : '') + e.key.toLowerCase()]
+      if (fn) {
+        e.preventDefault()
+        e.stopPropagation()
+        const r = fn(value, s, en)
+        applyEdit(r.value, r.selStart, r.selEnd)
+      }
+      return
+    }
+
+    // 表の中: Tab=セル移動 / Enter=行追加（表ブロック全体を桁揃え）
+    if (!e.altKey && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) {
+      const r = tableKeydown(value, s, e.key === 'Enter' ? 'Enter' : e.shiftKey ? 'ShiftTab' : 'Tab')
+      if (r) {
+        e.preventDefault()
+        e.stopPropagation()
+        applyEdit(r.value, r.selStart, r.selEnd)
+        return
+      }
+    }
+
+    if (e.key === 'Tab') {
+      e.preventDefault()
+      e.stopPropagation()
+      if (s !== en || e.shiftKey) {
+        // Indent/outdent every line touched by the selection.
+        const ls = value.lastIndexOf('\n', s - 1) + 1
+        let le = value.indexOf('\n', en)
+        if (le === -1) le = value.length
+        const out = value.slice(ls, le).split('\n')
+          .map(l => (e.shiftKey ? l.replace(/^(\s{1,2}|\t)/, '') : '  ' + l))
+          .join('\n')
+        applyEdit(value.slice(0, ls) + out + value.slice(le), ls, ls + out.length)
+      } else {
+        applyEdit(value.slice(0, s) + '  ' + value.slice(en), s + 2)
+      }
+      return
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const lineStart = value.lastIndexOf('\n', s - 1) + 1
+      const m = lineMarker(value.slice(lineStart, s))
+      if (!m) return
+      e.preventDefault()
+      const [, indent, marker, rest] = m
+      // Enter on an empty item: drop the marker and leave the list.
+      if (rest === '' && s === en) {
+        applyEdit(value.slice(0, lineStart) + indent + value.slice(s), lineStart + indent.length)
+        return
+      }
+      let next = marker
+      const olm = /^(\d+)\.\s/.exec(marker)
+      if (olm) next = `${Number(olm[1]) + 1}. `
+      if (/\[[xX]\]/.test(marker)) next = marker.replace(/\[[xX]\]/, '[ ]')
+      const insert = '\n' + indent + next
+      applyEdit(value.slice(0, s) + insert + value.slice(en), s + insert.length)
+    }
+  }
+
+  const onRenderedClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement
+    if (!canToggleTasks || !(t instanceof HTMLInputElement) || t.type !== 'checkbox') return
+    e.preventDefault()
+    e.stopPropagation()
+    const boxes = Array.from(e.currentTarget.querySelectorAll('input[type="checkbox"]'))
+    const next = toggleTaskAt(value, boxes.indexOf(t), boxes.length)
+    if (next !== null) onChange?.(next)
+  }
 
   const insertText = (start: number, end: number, insert: string) => {
-    onChange?.(value.slice(0, start) + insert + value.slice(end))
-    const caret = start + insert.length
-    requestAnimationFrame(() => {
-      const ta = taRef.current
-      if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = caret }
-    })
+    applyEdit(value.slice(0, start) + insert + value.slice(end), start + insert.length)
   }
 
   const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -214,8 +437,31 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
         return
       }
     }
-    // 2. a URL pasted over a text selection -> Markdown link
+    // 2. リッチペースト: 構造のある HTML → Markdown（Ctrl+Shift+V ではスキップ）
+    const plain = plainPasteRef.current
+    plainPasteRef.current = false
+    if (!plain) {
+      const html = dt.getData('text/html')
+      if (html) {
+        const md = htmlClipboardToMarkdown(html)
+        if (md) {
+          e.preventDefault()
+          insertText(start, end, md)
+          return
+        }
+      }
+    }
     const text = dt.getData('text/plain').trim()
+    // 3. タブ区切り（Excel / Sheets のプレーン形）→ Markdown 表
+    if (!plain && text) {
+      const table = tsvToMarkdownTable(text)
+      if (table) {
+        e.preventDefault()
+        insertText(start, end, table)
+        return
+      }
+    }
+    // 4. a URL pasted over a text selection -> Markdown link
     if (text && isHttpUrl(text) && end > start) {
       e.preventDefault()
       insertText(start, end, `[${value.slice(start, end)}](${text})`)
@@ -228,12 +474,8 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
   const runMd = (fn: MdTransform) => {
     if (!mdMenu) return
     const r = fn(value, mdMenu.start, mdMenu.end)
-    onChange?.(r.value)
     setMdMenu(null)
-    requestAnimationFrame(() => {
-      const ta = taRef.current
-      if (ta) { ta.focus(); ta.selectionStart = r.selStart; ta.selectionEnd = r.selEnd }
-    })
+    applyEdit(r.value, r.selStart, r.selEnd)
   }
 
   // 画像を挿入…（ファイル選択）: store the caret, open the picker; on pick, embed
@@ -249,12 +491,7 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
     const ref = await putMedia(await normalizeImageBlob(file)) // TIFF/TGA → PNG
     const pos = pendingPos.current ?? { start: value.length, end: value.length }
     const ins = `![](${ref})`
-    onChange?.(value.slice(0, pos.start) + ins + value.slice(pos.end))
-    const caret = pos.start + ins.length
-    requestAnimationFrame(() => {
-      const ta = taRef.current
-      if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = caret }
-    })
+    applyEdit(value.slice(0, pos.start) + ins + value.slice(pos.end), pos.start + ins.length)
   }
 
   if (!readOnly && editing) {
@@ -266,6 +503,7 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
           value={value}
           onChange={e => onChange?.(e.target.value)}
           onMouseDown={e => e.stopPropagation()}
+          onKeyDown={onKeyDown}
           onPaste={onPaste}
           onBlur={() => { if (!controlled) setEditingState(false) }}
           onContextMenu={e => {
@@ -303,9 +541,10 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
                   {it.divider && <div className="h-px bg-slate-200 my-1" />}
                   <button
                     onClick={() => (it.special === 'image-file' ? pickImage() : it.run && runMd(it.run))}
-                    className="w-full text-left px-3 py-1.5 hover:bg-amber-500/10 hover:text-amber-700 text-slate-700"
+                    className="w-full text-left px-3 py-1.5 hover:bg-amber-500/10 hover:text-amber-700 text-slate-700 flex items-center justify-between gap-2"
                   >
-                    {it.label}
+                    <span>{it.label}</span>
+                    {it.hint && <span className="text-[10px] text-slate-400 shrink-0">{it.hint}</span>}
                   </button>
                 </div>
               ))}
@@ -319,7 +558,13 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
   return (
     <div
       onMouseDown={e => e.stopPropagation()}
-      onDoubleClick={() => { if (!readOnly && !controlled) setEditingState(true) }}
+      onClick={onRenderedClick}
+      onDoubleClick={e => {
+        // A double-click on a checkbox is two toggles, not "start editing".
+        const t = e.target as HTMLElement
+        if (canToggleTasks && t instanceof HTMLInputElement && t.type === 'checkbox') return
+        if (!readOnly && !controlled) setEditingState(true)
+      }}
       title={readOnly || controlled ? undefined : 'ダブルクリックで編集'}
       className={`md-content overflow-auto select-text ${base} ${extraClass ?? ''}`}
     >

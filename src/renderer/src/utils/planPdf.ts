@@ -25,7 +25,11 @@ import type { Plan } from '../types'
 /* ── preload bridge ── */
 
 interface PdfApi {
-  render: (html: string, margins: { top: number; bottom: number; left: number; right: number }) => Promise<Uint8Array>
+  render: (
+    html: string,
+    margins: { top: number; bottom: number; left: number; right: number },
+    opts?: { pageSizeInch?: { width: number; height: number } },
+  ) => Promise<Uint8Array>
   save: (bytes: Uint8Array, defaultName: string) => Promise<boolean>
 }
 

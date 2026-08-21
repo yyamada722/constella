@@ -3,6 +3,7 @@ import { markedHighlight } from "marked-highlight";
 import hljs from "highlight.js";
 import katex from "katex";
 import DOMPurify from "dompurify";
+import { normalizeTasks } from "../../utils/mdTask";
 
 marked.use(
   markedHighlight({
@@ -28,7 +29,46 @@ marked.use({
       }
       return false;
     },
+    // GitHub 風コールアウト: 引用の先頭が [!NOTE] 等なら色付きボックスにする。
+    // クラス名は remark 側 (utils/mdSyntax.ts) と共通 — index.css の .md-callout が両方に効く。
+    blockquote(token: Tokens.Blockquote): string | false {
+      const html = this.parser.parse(token.tokens);
+      const m = /^<p>\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(?:<br\s*\/?>\s*)?/i.exec(html);
+      if (!m) return false;
+      const kind = m[1].toLowerCase();
+      let rest = html.slice(m[0].length);
+      if (rest.startsWith("</p>")) rest = rest.slice(4); // タイトル行だけの <p> は畳む
+      else rest = "<p>" + rest;
+      return `<div class="md-callout md-callout-${kind}"><div class="md-callout-title">${m[1].toUpperCase()}</div>${rest}</div>`;
+    },
   },
+});
+
+// ==ハイライト== → <mark>
+marked.use({
+  extensions: [
+    {
+      name: "highlightMark",
+      level: "inline",
+      start(src: string) {
+        const i = src.indexOf("==");
+        return i < 0 ? undefined : i;
+      },
+      tokenizer(src: string) {
+        const m = /^==([^=\n]+?)==/.exec(src);
+        if (!m) return undefined;
+        return {
+          type: "highlightMark",
+          raw: m[0],
+          text: m[1],
+          tokens: this.lexer.inlineTokens(m[1]),
+        } as Tokens.Generic;
+      },
+      renderer(token) {
+        return `<mark>${this.parser.parseInline(token.tokens ?? [])}</mark>`;
+      },
+    },
+  ],
 });
 
 interface MathToken extends Tokens.Generic {
@@ -106,7 +146,9 @@ function preprocessWikiLinks(md: string): string {
 }
 
 export function renderMarkdown(md: string): RenderResult {
-  const tokens = marked.lexer(preprocessWikiLinks(md));
+  // normalizeTasks: bare "[ ] foo" lines render as checkboxes too. Both
+  // preprocessors preserve line count, so blockLines stays accurate.
+  const tokens = marked.lexer(preprocessWikiLinks(normalizeTasks(md)));
   const blockLines: number[] = [];
   let line = 1;
   for (const t of tokens) {

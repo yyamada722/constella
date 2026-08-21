@@ -1344,6 +1344,11 @@ export default function CanvasPage() {
   const handleBgMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
     if (!target.dataset.canvasBg) return
+    // Clicking the empty canvas while a card's text / title input is being edited
+    // commits that edit. Every branch below ends in preventDefault(), which
+    // suppresses the browser's default focus transfer — so blur explicitly here.
+    const ae = document.activeElement as HTMLElement | null
+    if (ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable)) ae.blur()
     // Pan with Space held + left drag (middle-button pan is handled globally below,
     // so it also works when starting over a card).
     if (e.button === 0 && spaceRef.current) {

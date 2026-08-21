@@ -15,11 +15,19 @@ export function WikiLinkProvider({ children }: { children: ReactNode }) {
   const { state } = useApp()
   const cardsRef = useRef(state.canvasCards)
   cardsRef.current = state.canvasCards
+  const notesRef = useRef(state.notes)
+  notesRef.current = state.notes
+  const activeRef = useRef(state.activeMasterProjectId)
+  activeRef.current = state.activeMasterProjectId
 
   const resolve = useCallback((title: string) => {
     const t = title.trim().toLowerCase()
     const card = cardsRef.current.find(c => (c.title || '').trim().toLowerCase() === t)
-    if (card) navigate('/canvas', { state: { focusCardId: card.id } })
+    if (card) { navigate('/canvas', { state: { focusCardId: card.id } }); return }
+    // キャンバスカードに無ければノートのタイトルで解決（アクティブプロジェクト優先）
+    const notes = notesRef.current.filter(n => (n.title || '').trim().toLowerCase() === t)
+    const note = notes.find(n => n.masterProjectId === activeRef.current) ?? notes[0]
+    if (note) navigate('/', { state: { focusNoteId: note.id } })
   }, [navigate])
 
   return <WikiLinkContext.Provider value={resolve}>{children}</WikiLinkContext.Provider>
