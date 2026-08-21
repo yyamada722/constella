@@ -8,6 +8,20 @@ export interface MasterProject {
   folder?: string // optional group name — the switcher renders projects sharing a folder under one collapsible header (plain string, no folder entity)
 }
 
+// 付随資料 — a file (PDF / image / video / audio / anything) attached to a Note.
+// Bytes live in the IndexedDB media store; `url` is the stable `idb:<id>` ref.
+// `group` is a free-text bucket ("先方資料" / "自分の資料" など) for organizing
+// e.g. MTG handouts from the counterpart vs. your own response material.
+export interface NoteAttachment {
+  id: string
+  name: string      // display name (defaults to the original file name)
+  url: string       // idb:<id> media ref
+  mime: string      // MIME type at attach time — drives the preview chooser
+  size: number      // bytes
+  group?: string    // optional bucket; undefined renders under 未分類
+  createdAt: string
+}
+
 export interface Note {
   id: string
   masterProjectId: string // owning master project
@@ -19,6 +33,7 @@ export interface Note {
   folderId?: string // optional grouping — items without folderId render under "未分類"
   pinned?: boolean  // pinned notes sort to the top regardless of other order
   archivedAt?: string // ISO timestamp — when set, hidden from default list (soft delete)
+  attachments?: NoteAttachment[] // 付随資料 (undefined = none)
   // Cross-project note sharing: `shared` marks this note as a referenceable master —
   // common content (URLs, contacts…) maintained in one place. Every other master
   // project listed in `refByMasterIds` shows it as a live instance; edits made from

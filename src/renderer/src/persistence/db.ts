@@ -13,7 +13,7 @@ import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 import { isRemote } from './runtime'
 import type { AppState } from '../store'
 import type {
-  Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
+  Note, NoteAttachment, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
   CanvasTab, CanvasBoard, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, CardPage, Bookmark, Flow, FlowNode, FlowEdge, FlowGroup, Plan, PlanFolder, TimelineBand,
 } from '../types'
 import { generateId } from '../utils'
@@ -23,7 +23,7 @@ const SCHEMA_VERSION = 1
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS master_projects (ord INTEGER, id TEXT PRIMARY KEY, name TEXT, createdAt TEXT, archivedAt TEXT, folder TEXT);
-CREATE TABLE IF NOT EXISTS notes (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, content TEXT, tags TEXT, createdAt TEXT, updatedAt TEXT, folderId TEXT, pinned INTEGER, archivedAt TEXT, shared INTEGER, refByMasterIds TEXT);
+CREATE TABLE IF NOT EXISTS notes (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, content TEXT, tags TEXT, createdAt TEXT, updatedAt TEXT, folderId TEXT, pinned INTEGER, archivedAt TEXT, shared INTEGER, refByMasterIds TEXT, attachments TEXT);
 CREATE TABLE IF NOT EXISTS note_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS tasks (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, title TEXT, description TEXT, status TEXT, tags TEXT, createdAt TEXT, startDate TEXT, endDate TEXT, parentId TEXT, linkedNoteIds TEXT, priority INTEGER, completedAt TEXT, shared INTEGER, sharedAlias TEXT);
@@ -261,6 +261,7 @@ async function getDb(): Promise<Database> {
     try { db.run('ALTER TABLE notes ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE notes ADD COLUMN shared INTEGER') } catch { /* column already present */ }
     try { db.run('ALTER TABLE notes ADD COLUMN refByMasterIds TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE notes ADD COLUMN attachments TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN priority INTEGER') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN completedAt TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
@@ -339,6 +340,7 @@ export async function loadState(): Promise<AppState | null> {
 
   const notes: Note[] = rows(db, 'SELECT * FROM notes ORDER BY ord').map(r => {
     const refBy = parseArr<string>(r.refByMasterIds)
+    const attachments = parseArr<NoteAttachment>(r.attachments)
     return {
       id: str(r.id), masterProjectId: str(r.masterProjectId), title: str(r.title), content: str(r.content),
       tags: parseArr<string>(r.tags), createdAt: str(r.createdAt), updatedAt: str(r.updatedAt),
@@ -347,6 +349,7 @@ export async function loadState(): Promise<AppState | null> {
       archivedAt: optStr(r.archivedAt),
       shared: bool(r.shared) || undefined,
       refByMasterIds: refBy.length > 0 ? refBy : undefined,
+      attachments: attachments.length > 0 ? attachments : undefined,
     }
   })
 
@@ -598,8 +601,8 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO master_projects (ord,id,name,createdAt,archivedAt,folder) VALUES (?,?,?,?,?,?)',
       state.masterProjects.map((p, i) => [i, p.id, p.name, p.createdAt, p.archivedAt ?? null, p.folder ?? null].map(B)))
 
-    insert('INSERT INTO notes (ord,id,masterProjectId,title,content,tags,createdAt,updatedAt,folderId,pinned,archivedAt,shared,refByMasterIds) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      state.notes.map((n, i) => [i, n.id, n.masterProjectId, n.title, n.content, JSON.stringify(n.tags ?? []), n.createdAt, n.updatedAt, n.folderId ?? null, n.pinned ? 1 : 0, n.archivedAt ?? null, n.shared ? 1 : 0, JSON.stringify(n.refByMasterIds ?? [])].map(B)))
+    insert('INSERT INTO notes (ord,id,masterProjectId,title,content,tags,createdAt,updatedAt,folderId,pinned,archivedAt,shared,refByMasterIds,attachments) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      state.notes.map((n, i) => [i, n.id, n.masterProjectId, n.title, n.content, JSON.stringify(n.tags ?? []), n.createdAt, n.updatedAt, n.folderId ?? null, n.pinned ? 1 : 0, n.archivedAt ?? null, n.shared ? 1 : 0, JSON.stringify(n.refByMasterIds ?? []), n.attachments && n.attachments.length ? JSON.stringify(n.attachments) : null].map(B)))
 
     insert('INSERT INTO note_folders (ord,id,masterProjectId,name,createdAt,parentId,color) VALUES (?,?,?,?,?,?,?)',
       state.noteFolders.map((f, i) => [i, f.id, f.masterProjectId, f.name, f.createdAt, f.parentId ?? null, f.color ?? null].map(B)))

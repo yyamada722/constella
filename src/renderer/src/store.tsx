@@ -687,7 +687,10 @@ function collectMediaRefs(s: AppState): string[] {
     scan(c.content)
     c.pages?.forEach(p => scan(p.content))
   }
-  s.notes.forEach(n => scan(n.content))
+  s.notes.forEach(n => {
+    scan(n.content)
+    n.attachments?.forEach(a => { if (a.url) refs.push(a.url) }) // ノート付随資料
+  })
   s.projects.forEach(p => p.tasks.forEach(t => scan(t.description)))
   s.research.forEach(r => scan(r.description))
   s.plans.forEach(p => scan(p.content)) // e-ticket attachments referenced as [x](idb:…)

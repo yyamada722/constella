@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote } from 'lucide-react'
+import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote, Paperclip } from 'lucide-react'
 import { useApp } from '../store'
 import { Note, NoteFolder, CanvasCard } from '../types'
+import { NoteAttachments } from '../components/NoteAttachments'
 import { generateId } from '../utils'
 import { TypolMarkdown as MarkdownText } from '../components/typol/TypolMarkdown'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
@@ -41,6 +42,12 @@ export default function NotesPage() {
     '--tp-preview-size': `${Math.round(15 * fontScale)}px`,
   }) as React.CSSProperties, [fontScale])
 
+  // 付随資料パネルの開閉（グローバルに記憶 — ノート切替では閉じない）
+  const [attachOpen, setAttachOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('constella.notes.attachPanel') === '1' } catch { return false }
+  })
+  useEffect(() => { try { localStorage.setItem('constella.notes.attachPanel', attachOpen ? '1' : '0') } catch { /* ignore */ } }, [attachOpen])
+
   // PDF書き出し / スライドショー（--- 区切り）
   const [exportingPdf, setExportingPdf] = useState(false)
   const [slideshowOpen, setSlideshowOpen] = useState(false)
@@ -70,7 +77,7 @@ export default function NotesPage() {
     const q = search.trim().toLowerCase()
     return allNotes
       .filter(n => showArchived ? !!n.archivedAt : !n.archivedAt)
-      .filter(n => !q || (n.title || '').toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q) || (n.tags || []).some(t => t.toLowerCase().includes(q)))
+      .filter(n => !q || (n.title || '').toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q) || (n.tags || []).some(t => t.toLowerCase().includes(q)) || (n.attachments || []).some(a => (a.name || '').toLowerCase().includes(q)))
       .sort((a, b) => {
         // Pinned float to the top regardless of other sort.
         const pa = a.pinned ? 1 : 0, pb = b.pinned ? 1 : 0
@@ -803,6 +810,19 @@ export default function NotesPage() {
                   className="p-1 text-slate-500 hover:bg-slate-100"
                 ><Plus size={13} /></button>
               </div>
+              {/* 付随資料パネルの開閉 — 添付があるときは件数バッジを出す */}
+              <button
+                onClick={() => setAttachOpen(v => !v)}
+                title="付随資料（PDF・画像・動画などをこのノートに添付）"
+                className={`relative ml-1 p-1.5 rounded-md hover:bg-slate-100 transition-colors ${attachOpen ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}
+              >
+                <Paperclip size={16} />
+                {(selectedNote.attachments?.length ?? 0) > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-emerald-500 text-white text-[9px] leading-[14px] text-center font-semibold">
+                    {selectedNote.attachments!.length}
+                  </span>
+                )}
+              </button>
               {isReference ? (
                 <>
                   <button
@@ -936,6 +956,13 @@ export default function NotesPage() {
                 />
               </div>
             </div>
+            {/* 付随資料 — 先方資料/自分の資料などのファイルをこのノートに添付して管理 */}
+            {attachOpen && (
+              <NoteAttachments
+                attachments={selectedNote.attachments ?? []}
+                onChange={next => updateNote({ attachments: next.length > 0 ? next : undefined })}
+              />
+            )}
             {/* Reverse links: tasks that point to this note. Click jumps into the Projects page with
                 the task pre-selected (the NotePanel there will re-surface this very note). */}
             {linkedTasks.length > 0 && (
@@ -1125,6 +1152,11 @@ function NoteRow({ note, active, onSelect, onDragStart, onDragEnd, badge }: {
         {note.pinned && <Star size={10} className="text-amber-500 shrink-0" fill="currentColor" />}
         {badge && <Share2 size={10} className="text-indigo-400 shrink-0" />}
         <span className="truncate">{note.title || '(無題)'}</span>
+        {(note.attachments?.length ?? 0) > 0 && (
+          <span className="inline-flex items-center gap-0.5 shrink-0 text-[9px] text-emerald-600" title={`付随資料 ${note.attachments!.length}件`}>
+            <Paperclip size={9} />{note.attachments!.length}
+          </span>
+        )}
         {badge && <span className="ml-auto shrink-0 text-[9px] text-indigo-400 max-w-[80px] truncate" title={`元: ${badge}`}>{badge}</span>}
       </p>
       <p className="text-xs text-slate-500 mt-1 line-clamp-2">{note.content || '空のノート'}</p>
