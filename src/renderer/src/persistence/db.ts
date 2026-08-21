@@ -13,7 +13,7 @@ import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 import { isRemote } from './runtime'
 import type { AppState } from '../store'
 import type {
-  Note, NoteAttachment, NoteFolder, FileItem, FileFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
+  Note, NoteAttachment, NoteFolder, FileItem, FileVersion, FileFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
   CanvasTab, CanvasBoard, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, CardPage, Bookmark, Flow, FlowNode, FlowEdge, FlowGroup, Plan, PlanFolder, TimelineBand,
 } from '../types'
 import { generateId } from '../utils'
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS master_projects (ord INTEGER, id TEXT PRIMARY KEY, name TEXT, createdAt TEXT, archivedAt TEXT, folder TEXT);
 CREATE TABLE IF NOT EXISTS notes (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, content TEXT, tags TEXT, createdAt TEXT, updatedAt TEXT, folderId TEXT, pinned INTEGER, archivedAt TEXT, shared INTEGER, refByMasterIds TEXT, attachments TEXT);
 CREATE TABLE IF NOT EXISTS note_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
-CREATE TABLE IF NOT EXISTS files (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, linkedMasterIds TEXT, name TEXT, url TEXT, mime TEXT, size REAL, tags TEXT, folderId TEXT, comment TEXT, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS files (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, linkedMasterIds TEXT, name TEXT, url TEXT, mime TEXT, size REAL, tags TEXT, folderId TEXT, comment TEXT, versions TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS file_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS tasks (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, title TEXT, description TEXT, status TEXT, tags TEXT, createdAt TEXT, startDate TEXT, endDate TEXT, parentId TEXT, linkedNoteIds TEXT, priority INTEGER, completedAt TEXT, shared INTEGER, sharedAlias TEXT, fileIds TEXT);
@@ -266,6 +266,8 @@ async function getDb(): Promise<Database> {
     try { db.run('ALTER TABLE notes ADD COLUMN attachments TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE files ADD COLUMN comment TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN fileIds TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE files ADD COLUMN versions TEXT') } catch { /* column already present */ }
+    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refFileId TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN priority INTEGER') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN completedAt TEXT') } catch { /* column already present */ }
     try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
@@ -365,12 +367,14 @@ export async function loadState(): Promise<AppState | null> {
 
   const files: FileItem[] = rows(db, 'SELECT * FROM files ORDER BY ord').map(r => {
     const linked = parseArr<string>(r.linkedMasterIds)
+    const versions = parseArr<FileVersion>(r.versions)
     return {
       id: str(r.id), masterProjectId: str(r.masterProjectId),
       linkedMasterIds: linked.length > 0 ? linked : undefined,
       name: str(r.name), url: str(r.url), mime: str(r.mime), size: num(r.size),
       tags: parseArr<string>(r.tags), folderId: optStr(r.folderId),
       comment: optStr(r.comment),
+      versions: versions.length > 0 ? versions : undefined,
       createdAt: str(r.createdAt),
     }
   })
@@ -497,6 +501,7 @@ export async function loadState(): Promise<AppState | null> {
     refSketchId: optStr(r.refSketchId),
     refTabId: optStr(r.refTabId),
     refPlanId: optStr(r.refPlanId),
+    refFileId: optStr(r.refFileId),
     draftWhen: optStr(r.draftWhen) as CanvasCard['draftWhen'],
     shape: optStr(r.shape) as CanvasCard['shape'],
     x: num(r.x), y: num(r.y), width: num(r.width), height: num(r.height), createdAt: str(r.createdAt),
@@ -633,8 +638,8 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO note_folders (ord,id,masterProjectId,name,createdAt,parentId,color) VALUES (?,?,?,?,?,?,?)',
       state.noteFolders.map((f, i) => [i, f.id, f.masterProjectId, f.name, f.createdAt, f.parentId ?? null, f.color ?? null].map(B)))
 
-    insert('INSERT INTO files (ord,id,masterProjectId,linkedMasterIds,name,url,mime,size,tags,folderId,comment,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-      state.files.map((f, i) => [i, f.id, f.masterProjectId, JSON.stringify(f.linkedMasterIds ?? []), f.name, f.url, f.mime, f.size, JSON.stringify(f.tags ?? []), f.folderId ?? null, f.comment ?? null, f.createdAt].map(B)))
+    insert('INSERT INTO files (ord,id,masterProjectId,linkedMasterIds,name,url,mime,size,tags,folderId,comment,versions,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      state.files.map((f, i) => [i, f.id, f.masterProjectId, JSON.stringify(f.linkedMasterIds ?? []), f.name, f.url, f.mime, f.size, JSON.stringify(f.tags ?? []), f.folderId ?? null, f.comment ?? null, f.versions && f.versions.length ? JSON.stringify(f.versions) : null, f.createdAt].map(B)))
 
     insert('INSERT INTO file_folders (ord,id,masterProjectId,name,createdAt,parentId,color) VALUES (?,?,?,?,?,?,?)',
       state.fileFolders.map((f, i) => [i, f.id, f.masterProjectId, f.name, f.createdAt, f.parentId ?? null, f.color ?? null].map(B)))
@@ -681,7 +686,7 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO canvas_tabs (ord,id,projectId,boardId,name,createdAt) VALUES (?,?,?,?,?,?)',
       state.canvasTabs.map((t, i) => [i, t.id, t.projectId, t.boardId ?? null, t.name, t.createdAt].map(B)))
 
-    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,refSketchId,refTabId,refPlanId,draftWhen,shape,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,refSketchId,refTabId,refPlanId,refFileId,draftWhen,shape,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.canvasCards.map((c, i) => [i, c.id, c.tabId, c.type, c.title, c.content,
         c.url ?? null, c.color ?? null, c.locked ? 1 : 0, c.pages ? JSON.stringify(c.pages) : null,
         c.crop ? JSON.stringify(c.crop) : null,
@@ -689,7 +694,7 @@ async function doSaveState(state: AppState): Promise<void> {
         c.pdf ? JSON.stringify(c.pdf) : null,
         c.frames && c.frames.length ? JSON.stringify(c.frames) : null,
         c.stationId ?? null,
-        c.refNoteId ?? null, c.refTaskId ?? null, c.refSketchId ?? null, c.refTabId ?? null, c.refPlanId ?? null,
+        c.refNoteId ?? null, c.refTaskId ?? null, c.refSketchId ?? null, c.refTabId ?? null, c.refPlanId ?? null, c.refFileId ?? null,
         c.draftWhen ?? null,
         c.shape ?? null,
         c.x, c.y, c.width, c.height, c.createdAt].map(B)))

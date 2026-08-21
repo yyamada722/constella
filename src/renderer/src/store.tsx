@@ -349,6 +349,9 @@ function reducer(state: AppState, action: Action): AppState {
             }),
           }
         }),
+        // Canvas cards keep their own url copy (still rendered, blob kept alive by
+        // collectMediaRefs) — only the back-reference to the deleted file is cleared.
+        canvasCards: state.canvasCards.map(c => c.refFileId === fid ? { ...c, refFileId: undefined } : c),
       }
     }
     case 'ADD_FILE_FOLDER':
@@ -768,7 +771,10 @@ function collectMediaRefs(s: AppState): string[] {
     c.pages?.forEach(p => scan(p.content))
   }
   s.notes.forEach(n => scan(n.content))
-  s.files.forEach(f => { if (f.url) refs.push(f.url) }) // ファイルライブラリ（ノート添付の実体もここ）
+  s.files.forEach(f => {
+    if (f.url) refs.push(f.url) // ファイルライブラリ（ノート添付の実体もここ）
+    f.versions?.forEach(v => { if (v.url) refs.push(v.url) }) // 差し替え履歴の旧版も生存
+  })
   s.projects.forEach(p => p.tasks.forEach(t => scan(t.description)))
   s.research.forEach(r => scan(r.description))
   s.plans.forEach(p => scan(p.content)) // e-ticket attachments referenced as [x](idb:…)

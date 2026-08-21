@@ -1,12 +1,13 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus, Files as FilesGlyph } from 'lucide-react'
 import { useApp, type Action } from '../store'
 import { CanvasCard, CanvasTab, CanvasBoard, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
+import { fileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
 import { MarkdownText } from '../components/MarkdownText'
 import { ImageCropper } from '../components/ImageCropper'
@@ -4547,6 +4548,11 @@ export default function CanvasPage() {
                       <div className="h-px bg-slate-200 my-1" />
                     </>
                   )}
+                  {selCards.length === 1 && selCards[0].refFileId && state.files.some(f => f.id === selCards[0].refFileId) && (
+                    <div>
+                      <button onClick={() => { navigate('/files', { state: { focusFileId: selCards[0].refFileId } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-orange-600 flex items-center gap-2"><FilesGlyph size={14} /> ライブラリで開く</button>
+                    </div>
+                  )}
                   {selCards.length === 1 && selCards[0].refSketchId && state.sketches.some(s => s.id === selCards[0].refSketchId) && (
                     <>
                       <button onClick={() => { navigate('/sketch', { state: { focusSketchId: selCards[0].refSketchId } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-fuchsia-600 flex items-center gap-2"><Brush size={14} /> スケッチで開く</button>
@@ -4959,10 +4965,11 @@ async function linkLocalFileForCard(card: CanvasCard, onUpdate: (u: Partial<Canv
     await alertDialog(`このカードには${LOCAL_KIND_LABEL[want]}ファイルのみリンクできます。\n選択されたファイル: ${localFileName(p)}`)
     return
   }
-  if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
+  // ライブラリ参照カード (refFileId) の url はライブラリ実体と共有 — 消すとライブラリ側も壊れる
+  if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
   const name = localFileName(p)
   const extra = card.type === 'video' || card.type === 'audio' ? { bookmarks: [] as Bookmark[] } : {}
-  onUpdate({ url: toLocalRef(p), title: card.title || name, content: name, ...extra })
+  onUpdate({ url: toLocalRef(p), title: card.title || name, content: name, refFileId: undefined, ...extra })
 }
 
 function pickFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {
@@ -4973,12 +4980,76 @@ function pickFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) =>
     const file = input.files?.[0]
     if (!file) return
     if (card.type === 'image') { applyImageFile(file, card, onUpdate); return }
-    if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
+    // ライブラリ参照カードの url は共有実体なので消さない（自前アップロード分のみ削除）
+    if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
     const url = await putMedia(file)
     // Swapping in a different recording invalidates the old time-anchored bookmarks.
-    onUpdate({ url, title: card.title || file.name, content: file.name, bookmarks: [] })
+    onUpdate({ url, title: card.title || file.name, content: file.name, refFileId: undefined, bookmarks: [] })
   }
   input.click()
+}
+
+// ファイルライブラリから選んでメディアカードに設定するボタン+ピッカー。カードは
+// ライブラリの idb: URL をそのまま使い、refFileId で「ライブラリで開く」へ辿れる
+// （実体は共有 — ライブラリ側で削除されてもカードの参照が blob を生かし続ける）。
+function LibraryPickButtonForCard({ card, onUpdate }: { card: CanvasCard; onUpdate: (u: Partial<CanvasCard>) => void }) {
+  const { state } = useApp()
+  const active = state.activeMasterProjectId
+  const want = CARD_LOCAL_KIND[card.type]
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const files = useMemo(() => {
+    const qq = q.trim().toLowerCase()
+    return state.files
+      .filter(f => f.masterProjectId === active || (f.linkedMasterIds ?? []).includes(active))
+      .filter(f => !want || fileKind(f.mime, f.name) === want)
+      .filter(f => !qq || f.name.toLowerCase().includes(qq) || f.tags.some(t => t.toLowerCase().includes(qq)) || (f.comment || '').toLowerCase().includes(qq))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [state.files, active, want, q])
+  if (!open) {
+    return (
+      <button
+        onClick={e => { e.stopPropagation(); setOpen(true) }}
+        title="ファイルライブラリから選択"
+        className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-orange-600 hover:border-orange-300 transition-colors"
+      >
+        <FilesGlyph size={11} /> ライブラリ
+      </button>
+    )
+  }
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onMouseDown={e => { e.stopPropagation(); setOpen(false) }} />
+      <div className="absolute z-50 left-1/2 -translate-x-1/2 top-8 w-[260px] bg-white border border-slate-200 rounded-lg shadow-xl p-2" onMouseDown={e => e.stopPropagation()}>
+        <input
+          autoFocus
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder={`ライブラリの${want ? LOCAL_KIND_LABEL[want] : 'ファイル'}を検索…`}
+          className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none focus:border-orange-400 mb-1"
+        />
+        <div className="max-h-[200px] overflow-y-auto">
+          {files.length === 0 && <div className="text-[10px] text-slate-400 px-1 py-2 text-center">該当するファイルがありません<br />（「ファイル」ページで登録できます）</div>}
+          {files.map(f => (
+            <button
+              key={f.id}
+              onClick={() => {
+                if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
+                const extra = card.type === 'video' || card.type === 'audio' ? { bookmarks: [] as Bookmark[] } : {}
+                onUpdate({ url: f.url, refFileId: f.id, title: card.title || f.name, content: f.name, ...extra })
+                setOpen(false)
+              }}
+              className="w-full text-left px-1.5 py-1 hover:bg-orange-50 rounded text-xs text-slate-700 flex items-center gap-1.5"
+              title={f.comment || undefined}
+            >
+              <span className="truncate flex-1">{f.name || '(無名)'}</span>
+              {f.masterProjectId !== active && <Share2 size={9} className="shrink-0 text-indigo-400" />}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  )
 }
 
 // Player params that suppress the related-videos / end-screen / annotation clutter
@@ -5549,14 +5620,19 @@ const PdfCardBody = memo(function PdfCardBody({ card, onUpdate, fixedHeight, loc
             <FileDown size={22} className="opacity-50" />
             {locked ? 'PDF未設定' : 'PDFファイルを選択'}
           </button>
-          {!locked && localFileApi() && (
-            <button
-              onClick={() => linkLocalFileForCard(card, onUpdate)}
-              title="サーバー / ローカルのファイルを取り込まずパス参照でリンク"
-              className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
-            >
-              <Link2 size={11} /> サーバー参照
-            </button>
+          {!locked && (
+            <div className="relative flex items-center gap-1.5">
+              {localFileApi() && (
+                <button
+                  onClick={() => linkLocalFileForCard(card, onUpdate)}
+                  title="サーバー / ローカルのファイルを取り込まずパス参照でリンク"
+                  className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+                >
+                  <Link2 size={11} /> サーバー参照
+                </button>
+              )}
+              <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
+            </div>
           )}
         </div>
       )}
@@ -5612,14 +5688,19 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
             <ImageIcon size={26} className="mx-auto mb-1.5 opacity-40" />
             {locked ? '画像未設定' : <>画像を選択<br />ドラッグ&ドロップ / 貼り付け</>}
           </div>
-          {!locked && localFileApi() && (
-            <button
-              onClick={e => { e.stopPropagation(); linkLocalFileForCard(card, onUpdate) }}
-              title="サーバー / ローカルの画像を取り込まずパス参照でリンク"
-              className="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 bg-white/70 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
-            >
-              <Link2 size={11} /> サーバー参照
-            </button>
+          {!locked && (
+            <div className="relative mt-2 inline-flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+              {localFileApi() && (
+                <button
+                  onClick={() => linkLocalFileForCard(card, onUpdate)}
+                  title="サーバー / ローカルの画像を取り込まずパス参照でリンク"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 bg-white/70 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+                >
+                  <Link2 size={11} /> サーバー参照
+                </button>
+              )}
+              <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
+            </div>
           )}
         </div>
       )}
@@ -5743,7 +5824,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-1.5">
+            <div className="relative flex items-center gap-1.5">
               <button
                 onClick={() => pickFileForCard(card, onUpdate)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-600 hover:bg-fuchsia-500/20 transition-colors text-xs"
@@ -5760,6 +5841,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
                   <Link2 size={11} /> サーバー参照
                 </button>
               )}
+              <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
             </div>
             <span className="text-[10px] text-slate-400">または URL を貼り付け</span>
             <input
@@ -6062,7 +6144,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
         {locked ? (
           <div className="flex items-center gap-1.5 text-slate-400 text-xs"><AudioLines size={13} /> 音声未設定</div>
         ) : (
-          <div className="flex items-center gap-1.5">
+          <div className="relative flex items-center gap-1.5">
             <button
               onClick={() => pickFileForCard(card, onUpdate)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-orange-500/10 border border-orange-500/30 text-orange-600 hover:bg-orange-500/20 transition-colors text-xs"
@@ -6078,6 +6160,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
                 <Link2 size={11} /> サーバー参照
               </button>
             )}
+            <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
           </div>
         )}
       </div>

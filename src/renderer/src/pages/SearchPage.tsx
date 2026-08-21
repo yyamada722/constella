@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileText, FolderKanban, Globe, LayoutDashboard, Type, TrainFront } from 'lucide-react'
+import { FileText, FolderKanban, Globe, LayoutDashboard, Type, TrainFront, Files } from 'lucide-react'
 import { useApp } from '../store'
 import { useNavigate } from 'react-router-dom'
 import { SearchInput } from '../components/SearchInput'
+import { formatSize } from '../utils/fileKind'
 
-type ResultType = 'note' | 'task' | 'research' | 'card' | 'label' | 'station'
+type ResultType = 'note' | 'task' | 'research' | 'card' | 'label' | 'station' | 'file'
 
 interface SearchResult {
   id: string
@@ -22,6 +23,7 @@ const typeConfig = {
   card: { icon: LayoutDashboard, color: 'text-indigo-600', label: 'カード' },
   label: { icon: Type, color: 'text-violet-600', label: 'ラベル' },
   station: { icon: TrainFront, color: 'text-rose-600', label: '駅' },
+  file: { icon: Files, color: 'text-orange-600', label: 'ファイル' },
 } as const
 
 // Highlight every substring match (case-insensitive) inside a snippet with <mark>.
@@ -43,7 +45,7 @@ function highlight(text: string, q: string) {
 }
 
 export default function SearchPage() {
-  const { state } = useApp()
+  const { state, dispatch } = useApp()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState<ResultType | 'all'>('all')
@@ -103,6 +105,15 @@ export default function SearchPage() {
       }
     }
 
+    // ファイルライブラリ: 名前・タグ・コメントでヒット。プロジェクトをまたいで検索し、
+    // 開くときに所有プロジェクトへ切り替えてからライトボックスを出す。
+    const masterNameOf = (id: string) => state.masterProjects.find(m => m.id === id)?.name ?? ''
+    for (const f of state.files) {
+      if (f.name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q)) || (f.comment || '').toLowerCase().includes(q)) {
+        items.push({ id: f.id, type: 'file', title: f.name, preview: [f.comment, formatSize(f.size)].filter(Boolean).join(' · ') || 'ファイル', tags: f.tags, meta: masterNameOf(f.masterProjectId) })
+      }
+    }
+
     return items
   }, [query, state])
 
@@ -112,6 +123,16 @@ export default function SearchPage() {
   useEffect(() => { setActiveIdx(0) }, [query, typeFilter])
 
   function open(r: SearchResult) {
+    if (r.type === 'file') {
+      // ファイルページはアクティブプロジェクトの所有+参照だけを表示するので、
+      // 他プロジェクトのファイルは所有プロジェクトへ切り替えてから開く。
+      const f = state.files.find(x => x.id === r.id)
+      if (f && f.masterProjectId !== state.activeMasterProjectId && !(f.linkedMasterIds ?? []).includes(state.activeMasterProjectId)) {
+        dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: f.masterProjectId })
+      }
+      navigate('/files', { state: { focusFileId: r.id } })
+      return
+    }
     if (r.type === 'note') navigate('/', { state: { focusNoteId: r.id } })
     else if (r.type === 'task') navigate(`/projects?taskId=${r.id}`)
     else if (r.type === 'research') navigate('/research')
@@ -156,7 +177,7 @@ export default function SearchPage() {
             value={query}
             onChange={setQuery}
             historyKey="constella.global.search"
-            placeholder="ノート / タスク / リサーチ / カード を検索…"
+            placeholder="ノート / タスク / リサーチ / カード / ファイル を検索…"
             size="md"
             autoFocus
           />
@@ -170,7 +191,7 @@ export default function SearchPage() {
               >
                 すべて ({results.length})
               </button>
-              {(['note', 'task', 'research', 'card', 'label'] as const).map(type => {
+              {(['note', 'task', 'research', 'card', 'label', 'file'] as const).map(type => {
                 const count = results.filter(r => r.type === type).length
                 if (count === 0) return null
                 return (

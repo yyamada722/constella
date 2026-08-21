@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Boxes, Activity, AlertTriangle, CheckCircle2, Circle, CircleDot, GanttChartSquare, Bell, CalendarClock, SlidersHorizontal, Search, ArrowDownWideNarrow, ChevronDown, ChevronRight } from 'lucide-react'
+import { Boxes, Activity, AlertTriangle, CheckCircle2, Circle, CircleDot, GanttChartSquare, Bell, CalendarClock, SlidersHorizontal, Search, ArrowDownWideNarrow, ChevronDown, ChevronRight, Files } from 'lucide-react'
+import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT } from '../utils/fileKind'
 import { useApp, Action } from '../store'
 import { Task, Project } from '../types'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
@@ -267,6 +268,21 @@ export default function DashboardPage() {
 
   const grandTotal = useMemo(() => byMaster.reduce((n, m) => n + m.tasks.length, 0), [byMaster])
 
+  // 最近の資料 — 表示中プロジェクト（絞り込み反映）のファイルを追加日降順で。
+  const recentFiles = useMemo(() => {
+    const ids = new Set(summaryMasters.map(m => m.master.id))
+    return state.files
+      .filter(f => ids.has(f.masterProjectId))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 8)
+  }, [state.files, summaryMasters])
+  function jumpToFile(masterId: string, fileId: string) {
+    if (state.activeMasterProjectId !== masterId) {
+      dispatch({ type: 'SET_ACTIVE_MASTER_PROJECT', payload: masterId })
+    }
+    navigate('/files', { state: { focusFileId: fileId } })
+  }
+
   return (
     // h-full (not flex-1): the <main> route outlet is a plain block, so the page
     // must claim its full height itself for inner overflow-y-auto scrolling to work.
@@ -530,6 +546,35 @@ export default function DashboardPage() {
             </div>
           )
         })}
+        {/* 最近の資料 — ファイルライブラリへの入り口 */}
+        {recentFiles.length > 0 && (
+          <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+              <Files size={16} className="text-orange-500" />
+              <span className="font-medium text-slate-800">最近の資料</span>
+            </div>
+            <div className="divide-y divide-slate-50">
+              {recentFiles.map(f => {
+                const kind = fileKind(f.mime, f.name)
+                const Icon = FILE_KIND_ICON[kind]
+                const mName = state.masterProjects.find(m => m.id === f.masterProjectId)?.name ?? ''
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => jumpToFile(f.masterProjectId, f.id)}
+                    title={`${f.name}${f.comment ? `\n${f.comment}` : ''}`}
+                    className="w-full flex items-center gap-2 px-4 py-1.5 text-left hover:bg-slate-50 transition-colors"
+                  >
+                    <Icon size={13} className={`shrink-0 ${FILE_KIND_TINT[kind]}`} />
+                    <span className="text-xs text-slate-700 truncate flex-1">{f.name || '(無名)'}</span>
+                    <span className="text-[9px] text-slate-400 shrink-0 max-w-[90px] truncate">{mName}</span>
+                    <span className="text-[9px] text-slate-400 tabular-nums shrink-0">{new Date(f.createdAt).toLocaleDateString()}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
       )}
     </div>

@@ -8,11 +8,13 @@ import {
   Plus, Trash2, Folder, FolderPlus, ChevronDown, ChevronRight, Search, X,
   LayoutGrid, List as ListIcon, Download, ChevronLeft, Loader2,
   FileText, Share2, Boxes, Tag, HardDrive, Paperclip, Files as FilesGlyph, MessageSquare, FolderKanban,
+  Link2, FolderOpen, ExternalLink, History, LayoutDashboard, CircleSlash, CheckSquare, Square,
 } from 'lucide-react'
 import { useApp, type Action } from '../store'
-import { FileItem, FileFolder, Note, Task, Project } from '../types'
+import { FileItem, FileVersion, FileFolder, Note, Task, Project, CanvasCard } from '../types'
 import { generateId } from '../utils'
-import { putMedia, useMediaState } from '../persistence/media'
+import { putMedia, useMediaState, getMediaBlob } from '../persistence/media'
+import { isLocalRef, localRefPath, localFileName, toLocalRef, localFileApi } from '../utils/localFile'
 import { isImageFile, normalizeImageBlob } from '../utils/image'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, FILE_KIND_LABEL, formatSize, type FileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
@@ -23,11 +25,18 @@ import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
 import { confirmDialog, alertDialog } from '../components/ConfirmDialog'
 
-type RailSel = 'all' | 'unfiled' | 'linked' | { folderId: string }
-// このファイルを参照している場所（ノート添付 + タスクの資料リンク）
-type FileUsage = { notes: Note[]; tasks: { task: Task; board: Project }[] }
-const EMPTY_USAGE: FileUsage = { notes: [], tasks: [] }
-const usageCount = (u: FileUsage) => u.notes.length + u.tasks.length
+type RailSel = 'all' | 'unfiled' | 'unused' | 'linked' | { folderId: string }
+// このファイルを参照している場所（ノート添付 + タスクの資料リンク + キャンバスカード）
+type FileUsage = { notes: Note[]; tasks: { task: Task; board: Project }[]; cards: CanvasCard[] }
+const EMPTY_USAGE: FileUsage = { notes: [], tasks: [], cards: [] }
+// cards は後付けフィールド — HMR中に旧shapeのオブジェクトが流れても落ちないよう防御
+const usageCount = (u: FileUsage) => (u.notes?.length ?? 0) + (u.tasks?.length ?? 0) + (u.cards?.length ?? 0)
+
+// OSアプリで開く IPC（Electronのみ）— idb: の実体を一時ファイル化して開く。
+function openFileApi(): ((bytes: Uint8Array, name: string, type: string) => Promise<void>) | null {
+  const api = (window as unknown as { api?: { openFile?: (b: Uint8Array, n: string, t: string) => Promise<void> } }).api
+  return api?.openFile ?? null
+}
 type SortMode = 'date' | 'name' | 'size'
 type ViewMode = 'grid' | 'list'
 const TYPE_FILTERS: ('all' | FileKind)[] = ['all', 'image', 'video', 'pdf', 'audio', 'other']
@@ -58,7 +67,7 @@ function FileThumb({ file, className }: { file: FileItem; className?: string }) 
 
 /* ── ライトボックス（大プレビュー + メタ編集） ── */
 
-function FileLightbox({ file, list, masterName, isReference, usage, masters, folders, onNav, onUpdate, onDelete, onClose, onJumpNote, onJumpTask }: {
+function FileLightbox({ file, list, masterName, isReference, usage, masters, folders, attachableNotes, linkableTasks, onNav, onUpdate, onDelete, onClose, onJumpNote, onJumpTask, onJumpCard, onAttachNote, onLinkTask }: {
   file: FileItem
   list: FileItem[] // 前後ナビの並び（現在のフィルタ結果）
   masterName: (id: string) => string
@@ -66,15 +75,58 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   usage: FileUsage
   masters: { id: string; name: string }[] // 紐づけ候補（所有以外のアクティブなプロジェクト）
   folders: FileFolder[] // 所有プロジェクトのフォルダ（参照表示中は空）
+  attachableNotes: Note[] // このファイルを未添付の（アクティブプロジェクトの）ノート
+  linkableTasks: { task: Task; board: Project }[] // 未リンクのタスク
   onNav: (next: FileItem) => void
   onUpdate: (next: FileItem) => void
   onDelete: () => void
   onClose: () => void
   onJumpNote: (note: Note) => void
   onJumpTask: (task: Task) => void
+  onJumpCard: (card: CanvasCard) => void
+  onAttachNote: (note: Note) => void
+  onLinkTask: (board: Project, task: Task) => void
 }) {
   const kind = fileKind(file.mime, file.name)
   const { url: src, status } = useMediaState(file.url)
+  const local = isLocalRef(file.url)
+  const localApi = localFileApi()
+  const openApi = openFileApi()
+  const [replacing, setReplacing] = useState(false)
+  const replaceInputRef = useRef<HTMLInputElement>(null)
+  const [noteQ, setNoteQ] = useState('')
+  const [taskQ, setTaskQ] = useState('')
+
+  // 差し替え: 新しい実体をメディアストアへ、旧版は versions 履歴の先頭へ。
+  async function replaceWith(f: File) {
+    setReplacing(true)
+    try {
+      const blob = isImageFile(f) ? await normalizeImageBlob(f) : f
+      const url = await putMedia(blob)
+      const old: FileVersion = { url: file.url, mime: file.mime, size: file.size, createdAt: file.createdAt, replacedAt: new Date().toISOString() }
+      onUpdate({ ...file, url, mime: blob.type || f.type || '', size: blob.size, versions: [old, ...(file.versions ?? [])] })
+    } catch (e) {
+      await alertDialog(`差し替えに失敗しました: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setReplacing(false)
+    }
+  }
+  // 旧版を現行に戻す（現行はそのまま履歴の先頭に退避 — 何も失われない）。
+  function restoreVersion(v: FileVersion) {
+    const cur: FileVersion = { url: file.url, mime: file.mime, size: file.size, createdAt: file.createdAt, replacedAt: new Date().toISOString() }
+    onUpdate({
+      ...file, url: v.url, mime: v.mime, size: v.size,
+      versions: [cur, ...(file.versions ?? []).filter(x => x.url !== v.url)],
+    })
+  }
+  // OSの既定アプリで開く（idb:は一時ファイル化、local:は原本をそのまま）。
+  async function openInOs() {
+    if (local) { localApi?.open(localRefPath(file.url)).catch(() => { /* ignore */ }); return }
+    if (!openApi) return
+    const blob = await getMediaBlob(file.url)
+    if (!blob) { await alertDialog('ファイルの実体を読み込めませんでした'); return }
+    await openApi(new Uint8Array(await blob.arrayBuffer()), file.name || 'file', kind)
+  }
   const idx = list.findIndex(f => f.id === file.id)
   const prev = idx > 0 ? list[idx - 1] : null
   const next = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null
@@ -124,6 +176,12 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
         <div className="h-12 shrink-0 flex items-center gap-2 px-4 text-white/90">
           <span className="text-sm font-medium truncate flex-1" title={file.name}>{file.name || '(無名)'}</span>
           <span className="text-[11px] text-white/50 tabular-nums shrink-0">{idx >= 0 ? `${idx + 1} / ${list.length}` : ''}</span>
+          {(local ? !!localApi : !!openApi) && (
+            <button onClick={openInOs} title={local ? 'OSのアプリで開く（サーバー上の原本）' : 'OSのアプリで開く'} className="p-1.5 rounded hover:bg-white/10 text-white/70 hover:text-white"><ExternalLink size={16} /></button>
+          )}
+          {local && localApi && (
+            <button onClick={() => localApi.reveal(localRefPath(file.url)).catch(() => { /* ignore */ })} title="フォルダで表示" className="p-1.5 rounded hover:bg-white/10 text-white/70 hover:text-white"><FolderOpen size={16} /></button>
+          )}
           {src && (
             <a href={src} download={file.name || 'file'} title="ダウンロード" className="p-1.5 rounded hover:bg-white/10 text-white/70 hover:text-white"><Download size={16} /></a>
           )}
@@ -158,6 +216,12 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
             <span className="inline-flex items-center gap-1"><HardDrive size={11} /> {formatSize(file.size) || '—'}</span>
             <span>{FILE_KIND_LABEL[kind]}{file.mime ? ` · ${file.mime}` : ''}</span>
           </div>
+          {local && (
+            <div className="text-[10px] text-cyan-700 bg-cyan-50 border border-cyan-200 rounded px-2 py-1 flex items-start gap-1.5">
+              <Link2 size={11} className="shrink-0 mt-0.5" />
+              <span className="break-all">サーバー参照: {localRefPath(file.url)}</span>
+            </div>
+          )}
           <div className="text-[11px] text-slate-400">登録: {new Date(file.createdAt).toLocaleDateString()} · <span className="inline-flex items-center gap-1"><Boxes size={10} className="text-indigo-400" />{masterName(file.masterProjectId)}</span>{isReference && <span className="ml-1 text-indigo-500">（参照）</span>}</div>
 
           {/* コメント（自由記入メモ — 検索対象） */}
@@ -230,14 +294,51 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
             )}
           </div>
 
-          {/* 使用先（このファイルを参照しているノート添付 + タスク） */}
+          {/* 差し替え（バージョン）— local:参照は原本がサーバー側なので対象外 */}
+          {!local && (
+            <div>
+              <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-1"><History size={10} /> 版</label>
+              <input
+                ref={replaceInputRef}
+                type="file"
+                className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) replaceWith(f); e.target.value = '' }}
+              />
+              <button
+                onClick={() => replaceInputRef.current?.click()}
+                disabled={replacing}
+                className="mt-1 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md border border-slate-200 text-slate-600 hover:border-indigo-300 hover:text-indigo-600 text-xs transition-colors disabled:opacity-50"
+                title="新しい版をアップロード（参照リンクはそのまま、旧版は履歴に残ります）"
+              >
+                {replacing ? <Loader2 size={12} className="animate-spin" /> : <History size={12} />} 新しい版に差し替え
+              </button>
+              {(file.versions?.length ?? 0) > 0 && (
+                <div className="mt-1 space-y-0.5">
+                  {file.versions!.map((v, i) => (
+                    <div key={`${v.url}-${i}`} className="flex items-center gap-1.5 px-1.5 py-1 rounded bg-slate-50 border border-slate-100 text-[10px] text-slate-500">
+                      <span className="shrink-0">v-{file.versions!.length - i}</span>
+                      <span className="flex-1 truncate">{new Date(v.replacedAt).toLocaleString()} まで</span>
+                      <span className="shrink-0 tabular-nums">{formatSize(v.size)}</span>
+                      <button
+                        onClick={() => restoreVersion(v)}
+                        className="shrink-0 px-1.5 py-0.5 rounded border border-slate-200 hover:border-indigo-300 hover:text-indigo-600"
+                        title="この版を現行に戻す（現行版は履歴に退避）"
+                      >復元</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 使用先（このファイルを参照しているノート添付 + タスク + キャンバスカード） */}
           <div>
             <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide flex items-center gap-1"><Paperclip size={10} /> 使用先 {usageCount(usage)}件</label>
             {usageCount(usage) === 0 ? (
               <p className="mt-1 text-[11px] text-slate-400">まだどのノート・タスクにも参照されていません</p>
             ) : (
               <div className="mt-1 space-y-0.5">
-                {usage.notes.map(note => (
+                {(usage.notes ?? []).map(note => (
                   <button
                     key={note.id}
                     onClick={() => onJumpNote(note)}
@@ -248,7 +349,7 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
                     <span className="truncate">{note.title || '(無題)'}</span>
                   </button>
                 ))}
-                {usage.tasks.map(({ task, board }) => (
+                {(usage.tasks ?? []).map(({ task, board }) => (
                   <button
                     key={`${board.id}/${task.id}`}
                     onClick={() => onJumpTask(task)}
@@ -260,8 +361,75 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
                     <span className="text-[9px] opacity-60 truncate shrink-0 max-w-[80px]">{board.name}</span>
                   </button>
                 ))}
+                {(usage.cards ?? []).map(card => (
+                  <button
+                    key={card.id}
+                    onClick={() => onJumpCard(card)}
+                    title={`キャンバスのカード「${card.title || '(無題)'}」へジャンプ`}
+                    className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 hover:brightness-95 text-left"
+                  >
+                    <LayoutDashboard size={11} className="shrink-0" />
+                    <span className="truncate">{card.title || '(無題)'}</span>
+                  </button>
+                ))}
               </div>
             )}
+            {/* このファイルをノート/タスクへ直接リンク */}
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <details className="relative flex-1">
+                <summary className="list-none cursor-pointer flex items-center justify-center gap-1 px-2 py-1 rounded-md border border-dashed border-amber-300 text-amber-600 hover:bg-amber-50 text-[10px]">
+                  <Plus size={10} /> ノートに添付
+                </summary>
+                <div className="absolute left-0 bottom-7 z-30 w-[240px] bg-white border border-slate-200 rounded-lg shadow-xl p-1.5" onClick={e => e.stopPropagation()}>
+                  <input
+                    value={noteQ}
+                    onChange={e => setNoteQ(e.target.value)}
+                    placeholder="ノートを検索…"
+                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none focus:border-amber-400 mb-1"
+                  />
+                  <div className="max-h-[180px] overflow-y-auto">
+                    {(attachableNotes ?? []).filter(n => !noteQ.trim() || (n.title || '').toLowerCase().includes(noteQ.trim().toLowerCase())).map(n => (
+                      <button
+                        key={n.id}
+                        onClick={e => { onAttachNote(n); (e.currentTarget.closest('details') as HTMLDetailsElement)?.removeAttribute('open') }}
+                        className="w-full text-left px-1.5 py-1 hover:bg-amber-50 rounded text-xs text-slate-700 flex items-center gap-1.5"
+                      >
+                        <FileText size={11} className="text-amber-500 shrink-0" />
+                        <span className="truncate">{n.title || '(無題)'}</span>
+                      </button>
+                    ))}
+                    {attachableNotes.length === 0 && <div className="text-[10px] text-slate-400 px-1 py-2 text-center">添付できるノートがありません</div>}
+                  </div>
+                </div>
+              </details>
+              <details className="relative flex-1">
+                <summary className="list-none cursor-pointer flex items-center justify-center gap-1 px-2 py-1 rounded-md border border-dashed border-emerald-300 text-emerald-600 hover:bg-emerald-50 text-[10px]">
+                  <Plus size={10} /> タスクにリンク
+                </summary>
+                <div className="absolute right-0 bottom-7 z-30 w-[240px] bg-white border border-slate-200 rounded-lg shadow-xl p-1.5" onClick={e => e.stopPropagation()}>
+                  <input
+                    value={taskQ}
+                    onChange={e => setTaskQ(e.target.value)}
+                    placeholder="タスクを検索…"
+                    className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none focus:border-emerald-400 mb-1"
+                  />
+                  <div className="max-h-[180px] overflow-y-auto">
+                    {(linkableTasks ?? []).filter(x => !taskQ.trim() || (x.task.title || '').toLowerCase().includes(taskQ.trim().toLowerCase())).map(({ task, board }) => (
+                      <button
+                        key={`${board.id}/${task.id}`}
+                        onClick={e => { onLinkTask(board, task); (e.currentTarget.closest('details') as HTMLDetailsElement)?.removeAttribute('open') }}
+                        className="w-full text-left px-1.5 py-1 hover:bg-emerald-50 rounded text-xs text-slate-700 flex items-center gap-1.5"
+                      >
+                        <FolderKanban size={11} className="text-emerald-500 shrink-0" />
+                        <span className="truncate flex-1">{task.title || '(無題)'}</span>
+                        <span className="text-[9px] text-slate-400 shrink-0 max-w-[70px] truncate">{board.name}</span>
+                      </button>
+                    ))}
+                    {linkableTasks.length === 0 && <div className="text-[10px] text-slate-400 px-1 py-2 text-center">リンクできるタスクがありません</div>}
+                  </div>
+                </div>
+              </details>
+            </div>
           </div>
 
           <button
@@ -336,35 +504,12 @@ export default function FilesPage() {
   }, [ownFiles, folderIds])
   const unfiledCount = useMemo(() => ownFiles.filter(f => !f.folderId || !folderIds.has(f.folderId)).length, [ownFiles, folderIds])
 
-  // フォルダ選択時はサブフォルダの中身も含める（Drive的な「配下すべて」ではなく直下のみが
-  // 迷いにくいが、探す用途ではサブ込みが便利 — ここは直下のみ + ツリーで下る方式にする）
-  const baseFiles = useMemo(() => {
-    if (sel === 'all') return ownFiles
-    if (sel === 'unfiled') return ownFiles.filter(f => !f.folderId || !folderIds.has(f.folderId))
-    if (sel === 'linked') return refFiles
-    return ownFiles.filter(f => f.folderId === sel.folderId)
-  }, [sel, ownFiles, refFiles, folderIds])
-
-  const visibleFiles = useMemo(() => {
-    const q = search.trim().toLowerCase()
-    return baseFiles
-      .filter(f => typeFilter === 'all' || fileKind(f.mime, f.name) === typeFilter)
-      .filter(f => !q || f.name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q)) || (f.comment || '').toLowerCase().includes(q))
-      .sort((a, b) => {
-        if (sortMode === 'name') return (a.name || '').localeCompare(b.name || '')
-        if (sortMode === 'size') return b.size - a.size
-        return b.createdAt.localeCompare(a.createdAt)
-      })
-  }, [baseFiles, search, typeFilter, sortMode])
-
-  const totalSize = useMemo(() => ownFiles.reduce((s, f) => s + (f.size || 0), 0), [ownFiles])
-
-  // 使用先: fileId → このファイルを参照しているノート添付 + タスク
+  // 使用先: fileId → このファイルを参照しているノート添付 + タスク + キャンバスカード
   const usageByFile = useMemo(() => {
     const m = new Map<string, FileUsage>()
     const get = (id: string) => {
       let u = m.get(id)
-      if (!u) { u = { notes: [], tasks: [] }; m.set(id, u) }
+      if (!u) { u = { notes: [], tasks: [], cards: [] }; m.set(id, u) }
       return u
     }
     for (const n of state.notes) {
@@ -379,8 +524,148 @@ export default function FilesPage() {
         for (const fid of t.fileIds ?? []) get(fid).tasks.push({ task: t, board: p })
       }
     }
+    for (const c of state.canvasCards) {
+      if (c.refFileId) get(c.refFileId).cards.push(c)
+    }
     return m
-  }, [state.notes, state.projects])
+  }, [state.notes, state.projects, state.canvasCards])
+
+  // フォルダ選択時はサブフォルダの中身も含める（Drive的な「配下すべて」ではなく直下のみが
+  // 迷いにくいが、探す用途ではサブ込みが便利 — ここは直下のみ + ツリーで下る方式にする）
+  const baseFiles = useMemo(() => {
+    if (sel === 'all') return ownFiles
+    if (sel === 'unfiled') return ownFiles.filter(f => !f.folderId || !folderIds.has(f.folderId))
+    if (sel === 'unused') return ownFiles.filter(f => usageCount(usageByFile.get(f.id) ?? EMPTY_USAGE) === 0)
+    if (sel === 'linked') return refFiles
+    return ownFiles.filter(f => f.folderId === sel.folderId)
+  }, [sel, ownFiles, refFiles, folderIds, usageByFile])
+
+  const visibleFiles = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    return baseFiles
+      .filter(f => typeFilter === 'all' || fileKind(f.mime, f.name) === typeFilter)
+      .filter(f => !q || f.name.toLowerCase().includes(q) || f.tags.some(t => t.toLowerCase().includes(q)) || (f.comment || '').toLowerCase().includes(q))
+      .sort((a, b) => {
+        if (sortMode === 'name') return (a.name || '').localeCompare(b.name || '')
+        if (sortMode === 'size') return b.size - a.size
+        return b.createdAt.localeCompare(a.createdAt)
+      })
+  }, [baseFiles, search, typeFilter, sortMode])
+
+  const totalSize = useMemo(() => ownFiles.reduce((s, f) => s + (f.size || 0), 0), [ownFiles])
+  const unusedCount = useMemo(
+    () => ownFiles.filter(f => usageCount(usageByFile.get(f.id) ?? EMPTY_USAGE) === 0).length,
+    [ownFiles, usageByFile]
+  )
+  // 容量内訳（種別ごと・所有ファイルのみ。local:参照はアプリ外なので別枠で数える）
+  const sizeByKind = useMemo(() => {
+    const m = new Map<FileKind, number>()
+    let localCount = 0
+    for (const f of ownFiles) {
+      if (isLocalRef(f.url)) { localCount++; continue }
+      const k = fileKind(f.mime, f.name)
+      m.set(k, (m.get(k) ?? 0) + (f.size || 0) + (f.versions?.reduce((s, v) => s + (v.size || 0), 0) ?? 0))
+    }
+    return { m, localCount }
+  }, [ownFiles])
+
+  // ── 複数選択（Ctrl/Shift クリック or ホバーのチェックボックス） ──
+  const [selIds, setSelIds] = useState<Set<string>>(() => new Set())
+  const lastClickedRef = useRef<string | null>(null)
+  useEffect(() => { setSelIds(new Set()); lastClickedRef.current = null }, [sel, active])
+  const toggleSelect = (id: string) => {
+    setSelIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+    lastClickedRef.current = id
+  }
+  // タイルクリック: Ctrl=トグル / Shift=表示順で範囲選択 / 通常=ライトボックス
+  const onTileClick = (f: FileItem, e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey) { toggleSelect(f.id); return }
+    if (e.shiftKey && lastClickedRef.current) {
+      const a = visibleFiles.findIndex(x => x.id === lastClickedRef.current)
+      const b = visibleFiles.findIndex(x => x.id === f.id)
+      if (a !== -1 && b !== -1) {
+        const [lo, hi] = a < b ? [a, b] : [b, a]
+        setSelIds(prev => { const n = new Set(prev); for (let i = lo; i <= hi; i++) n.add(visibleFiles[i].id); return n })
+        return
+      }
+    }
+    setOpenId(f.id)
+  }
+  const selectedFiles = useMemo(() => ownFiles.filter(f => selIds.has(f.id)), [ownFiles, selIds])
+  function bulkMove(folderId: string | undefined) {
+    if (selectedFiles.length === 0) return
+    const actions: Action[] = selectedFiles
+      .filter(f => f.folderId !== folderId)
+      .map(f => ({ type: 'UPDATE_FILE_ITEM', payload: { ...f, folderId } }))
+    if (actions.length) dispatch(actions.length === 1 ? actions[0] : { type: 'BATCH', payload: actions })
+    setSelIds(new Set())
+  }
+  function bulkTag(tag: string) {
+    const t = tag.trim()
+    if (!t || selectedFiles.length === 0) return
+    const actions: Action[] = selectedFiles
+      .filter(f => !f.tags.includes(t))
+      .map(f => ({ type: 'UPDATE_FILE_ITEM', payload: { ...f, tags: [...f.tags, t] } }))
+    if (actions.length) dispatch(actions.length === 1 ? actions[0] : { type: 'BATCH', payload: actions })
+  }
+  async function bulkDelete() {
+    if (selectedFiles.length === 0) return
+    const usedTotal = selectedFiles.reduce((s, f) => s + usageCount(usageByFile.get(f.id) ?? EMPTY_USAGE), 0)
+    const msg = usedTotal > 0
+      ? `選択した ${selectedFiles.length} 件をライブラリから削除しますか？\n${usedTotal}件のノート/タスク/キャンバスの参照からも外れます。`
+      : `選択した ${selectedFiles.length} 件をライブラリから削除しますか？`
+    if (!(await confirmDialog(msg, { danger: true }))) return
+    dispatch({ type: 'BATCH', payload: selectedFiles.map(f => ({ type: 'DELETE_FILE_ITEM', payload: f.id }) as Action) })
+    setSelIds(new Set())
+  }
+
+  // ── ライトボックスの「ノートに添付 / タスクにリンク」候補 ──
+  const attachableNotes = useMemo(() => {
+    if (!openId) return [] as Note[]
+    return state.notes
+      .filter(n => n.masterProjectId === active && !n.archivedAt && !n.attachments?.some(a => a.fileId === openId))
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))
+  }, [state.notes, active, openId])
+  const linkableTasks = useMemo(() => {
+    if (!openId) return [] as { task: Task; board: Project }[]
+    const out: { task: Task; board: Project }[] = []
+    for (const p of state.projects) {
+      if (p.masterProjectId !== active) continue
+      for (const t of p.tasks) if (!t.fileIds?.includes(openId)) out.push({ task: t, board: p })
+    }
+    return out
+  }, [state.projects, active, openId])
+  function attachToNote(file: FileItem, note: Note) {
+    const link = { id: generateId(), fileId: file.id, createdAt: new Date().toISOString() }
+    dispatch({ type: 'UPDATE_NOTE', payload: { ...note, attachments: [...(note.attachments ?? []), link], updatedAt: new Date().toISOString() } })
+  }
+  function linkToTask(file: FileItem, board: Project, task: Task) {
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: board.id, task: { ...task, fileIds: [...(task.fileIds ?? []), file.id] } } })
+  }
+
+  // ── サーバー参照（local:）の追加 — コピーせずパス参照で登録（Electronのみ） ──
+  async function addLocalRefs() {
+    const api = localFileApi()
+    if (!api) return
+    const paths = await api.pick().catch(() => null)
+    if (!paths || paths.length === 0) return
+    const folderId = typeof sel === 'object' ? sel.folderId : undefined
+    const actions: Action[] = []
+    for (const p of paths) {
+      const ref = toLocalRef(p)
+      if (state.files.some(f => f.url === ref)) continue // 同一パスの二重登録は防ぐ
+      const st = await api.stat(p).catch(() => ({ exists: false as const }))
+      actions.push({
+        type: 'ADD_FILE_ITEM',
+        payload: {
+          id: generateId(), masterProjectId: active, name: localFileName(p), url: ref,
+          mime: '', size: ('size' in st ? st.size : 0) ?? 0, tags: [], folderId,
+          createdAt: new Date().toISOString(),
+        },
+      })
+    }
+    if (actions.length) dispatch(actions.length === 1 ? actions[0] : { type: 'BATCH', payload: actions })
+  }
 
   const openFile = useMemo(
     () => (openId ? state.files.find(f => f.id === openId) ?? null : null),
@@ -445,9 +730,11 @@ export default function FilesPage() {
       u.notes.length > 0 ? `${u.notes.length}件のノート添付` : '',
       u.tasks.length > 0 ? `${u.tasks.length}件のタスク` : '',
     ].filter(Boolean)
+    if (u.cards.length > 0) parts.push(`${u.cards.length}件のキャンバスカード`)
+    const localNote = isLocalRef(f.url) ? '\n（サーバー上の元ファイルは削除されません）' : ''
     const msg = parts.length > 0
-      ? `「${f.name || '(無名)'}」をライブラリから削除しますか？\n${parts.join('・')}の参照からも外れます。`
-      : `「${f.name || '(無名)'}」をライブラリから削除しますか？`
+      ? `「${f.name || '(無名)'}」をライブラリから削除しますか？\n${parts.join('・')}の参照からも外れます。${localNote}`
+      : `「${f.name || '(無名)'}」をライブラリから削除しますか？${localNote}`
     if (!(await confirmDialog(msg, { danger: true }))) return
     // メディア実体はここでは消さない — undo で戻せるよう、参照が消えたブロブは
     // 起動時 sweep（7日猶予）に任せる。
@@ -619,6 +906,15 @@ export default function FilesPage() {
             <span className="flex-1 truncate">未分類</span>
             <span className="text-[10px] text-slate-400">{unfiledCount}</span>
           </button>
+          <button
+            onClick={() => setSel('unused')}
+            title="どのノート・タスク・キャンバスからも参照されていないファイル（掃除用）"
+            className={railItemCls(sel === 'unused')}
+          >
+            <CircleSlash size={14} className="text-slate-400 shrink-0" />
+            <span className="flex-1 truncate">未使用</span>
+            <span className="text-[10px] text-slate-400">{unusedCount}</span>
+          </button>
           {rootFolders.map(f => renderFolderNode(f, 0))}
           {refFiles.length > 0 && (
             <>
@@ -631,6 +927,30 @@ export default function FilesPage() {
             </>
           )}
         </div>
+        {/* 容量内訳（種別ごと。旧版の履歴分も含む） */}
+        {sizeByKind.m.size > 0 && (
+          <div className="border-t border-slate-200 px-3 py-2 space-y-0.5">
+            {(['image', 'video', 'pdf', 'audio', 'other'] as FileKind[]).map(k => {
+              const bytes = sizeByKind.m.get(k)
+              if (!bytes) return null
+              const Icon = FILE_KIND_ICON[k]
+              return (
+                <div key={k} className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                  <Icon size={10} className={FILE_KIND_TINT[k]} />
+                  <span className="flex-1">{FILE_KIND_LABEL[k]}</span>
+                  <span className="tabular-nums">{formatSize(bytes)}</span>
+                </div>
+              )
+            })}
+            {sizeByKind.localCount > 0 && (
+              <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                <Link2 size={10} className="text-cyan-500" />
+                <span className="flex-1">サーバー参照</span>
+                <span className="tabular-nums">{sizeByKind.localCount}件</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* メイン */}
@@ -700,7 +1020,52 @@ export default function FilesPage() {
           >
             {busy ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} 追加
           </button>
+          {localFileApi() && (
+            <button
+              onClick={addLocalRefs}
+              title="サーバー / ローカルのファイルを取り込まずパス参照で登録（NASの大容量動画など）"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-cyan-300 text-cyan-700 hover:bg-cyan-50 text-xs font-medium transition-colors"
+            >
+              <Link2 size={13} /> サーバー参照
+            </button>
+          )}
         </div>
+        {/* 複数選択の一括操作バー */}
+        {selIds.size > 0 && (
+          <div className="shrink-0 flex items-center gap-2 px-4 py-2 bg-indigo-50 border-b border-indigo-200 flex-wrap">
+            <CheckSquare size={14} className="text-indigo-500 shrink-0" />
+            <span className="text-xs font-medium text-indigo-700">{selIds.size}件選択</span>
+            <select
+              value=""
+              onChange={e => { if (e.target.value === '__unfiled__') bulkMove(undefined); else if (e.target.value) bulkMove(e.target.value) }}
+              className="text-[11px] border border-indigo-200 rounded-md px-1.5 py-1 outline-none bg-white text-slate-600"
+            >
+              <option value="" disabled>フォルダへ移動…</option>
+              <option value="__unfiled__">未分類</option>
+              {folders.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+            <input
+              placeholder="タグを追加… (Enter)"
+              className="text-[11px] border border-indigo-200 rounded-md px-2 py-1 outline-none bg-white text-slate-600 w-36"
+              onKeyDown={e => {
+                if (e.nativeEvent.isComposing) return
+                if (e.key === 'Enter' && e.currentTarget.value.trim()) { bulkTag(e.currentTarget.value); e.currentTarget.value = '' }
+              }}
+            />
+            <button
+              onClick={bulkDelete}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-rose-200 text-rose-500 hover:bg-rose-50 text-[11px] transition-colors"
+            >
+              <Trash2 size={11} /> 削除
+            </button>
+            <button
+              onClick={() => setSelIds(new Set())}
+              className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] text-slate-500 hover:bg-white transition-colors"
+            >
+              <X size={11} /> 選択解除
+            </button>
+          </div>
+        )}
 
         {/* 一覧 */}
         <div className="flex-1 overflow-y-auto p-4">
@@ -716,18 +1081,31 @@ export default function FilesPage() {
                 const kind = fileKind(f.mime, f.name)
                 const Icon = FILE_KIND_ICON[kind]
                 const used = usageCount(usageByFile.get(f.id) ?? EMPTY_USAGE)
+                const selected = selIds.has(f.id)
                 return (
                   <div
                     key={f.id}
                     draggable={sel !== 'linked'}
                     onDragStart={e => { draggingFileRef.current = f.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', f.name) }}
                     onDragEnd={() => { draggingFileRef.current = null; setDragOverFolderId(null) }}
-                    onClick={() => setOpenId(f.id)}
+                    onClick={e => onTileClick(f, e)}
                     title={`${f.name}${f.size ? ` (${formatSize(f.size)})` : ''}${f.comment ? `\n${f.comment}` : ''}`}
-                    className="group rounded-lg border border-slate-200 bg-white overflow-hidden cursor-pointer hover:border-slate-300 hover:shadow-md transition-all"
+                    className={`group rounded-lg border bg-white overflow-hidden cursor-pointer hover:shadow-md transition-all ${selected ? 'border-indigo-400 ring-2 ring-indigo-300' : 'border-slate-200 hover:border-slate-300'}`}
                   >
                     <div className="aspect-square w-full overflow-hidden relative">
                       <FileThumb file={f} className="w-full h-full" />
+                      {sel !== 'linked' && (
+                        <button
+                          onClick={e => { e.stopPropagation(); toggleSelect(f.id) }}
+                          title={selected ? '選択解除' : '選択（Ctrl+クリック / Shift+クリックで範囲）'}
+                          className={`absolute bottom-1 left-1 p-0.5 rounded bg-white/85 shadow transition-opacity ${selected ? 'opacity-100 text-indigo-600' : 'opacity-0 group-hover:opacity-100 text-slate-400 hover:text-indigo-600'}`}
+                        >
+                          {selected ? <CheckSquare size={14} /> : <Square size={14} />}
+                        </button>
+                      )}
+                      {isLocalRef(f.url) && (
+                        <span className="absolute bottom-1 right-1 inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-cyan-600/85 text-white text-[8px]" title="サーバー参照（取り込みなし）"><Link2 size={8} /></span>
+                      )}
                       {f.masterProjectId !== active && (
                         <span className="absolute top-1 left-1 inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-indigo-500/85 text-white text-[8px]"><Share2 size={8} /> 参照</span>
                       )}
@@ -758,15 +1136,25 @@ export default function FilesPage() {
                 const kind = fileKind(f.mime, f.name)
                 const Icon = FILE_KIND_ICON[kind]
                 const used = usageCount(usageByFile.get(f.id) ?? EMPTY_USAGE)
+                const selected = selIds.has(f.id)
                 return (
                   <div
                     key={f.id}
                     draggable={sel !== 'linked'}
                     onDragStart={e => { draggingFileRef.current = f.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', f.name) }}
                     onDragEnd={() => { draggingFileRef.current = null; setDragOverFolderId(null) }}
-                    onClick={() => setOpenId(f.id)}
-                    className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50 transition-colors ${i > 0 ? 'border-t border-slate-100' : ''}`}
+                    onClick={e => onTileClick(f, e)}
+                    className={`group flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors ${selected ? 'bg-indigo-50' : 'hover:bg-slate-50'} ${i > 0 ? 'border-t border-slate-100' : ''}`}
                   >
+                    {sel !== 'linked' && (
+                      <button
+                        onClick={e => { e.stopPropagation(); toggleSelect(f.id) }}
+                        title={selected ? '選択解除' : '選択'}
+                        className={`shrink-0 transition-opacity ${selected ? 'opacity-100 text-indigo-600' : 'opacity-0 group-hover:opacity-100 text-slate-300 hover:text-indigo-600'}`}
+                      >
+                        {selected ? <CheckSquare size={14} /> : <Square size={14} />}
+                      </button>
+                    )}
                     <div className="w-9 h-9 rounded overflow-hidden shrink-0">
                       <FileThumb file={f} className="w-full h-full" />
                     </div>
@@ -808,12 +1196,17 @@ export default function FilesPage() {
           usage={usageByFile.get(openFile.id) ?? EMPTY_USAGE}
           masters={linkCandidates(openFile)}
           folders={folders}
+          attachableNotes={attachableNotes}
+          linkableTasks={linkableTasks}
           onNav={f => setOpenId(f.id)}
           onUpdate={updateFile}
           onDelete={() => deleteFile(openFile)}
           onClose={() => setOpenId(null)}
           onJumpNote={note => navigate('/', { state: { focusNoteId: note.id } })}
           onJumpTask={task => navigate(`/projects?taskId=${task.id}`)}
+          onJumpCard={card => navigate('/canvas', { state: { focusCardId: card.id } })}
+          onAttachNote={note => attachToNote(openFile, note)}
+          onLinkTask={(board, task) => linkToTask(openFile, board, task)}
         />
       )}
     </div>

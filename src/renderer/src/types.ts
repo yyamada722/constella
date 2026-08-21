@@ -15,17 +15,28 @@ export interface MasterProject {
 // under ONE owning master project, and additionally surfaced in every project
 // listed in `linkedMasterIds` (same idiom as note sharing) — the file itself is
 // a single source; metadata edits from any project write back here.
+// A superseded revision of a FileItem — kept when a new version is uploaded so
+// 先方資料の改訂 can be rolled back / compared. Bytes stay in the media store.
+export interface FileVersion {
+  url: string
+  mime: string
+  size: number
+  createdAt: string   // when THIS revision was originally registered
+  replacedAt: string  // when it was superseded by a newer upload
+}
+
 export interface FileItem {
   id: string
   masterProjectId: string    // owning (registering) master project
   linkedMasterIds?: string[] // other master projects that also show this file (参照)
   name: string
-  url: string                // idb:<id> media ref
+  url: string                // idb:<id> media ref, or local:<path> (server reference)
   mime: string               // MIME type at registration — drives preview/thumbnail
   size: number               // bytes
   tags: string[]
   folderId?: string          // folder within the OWNING project (undefined = 未分類)
   comment?: string           // 自由記入のメモ（"先方からのMTG資料" 等）。検索対象
+  versions?: FileVersion[]   // superseded revisions, newest first（差し替え履歴）
   createdAt: string
 }
 
@@ -347,6 +358,7 @@ export interface CanvasCard {
   refSketchId?: string // when set on a 'sketch' card, the card live-mirrors this Sketch (read-only on canvas)
   refTabId?: string // when set on a 'canvasLink' card, the card is a shortcut to that canvas tab
   refPlanId?: string // when set on a 'mindtrain' card, the card live-mirrors that 路線図 plan (read-only on canvas)
+  refFileId?: string // when set on a media card (pdf/image/video/audio), url came from this library FileItem — enables "ライブラリで開く" (the card keeps its own url copy, so it survives library deletion)
   draftWhen?: DraftWhen // 'taskDraft' cards: rough target timing, converted to endDate on タスク化
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
 

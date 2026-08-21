@@ -126,7 +126,11 @@ ipcMain.handle('file:open-temp', async (_e, bytes: Uint8Array, name: string, typ
   const givenExt = dot > 0 ? raw.slice(dot).toLowerCase() : ''
   // Force the extension to match the declared media type (defends against spoofed
   // executable extensions paired with arbitrary bytes via an imported backup).
-  const ext = allowed.includes(givenExt) ? givenExt : (DEFAULT_EXT[type] ?? '.bin')
+  // type 'other' (library files: .blend, Office docs, …) keeps the original
+  // extension so the OS picks the right app — but NEVER a blocked/executable one.
+  const ext = type === 'other'
+    ? (givenExt && /^\.[a-z0-9]{1,10}$/.test(givenExt) && !LOCAL_BLOCKED_EXTS.has(givenExt) ? givenExt : '.bin')
+    : allowed.includes(givenExt) ? givenExt : (DEFAULT_EXT[type] ?? '.bin')
   const dir = join(app.getPath('temp'), 'constella')
   await mkdir(dir, { recursive: true })
   const p = join(dir, stem + ext)
