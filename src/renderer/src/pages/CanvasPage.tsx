@@ -4936,9 +4936,10 @@ export default function CanvasPage() {
 
 async function applyImageFile(file: File | null | undefined, card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {
   if (!file || !isImageFile(file)) return
-  if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
+  // ライブラリ参照カード (refFileId) の url はライブラリ実体と共有 — 消すとライブラリ側も壊れる
+  if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
   const url = await putMedia(await normalizeImageBlob(file)) // TIFF/TGA → PNG
-  onUpdate({ url, title: card.title || file.name, content: file.name })
+  onUpdate({ url, title: card.title || file.name, content: file.name, refFileId: undefined })
 }
 
 // サーバー(NAS)やローカルディスク上のファイルを「取り込まず」パス参照でカードに
@@ -5901,7 +5902,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
         )}
         {!locked && (
           <button
-            onClick={() => { if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [] }) }}
+            onClick={() => { if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [], refFileId: undefined }) }}
             title="クリア"
             className="absolute top-1 right-1 p-1 rounded bg-black/50 text-white/80 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
           >
@@ -6227,7 +6228,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
         </div>
         {!locked && (
           <button
-            onClick={() => { if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [] }) }}
+            onClick={() => { if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [], refFileId: undefined }) }}
             title="クリア"
             className="p-1 rounded text-slate-400 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
           >

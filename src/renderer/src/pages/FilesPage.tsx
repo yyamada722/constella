@@ -131,9 +131,15 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   const prev = idx > 0 ? list[idx - 1] : null
   const next = idx >= 0 && idx < list.length - 1 ? list[idx + 1] : null
 
-  // キーボード: ← → でナビ、Esc で閉じる
+  // キーボード: ← → でナビ、Esc で閉じる。名前/コメント/タグ等の入力中は奪わない
+  // （矢印はキャレット移動、Esc は入力の blur に留める — SearchPage と同じガード）。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const ae = document.activeElement as HTMLElement | null
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
+        if (e.key === 'Escape') { e.preventDefault(); ae.blur() }
+        return
+      }
       if (e.key === 'Escape') { e.preventDefault(); onClose() }
       else if (e.key === 'ArrowLeft' && prev) { e.preventDefault(); onNav(prev) }
       else if (e.key === 'ArrowRight' && next) { e.preventDefault(); onNav(next) }
@@ -342,11 +348,12 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
                   <button
                     key={note.id}
                     onClick={() => onJumpNote(note)}
-                    title={`ノート「${note.title || '(無題)'}」を開く`}
+                    title={`ノート「${note.title || '(無題)'}」を開く${note.archivedAt ? '（アーカイブ済み）' : ''}`}
                     className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-amber-700 bg-amber-50 border border-amber-200 hover:brightness-95 text-left"
                   >
                     <FileText size={11} className="shrink-0" />
-                    <span className="truncate">{note.title || '(無題)'}</span>
+                    <span className="truncate flex-1">{note.title || '(無題)'}</span>
+                    {note.archivedAt && <span className="shrink-0 text-[9px] opacity-60">アーカイブ</span>}
                   </button>
                 ))}
                 {(usage.tasks ?? []).map(({ task, board }) => (
@@ -512,8 +519,10 @@ export default function FilesPage() {
       if (!u) { u = { notes: [], tasks: [], cards: [] }; m.set(id, u) }
       return u
     }
+    // アーカイブ済みノートの添付も数える — DELETE_FILE_ITEM のカスケードは全ノート
+    // からリンクを剥がすので、ここで除外すると「未使用」表示と削除の実挙動がズレて
+    // アーカイブノートの添付が黙って消える（表示側でアーカイブ印を付ける）。
     for (const n of state.notes) {
-      if (n.archivedAt) continue
       for (const a of n.attachments ?? []) {
         const u = get(a.fileId)
         if (!u.notes.some(x => x.id === n.id)) u.notes.push(n)

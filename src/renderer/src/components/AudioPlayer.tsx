@@ -72,38 +72,58 @@ function fmtLcd(sec: number, withMs: boolean): string {
   return withMs ? `${hh}:${mm}:${ss}.${String(ms).padStart(3, '0')}` : `${hh}:${mm}:${ss}`
 }
 
-/* ── 波形ピークの算出（デコード失敗時は null → プレースホルダー描画） ── */
+/* ── 波形ピークの算出（デコード失敗/大きすぎるファイルは null → プレースホルダー描画） ── */
 const N_BARS = 160
+// 圧縮バイトでの上限。これ以上はデコードせず擬似波形にフォールバック（長尺の
+// フルデコードはPCM展開で数百MBに膨らみ、レンダラを固める/OOMの恐れがある）。
+const PEAKS_MAX_BYTES = 64 * 1024 * 1024
+// 同じ src（object URL は ref 単位でアプリ生存中キャッシュされる）を開き直す度の
+// 再デコードを避ける。値は小さい（160 float）ので無制限でよい。
+const peaksCache = new Map<string, Float32Array | null>()
+
 async function computePeaks(src: string): Promise<Float32Array | null> {
+  if (peaksCache.has(src)) return peaksCache.get(src)!
+  const peaks = await computePeaksUncached(src)
+  peaksCache.set(src, peaks)
+  return peaks
+}
+
+async function computePeaksUncached(src: string): Promise<Float32Array | null> {
   try {
     const buf = await (await fetch(src)).arrayBuffer()
-    const AC: typeof AudioContext = (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)
-    const ctx = new AC()
+    if (buf.byteLength > PEAKS_MAX_BYTES) return null
+    // OfflineAudioContext(=8kHz) でデコードすると PCM がその場で 8kHz にリサンプル
+    // され、44.1kHz フルデコード比 ~1/5 のメモリで済む（ピーク抽出には十分な解像度）。
+    let audio: AudioBuffer
     try {
-      const audio = await ctx.decodeAudioData(buf)
-      const ch0 = audio.getChannelData(0)
-      const ch1 = audio.numberOfChannels > 1 ? audio.getChannelData(1) : null
-      const peaks = new Float32Array(N_BARS)
-      const per = Math.max(1, Math.floor(ch0.length / N_BARS))
-      for (let i = 0; i < N_BARS; i++) {
-        let max = 0
-        const start = i * per
-        const end = Math.min(start + per, ch0.length)
-        // 全サンプル走査は長尺で重いのでバケット内を間引いて見る
-        const step = Math.max(1, Math.floor((end - start) / 500))
-        for (let j = start; j < end; j += step) {
-          const v = Math.abs(ch1 ? (ch0[j] + ch1[j]) / 2 : ch0[j])
-          if (v > max) max = v
-        }
-        peaks[i] = max
-      }
-      // 正規化（無音ファイルはゼロ割回避）
-      const top = Math.max(0.001, ...peaks)
-      for (let i = 0; i < N_BARS; i++) peaks[i] = peaks[i] / top
-      return peaks
-    } finally {
-      ctx.close().catch(() => { /* ignore */ })
+      const ctx = new OfflineAudioContext(1, 1, 8000)
+      audio = await ctx.decodeAudioData(buf.slice(0))
+    } catch {
+      // 一部コーデックが OfflineAudioContext で失敗する環境向けのフォールバック
+      const AC: typeof AudioContext = (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)
+      const ctx = new AC()
+      try { audio = await ctx.decodeAudioData(buf) } finally { ctx.close().catch(() => { /* ignore */ }) }
     }
+    const ch0 = audio.getChannelData(0)
+    const ch1 = audio.numberOfChannels > 1 ? audio.getChannelData(1) : null
+    const peaks = new Float32Array(N_BARS)
+    const per = Math.max(1, Math.floor(ch0.length / N_BARS))
+    for (let i = 0; i < N_BARS; i++) {
+      let max = 0
+      const start = i * per
+      const end = Math.min(start + per, ch0.length)
+      // 全サンプル走査は長尺で重いのでバケット内を間引いて見る
+      const step = Math.max(1, Math.floor((end - start) / 500))
+      for (let j = start; j < end; j += step) {
+        const v = Math.abs(ch1 ? (ch0[j] + ch1[j]) / 2 : ch0[j])
+        if (v > max) max = v
+      }
+      peaks[i] = max
+    }
+    // 正規化（無音ファイルはゼロ割回避）
+    const top = Math.max(0.001, ...peaks)
+    for (let i = 0; i < N_BARS; i++) peaks[i] = peaks[i] / top
+    return peaks
   } catch {
     return null
   }

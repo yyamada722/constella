@@ -110,6 +110,20 @@ const TYPE_EXTS: Record<string, string[]> = {
   image: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'],
   video: ['.mp4', '.webm', '.mov', '.mkv', '.m4v', '.ogv'],
   audio: ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac'],
+  // ライブラリの「その他」ファイル用 — 文書/アーカイブ/制作系の頑健な許可リスト。
+  // ここに無い拡張子（.html/.chm/.js …）は .bin に強制され、OSが実行系ハンドラで
+  // 開くことはない（拒否リスト方式に反転させないこと — imported backup のバイトは
+  // 攻撃者制御になり得る）。
+  other: [
+    '.txt', '.md', '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml', '.log',
+    '.zip', '.7z', '.rar', '.gz', '.tar',
+    '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp', '.rtf', '.epub',
+    '.psd', '.ai', '.blend', '.fbx', '.obj', '.stl', '.gltf', '.glb', '.skp', '.c4d',
+    '.heic', '.heif', '.tif', '.tiff', '.tga', '.raw', '.cr2', '.cr3', '.nef', '.arw', '.dng', '.exr', '.hdr',
+    '.ttf', '.otf', '.woff', '.woff2',
+    '.srt', '.vtt', '.ass',
+    '.aep', '.prproj', '.drp', '.als', '.flp', '.logicx',
+  ],
 }
 const DEFAULT_EXT: Record<string, string> = { pdf: '.pdf', image: '.png', video: '.mp4', audio: '.mp3' }
 const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
@@ -124,13 +138,11 @@ ipcMain.handle('file:open-temp', async (_e, bytes: Uint8Array, name: string, typ
   let stem = (dot > 0 ? raw.slice(0, dot) : raw).replace(/^[.\s]+|[.\s]+$/g, '').slice(-100)
   if (!stem || RESERVED.test(stem)) stem = 'file'
   const givenExt = dot > 0 ? raw.slice(dot).toLowerCase() : ''
-  // Force the extension to match the declared media type (defends against spoofed
-  // executable extensions paired with arbitrary bytes via an imported backup).
-  // type 'other' (library files: .blend, Office docs, …) keeps the original
-  // extension so the OS picks the right app — but NEVER a blocked/executable one.
-  const ext = type === 'other'
-    ? (givenExt && /^\.[a-z0-9]{1,10}$/.test(givenExt) && !LOCAL_BLOCKED_EXTS.has(givenExt) ? givenExt : '.bin')
-    : allowed.includes(givenExt) ? givenExt : (DEFAULT_EXT[type] ?? '.bin')
+  // Force the extension into the per-type allowlist (defends against spoofed
+  // executable extensions — .html/.chm/.js/… — paired with arbitrary bytes via an
+  // imported backup). Unlisted extensions become the type default / .bin, never
+  // whatever the name claimed.
+  const ext = allowed.includes(givenExt) ? givenExt : (DEFAULT_EXT[type] ?? '.bin')
   const dir = join(app.getPath('temp'), 'constella')
   await mkdir(dir, { recursive: true })
   const p = join(dir, stem + ext)

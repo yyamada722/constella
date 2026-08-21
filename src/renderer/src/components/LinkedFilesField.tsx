@@ -6,7 +6,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Share2, Loader2 } from 'lucide-react'
 import { FileItem, Task } from '../types'
-import { useApp } from '../store'
+import { useApp, type Action } from '../store'
 import { generateId } from '../utils'
 import { putMedia } from '../persistence/media'
 import { isImageFile, normalizeImageBlob } from '../utils/image'
@@ -20,6 +20,12 @@ export default function LinkedFilesField({ task, onChange }: {
   const { state, dispatch } = useApp()
   const navigate = useNavigate()
   const active = state.activeMasterProjectId
+  // アップロードの await 中にタスクが編集されても巻き戻さないよう、完了時は最新の
+  // task/onChange（親の最新レンダーのクロージャ）で確定する。
+  const taskRef = useRef(task)
+  taskRef.current = task
+  const onChangeRef = useRef(onChange)
+  onChangeRef.current = onChange
   // このプロジェクトで使えるファイル: 所有 + 他プロジェクトからの参照リンク
   const filesInScope = useMemo(
     () => state.files
@@ -53,6 +59,7 @@ export default function LinkedFilesField({ task, onChange }: {
     if (list.length === 0 || !active) return
     setBusy(true)
     try {
+      const actions: Action[] = []
       const ids: string[] = []
       for (const f of list) {
         const blob = isImageFile(f) ? await normalizeImageBlob(f) : f
@@ -62,10 +69,13 @@ export default function LinkedFilesField({ task, onChange }: {
           mime: blob.type || f.type || '', size: blob.size, tags: [],
           createdAt: new Date().toISOString(),
         }
-        dispatch({ type: 'ADD_FILE_ITEM', payload: item })
+        actions.push({ type: 'ADD_FILE_ITEM', payload: item })
         ids.push(item.id)
       }
-      onChange([...linkedIds, ...ids])
+      // ライブラリ登録をまとめて 1 undo ステップに（NoteAttachments と同じ流儀）。
+      if (actions.length) dispatch(actions.length === 1 ? actions[0] : { type: 'BATCH', payload: actions })
+      // 完了時点の最新タスクのリンク集合に足す — await 中の編集を巻き戻さない。
+      onChangeRef.current([...(taskRef.current.fileIds ?? []), ...ids])
     } catch (e) {
       await alertDialog(`ファイルの追加に失敗しました: ${e instanceof Error ? e.message : String(e)}`)
     } finally {

@@ -74,7 +74,10 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
           <input
             list="note-att-groups"
             value={att.group ?? ''}
-            onChange={e => { const g = e.target.value.trim(); onUpdateLink({ ...att, group: g || undefined }) }}
+            // 入力中は trim しない（毎キー trim だと「先方 資料」のようなスペース入り
+            // グループ名が打てない）。確定は blur 時。バケット分けは常に trim 済みで比較する。
+            onChange={e => onUpdateLink({ ...att, group: e.target.value || undefined })}
+            onBlur={e => { const g = e.target.value.trim(); onUpdateLink({ ...att, group: g || undefined }) }}
             placeholder="グループなし"
             className="w-24 px-1.5 py-0.5 text-[10px] text-slate-600 bg-white border border-slate-200 focus:border-indigo-300 rounded outline-none"
           />
@@ -119,6 +122,10 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
 export function NoteAttachments({ note }: { note: Note }) {
   const { state, dispatch } = useApp()
   const attachments = note.attachments ?? []
+  // アップロードの await 中にノートが編集されても巻き戻さないよう、dispatch 時は
+  // 常に最新の note から組み立てる（クロージャに固定された古い note を spread しない）。
+  const noteRef = useRef(note)
+  noteRef.current = note
   const fileInputRef = useRef<HTMLInputElement>(null)
   // 「＋追加」を押したグループ（ファイル選択ダイアログをまたいで保持する）
   const addTargetGroup = useRef<string | undefined>(undefined)
@@ -159,10 +166,11 @@ export function NoteAttachments({ note }: { note: Note }) {
   }, [state.files, note.masterProjectId, attachedFileIds, pickerQ])
 
   // ノートの添付リンクを書き換える（updatedAt も進める — NotesPage の updateNote と同じ扱い）。
+  // 最新の noteRef から組み立てるので、await 越しに呼んでも他の編集を巻き戻さない。
   function noteUpdateAction(next: NoteAttachment[]): Action {
     return {
       type: 'UPDATE_NOTE',
-      payload: { ...note, attachments: next.length > 0 ? next : undefined, updatedAt: new Date().toISOString() },
+      payload: { ...noteRef.current, attachments: next.length > 0 ? next : undefined, updatedAt: new Date().toISOString() },
     }
   }
 
@@ -172,7 +180,7 @@ export function NoteAttachments({ note }: { note: Note }) {
     setBusy(true)
     try {
       const actions: Action[] = []
-      const links: NoteAttachment[] = [...attachments]
+      const newLinks: NoteAttachment[] = []
       for (const f of list) {
         // TIFF/TGA など native 表示できない画像は PNG に正規化してから保存
         const blob = isImageFile(f) ? await normalizeImageBlob(f) : f
@@ -188,9 +196,11 @@ export function NoteAttachments({ note }: { note: Note }) {
           createdAt: new Date().toISOString(),
         }
         actions.push({ type: 'ADD_FILE_ITEM', payload: item })
-        links.push({ id: generateId(), fileId: item.id, group, createdAt: item.createdAt })
+        newLinks.push({ id: generateId(), fileId: item.id, group, createdAt: item.createdAt })
       }
-      // ライブラリ登録＋ノートへのリンクを 1 undo ステップで
+      // ライブラリ登録＋ノートへのリンクを 1 undo ステップで。添付リストは
+      // アップロード完了時点の最新ノートを基に組む（並行ドロップのリンクも失わない）。
+      const links = [...(noteRef.current.attachments ?? []), ...newLinks]
       dispatch({ type: 'BATCH', payload: [...actions, noteUpdateAction(links)] })
       if (list.length === 1) setOpenId(links[links.length - 1].id)
     } catch (e) {

@@ -274,7 +274,14 @@ function reducer(state: AppState, action: Action): AppState {
         aiConversations: state.aiConversations.filter(c => c.masterProjectId !== mid),
         canvasBoards: state.canvasBoards.filter(b => b.projectId !== mid),
         canvasTabs: state.canvasTabs.filter(t => t.projectId !== mid),
-        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)).map(c => c.refTabId && removedTabs.has(c.refTabId) ? { ...c, refTabId: undefined } : c),
+        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)).map(c => {
+          // 消えるタブへの canvasLink 参照と、消えるファイルへの refFileId を両方掃除
+          // （DELETE_FILE_ITEM と同じ整合性 — url のコピーは残すので表示は生きる）。
+          let next = c
+          if (next.refTabId && removedTabs.has(next.refTabId)) next = { ...next, refTabId: undefined }
+          if (next.refFileId && doomedFileIds.has(next.refFileId)) next = { ...next, refFileId: undefined }
+          return next
+        }),
         canvasArrows: state.canvasArrows.filter(a => !removedTabs.has(a.tabId)),
         canvasGroups: state.canvasGroups.filter(g => !removedTabs.has(g.tabId)),
         canvasStrokes: state.canvasStrokes.filter(s => !removedTabs.has(s.tabId)),
