@@ -8,16 +8,42 @@ export interface MasterProject {
   folder?: string // optional group name — the switcher renders projects sharing a folder under one collapsible header (plain string, no folder entity)
 }
 
-// 付随資料 — a file (PDF / image / video / audio / anything) attached to a Note.
-// Bytes live in the IndexedDB media store; `url` is the stable `idb:<id>` ref.
-// `group` is a free-text bucket ("先方資料" / "自分の資料" など) for organizing
-// e.g. MTG handouts from the counterpart vs. your own response material.
+/* ── ファイル (Files) — cross-project file library ── */
+
+// A file in the library (PDF / image / video / audio / anything). Bytes live in
+// the IndexedDB media store; `url` is the stable `idb:<id>` ref. Registered
+// under ONE owning master project, and additionally surfaced in every project
+// listed in `linkedMasterIds` (same idiom as note sharing) — the file itself is
+// a single source; metadata edits from any project write back here.
+export interface FileItem {
+  id: string
+  masterProjectId: string    // owning (registering) master project
+  linkedMasterIds?: string[] // other master projects that also show this file (参照)
+  name: string
+  url: string                // idb:<id> media ref
+  mime: string               // MIME type at registration — drives preview/thumbnail
+  size: number               // bytes
+  tags: string[]
+  folderId?: string          // folder within the OWNING project (undefined = 未分類)
+  createdAt: string
+}
+
+// Grouping container for FileItem — same shape/UX as NoteFolder (nesting + color).
+export interface FileFolder {
+  id: string
+  masterProjectId: string
+  name: string
+  createdAt: string
+  parentId?: string
+  color?: BoardColor
+}
+
+// 付随資料 — a link from a Note to a library FileItem. The bytes/metadata live
+// on the FileItem (shared across notes); only the per-note organization — the
+// free-text `group` bucket ("先方資料" / "自分の資料" など) — lives on the link.
 export interface NoteAttachment {
   id: string
-  name: string      // display name (defaults to the original file name)
-  url: string       // idb:<id> media ref
-  mime: string      // MIME type at attach time — drives the preview chooser
-  size: number      // bytes
+  fileId: string    // referenced FileItem
   group?: string    // optional bucket; undefined renders under 未分類
   createdAt: string
 }

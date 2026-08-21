@@ -72,12 +72,14 @@ export default function NotesPage() {
   }
 
   const allNotes = useMemo(() => state.notes.filter(n => n.masterProjectId === active), [state.notes, active])
+  // 添付の検索ヒット用: fileId → 小文字ファイル名（添付はライブラリ参照なので解決が要る）
+  const fileNameById = useMemo(() => new Map(state.files.map(f => [f.id, (f.name || '').toLowerCase()])), [state.files])
   // Apply archive visibility + search.
   const notes = useMemo(() => {
     const q = search.trim().toLowerCase()
     return allNotes
       .filter(n => showArchived ? !!n.archivedAt : !n.archivedAt)
-      .filter(n => !q || (n.title || '').toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q) || (n.tags || []).some(t => t.toLowerCase().includes(q)) || (n.attachments || []).some(a => (a.name || '').toLowerCase().includes(q)))
+      .filter(n => !q || (n.title || '').toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q) || (n.tags || []).some(t => t.toLowerCase().includes(q)) || (n.attachments || []).some(a => (fileNameById.get(a.fileId) || '').includes(q)))
       .sort((a, b) => {
         // Pinned float to the top regardless of other sort.
         const pa = a.pinned ? 1 : 0, pb = b.pinned ? 1 : 0
@@ -86,7 +88,7 @@ export default function NotesPage() {
         if (sortMode === 'created') return b.createdAt.localeCompare(a.createdAt)
         return b.updatedAt.localeCompare(a.updatedAt)
       })
-  }, [allNotes, search, sortMode, showArchived])
+  }, [allNotes, search, sortMode, showArchived, fileNameById])
 
   const folders = useMemo(
     () => state.noteFolders.filter(f => f.masterProjectId === active).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -956,13 +958,9 @@ export default function NotesPage() {
                 />
               </div>
             </div>
-            {/* 付随資料 — 先方資料/自分の資料などのファイルをこのノートに添付して管理 */}
-            {attachOpen && (
-              <NoteAttachments
-                attachments={selectedNote.attachments ?? []}
-                onChange={next => updateNote({ attachments: next.length > 0 ? next : undefined })}
-              />
-            )}
+            {/* 付随資料 — 先方資料/自分の資料などのファイルをこのノートに添付して管理。
+                実体はファイルライブラリ (FileItem)、ここは参照リンクの管理。 */}
+            {attachOpen && <NoteAttachments note={selectedNote} />}
             {/* Reverse links: tasks that point to this note. Click jumps into the Projects page with
                 the task pre-selected (the NotePanel there will re-surface this very note). */}
             {linkedTasks.length > 0 && (

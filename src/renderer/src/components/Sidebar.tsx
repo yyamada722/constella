@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus, ArrowUpCircle, RefreshCw } from 'lucide-react'
+import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus, ArrowUpCircle, RefreshCw, Files } from 'lucide-react'
 import { useApp } from '../store'
 import { useStore as useMindtrainStore } from '../mindtrain/store/useStore'
 import { exportBackup, importBackup } from '../persistence/backup'
@@ -57,6 +57,7 @@ const navItems = [
   { path: '/flow', icon: GitBranch, label: 'フロー', color: 'text-teal-600' },
   { path: '/plan', icon: Map, label: '計画', color: 'text-cyan-600' },
   { path: '/research', icon: Globe, label: 'リサーチ', color: 'text-sky-600' },
+  { path: '/files', icon: Files, label: 'ファイル', color: 'text-orange-600' },
   { path: '/canvas', icon: LayoutDashboard, label: 'キャンバス', color: 'text-indigo-600' },
   { path: '/sketch', icon: Brush, label: 'スケッチ', color: 'text-fuchsia-600' },
   { path: '/mindtrain', icon: TrainFront, label: '路線図', color: 'text-rose-600' },
