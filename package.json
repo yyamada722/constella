@@ -1,6 +1,6 @@
 {
   "name": "constella",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "Constella — 情報整理デスクトップアプリ",
   "author": "Constella",
   "main": "./out/main/index.js",
