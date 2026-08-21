@@ -90,7 +90,7 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
   } else if (kind === 'image') {
     body = <div className="flex-1 min-h-0 flex items-center justify-center p-4"><img src={src} alt={file.name} className="max-w-full max-h-full object-contain rounded shadow-2xl" /></div>
   } else if (kind === 'video') {
-    body = <div className="flex-1 min-h-0 flex items-center justify-center p-4"><video src={src} controls autoPlay className="max-w-full max-h-full rounded shadow-2xl bg-black" /></div>
+    body = <div className="flex-1 min-h-0 flex items-center justify-center p-4"><video src={src} controls autoPlay loop className="max-w-full max-h-full rounded shadow-2xl bg-black" /></div>
   } else if (kind === 'pdf') {
     body = <div className="flex-1 min-h-0 overflow-hidden p-4 flex items-stretch justify-center"><div className="w-full max-w-[880px] bg-white rounded overflow-hidden"><PdfViewer url={src} fixedHeight={Math.max(320, window.innerHeight - 120)} /></div></div>
   } else if (kind === 'audio') {

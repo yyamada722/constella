@@ -49,7 +49,7 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
   } else if (kind === 'image') {
     body = <div className="flex justify-center bg-slate-100 max-h-[440px] overflow-auto"><img src={src} alt={file.name} className="max-w-full object-contain" /></div>
   } else if (kind === 'video') {
-    body = <video src={src} controls className="w-full max-h-[440px] bg-black" />
+    body = <video src={src} controls loop className="w-full max-h-[440px] bg-black" />
   } else if (kind === 'audio') {
     body = <audio src={src} controls className="w-full px-3 py-4" />
   } else {
