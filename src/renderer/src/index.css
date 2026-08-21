@@ -152,6 +152,7 @@ body {
 .slideshow-slide h2 { font-size: 1.6em; margin: 0 0 0.5em; }
 .slideshow-slide pre { font-size: 0.85em; }
 .slideshow-slide a, .dark .slideshow-slide a { color: #4f46e5; }
+.slideshow-slide mark, .dark .slideshow-slide mark { background: rgba(250, 204, 21, 0.45); }
 .dark .slideshow-slide blockquote { color: #64748b; }
 .dark .slideshow-slide del { color: #94a3b8; }
 .dark .slideshow-slide code { background: rgba(100,116,139,0.16); }

@@ -12,6 +12,7 @@ import { isLocalRef, localFileApi, localRefPath } from '../utils/localFile'
 import { decodeMdHref } from '../utils/mdLink'
 import { normalizeTasks, toggleTaskAt } from '../utils/mdTask'
 import { remarkConstellaSyntax } from '../utils/mdSyntax'
+import { MD_CALLOUT, jpDate, jpDateTime, TPL_MINUTES, TPL_DAILY } from '../utils/mdSnippets'
 import { tableKeydown } from '../utils/mdTable'
 import { htmlClipboardToMarkdown, tsvToMarkdownTable } from '../utils/richPaste'
 import { useWikiLink } from './WikiLink'
@@ -76,7 +77,11 @@ type MdTransform = (v: string, s: number, e: number) => { value: string; selStar
 const mdWrap = (pre: string, post: string, ph: string): MdTransform => (v, s, e) => {
   const sel = v.slice(s, e)
   // Toggle: if the selection is already wrapped (e.g. **sel**), unwrap instead.
-  if (sel && s >= pre.length && v.slice(s - pre.length, s) === pre && v.slice(e, e + post.length) === post) {
+  // 隣接一致だけでなく「さらに外側にも同じデリミタ文字が続く」場合は除外 —
+  // **bold** の内側で斜体(*)を実行したときに太字の * を剥がさない。
+  const wrapped = sel && s >= pre.length && v.slice(s - pre.length, s) === pre && v.slice(e, e + post.length) === post
+  const partOfLonger = wrapped && v[s - pre.length - 1] === pre[0] && v[e + post.length] === post[post.length - 1]
+  if (wrapped && !partOfLonger) {
     return { value: v.slice(0, s - pre.length) + sel + v.slice(e + post.length), selStart: s - pre.length, selEnd: e - pre.length }
   }
   const body = sel || ph
@@ -136,21 +141,9 @@ const mdFootnote: MdTransform = (v, s, e) => {
   return { value, selStart: value.length - note.length, selEnd: value.length }
 }
 const MD_TABLE = '| 見出し1 | 見出し2 |\n| --- | --- |\n| セル | セル |\n'
-const MD_CALLOUT = '> [!NOTE] タイトル\n> 内容\n'
 
 // テンプレート（挿入時に日付を確定させるため遅延評価）
 const mdDynSnippet = (fn: () => string): MdTransform => (v, s, e) => mdSnippet(fn())(v, s, e)
-const jpDate = () => {
-  const d = new Date()
-  const wd = '日月火水木金土'[d.getDay()]
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}(${wd})`
-}
-const jpDateTime = () => {
-  const d = new Date()
-  return `${jpDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-const TPL_MINUTES = () => `## 議事録 ${jpDate()}\n\n**参加者**: \n**目的**: \n\n### 決定事項\n\n- \n\n### TODO\n\n- [ ] \n\n### メモ\n\n- \n`
-const TPL_DAILY = () => `## 日報 ${jpDate()}\n\n### 今日やったこと\n\n- \n\n### 明日やること\n\n- [ ] \n\n### 気づき・メモ\n\n- \n`
 
 // Ctrl/Cmd shortcuts in the edit textarea. Keyed by `${shift ? 'S' : ''}${key}`.
 const MD_SHORTCUTS: Record<string, MdTransform> = {
@@ -437,9 +430,18 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
         return
       }
     }
-    // 2. リッチペースト: 構造のある HTML → Markdown（Ctrl+Shift+V ではスキップ）
     const plain = plainPasteRef.current
     plainPasteRef.current = false
+    const text = dt.getData('text/plain').trim()
+    // 2. a URL pasted over a text selection -> Markdown link.
+    //    リッチ変換より先に判定する — ブラウザからコピーしたリンクは text/html に
+    //    <a> を含むため、後回しにすると選択テキストがリンクテキストで潰される。
+    if (text && isHttpUrl(text) && end > start) {
+      e.preventDefault()
+      insertText(start, end, `[${value.slice(start, end)}](${text})`)
+      return
+    }
+    // 3. リッチペースト: 構造のある HTML → Markdown（Ctrl+Shift+V ではスキップ）
     if (!plain) {
       const html = dt.getData('text/html')
       if (html) {
@@ -450,21 +452,15 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
           return
         }
       }
-    }
-    const text = dt.getData('text/plain').trim()
-    // 3. タブ区切り（Excel / Sheets のプレーン形）→ Markdown 表
-    if (!plain && text) {
-      const table = tsvToMarkdownTable(text)
-      if (table) {
-        e.preventDefault()
-        insertText(start, end, table)
-        return
+      // 4. タブ区切り（Excel / Sheets のプレーン形）→ Markdown 表
+      if (text) {
+        const table = tsvToMarkdownTable(text)
+        if (table) {
+          e.preventDefault()
+          insertText(start, end, table)
+          return
+        }
       }
-    }
-    // 4. a URL pasted over a text selection -> Markdown link
-    if (text && isHttpUrl(text) && end > start) {
-      e.preventDefault()
-      insertText(start, end, `[${value.slice(start, end)}](${text})`)
     }
     // else: default paste
   }

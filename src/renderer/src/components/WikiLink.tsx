@@ -1,4 +1,4 @@
-import { createContext, useContext, useCallback, useRef, ReactNode } from 'react'
+import { createContext, useContext, useCallback, useRef, useLayoutEffect, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../store'
 
@@ -14,19 +14,28 @@ export function WikiLinkProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
   const { state } = useApp()
   const cardsRef = useRef(state.canvasCards)
-  cardsRef.current = state.canvasCards
   const notesRef = useRef(state.notes)
-  notesRef.current = state.notes
   const activeRef = useRef(state.activeMasterProjectId)
-  activeRef.current = state.activeMasterProjectId
+  // レンダー中の ref 書き込みは破棄されたレンダーの値が漏れうるため、コミット後に同期する
+  useLayoutEffect(() => {
+    cardsRef.current = state.canvasCards
+    notesRef.current = state.notes
+    activeRef.current = state.activeMasterProjectId
+  }, [state.canvasCards, state.notes, state.activeMasterProjectId])
 
   const resolve = useCallback((title: string) => {
     const t = title.trim().toLowerCase()
     const card = cardsRef.current.find(c => (c.title || '').trim().toLowerCase() === t)
     if (card) { navigate('/canvas', { state: { focusCardId: card.id } }); return }
-    // キャンバスカードに無ければノートのタイトルで解決（アクティブプロジェクト優先）
-    const notes = notesRef.current.filter(n => (n.title || '').trim().toLowerCase() === t)
-    const note = notes.find(n => n.masterProjectId === activeRef.current) ?? notes[0]
+    // キャンバスカードに無ければノートのタイトルで解決。NotesPage が表示できる
+    // ノートに限る（自プロジェクト or 参照済み共有ノート、アーカイブ除外）—
+    // 表示不能な focusNoteId を渡すと選択が先頭ノートへ黙って差し替わるため。
+    const active = activeRef.current
+    const notes = notesRef.current.filter(n =>
+      !n.archivedAt &&
+      (n.title || '').trim().toLowerCase() === t &&
+      (n.masterProjectId === active || (n.shared && (n.refByMasterIds ?? []).includes(active))))
+    const note = notes.find(n => n.masterProjectId === active) ?? notes[0]
     if (note) navigate('/', { state: { focusNoteId: note.id } })
   }, [navigate])
 

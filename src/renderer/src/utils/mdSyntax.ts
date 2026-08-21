@@ -46,8 +46,8 @@ function highlightInChildren(parent: MdNode): void {
         continue
       }
     }
-    // code / inlineCode / math は type が違うので自然に素通りする
-    if (node.children) highlightInChildren(node)
+    // code / inlineCode / math は type が違うので自然に素通りする。
+    // 子孫への降下は walk 側が担う（ここで再帰すると部分木を深さぶん再走査する）。
   }
 }
 

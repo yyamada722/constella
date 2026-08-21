@@ -25,18 +25,41 @@ interface TaskMarker {
 // deeper is an indented code block.
 const LIST_TASK = /^((?:\s*>\s?)*\s*(?:[-*+]|\d+[.)])\s+\[)([ xX]?)\](?=\s|$)/
 const BARE_TASK = /^((?:\s*>\s?)*[ ]{0,3}\[)([ xX]?)\](?=\s|$)/
-const FENCE = /^\s{0,3}(`{3,}|~{3,})/
+
+/* ── コードフェンス走査（Markdown 行スキャナ共通） ── */
+
+export interface FenceState { char: string; len: number }
+const FENCE_RE = /^\s{0,3}(`{3,}|~{3,})/
+
+// 1行ぶんフェンス状態を進める。CommonMark: 閉じフェンスは開きと同じ文字で
+// 開きと同じ長さ以上（``` の中の ```` は閉じない）。
+export function updateFence(state: FenceState | null, line: string): FenceState | null {
+  const m = FENCE_RE.exec(line)
+  if (!m) return state
+  if (state === null) return { char: m[1][0], len: m[1].length }
+  return m[1][0] === state.char && m[1].length >= state.len ? null : state
+}
+
+/** offset を含む行がコードフェンスの内側（閉じフェンス行を含む）かどうか。 */
+export function inFenceAt(md: string, offset: number): boolean {
+  let state: FenceState | null = null
+  let pos = 0
+  for (const line of md.split('\n')) {
+    const end = pos + line.length
+    if (offset <= end) return state !== null
+    state = updateFence(state, line)
+    pos = end + 1
+  }
+  return false
+}
 
 function scanTasks(md: string): TaskMarker[] {
   const out: TaskMarker[] = []
-  let fence: string | null = null
+  let fence: FenceState | null = null
   let pos = 0
   for (const line of md.split('\n')) {
-    const f = FENCE.exec(line)
-    if (f) {
-      if (fence === null) fence = f[1][0]
-      else if (f[1][0] === fence) fence = null
-    } else if (fence === null) {
+    const next = updateFence(fence, line)
+    if (fence === null && next === fence) {
       const lm = LIST_TASK.exec(line)
       const m = lm ?? BARE_TASK.exec(line)
       if (m) {
@@ -49,6 +72,7 @@ function scanTasks(md: string): TaskMarker[] {
         })
       }
     }
+    fence = next
     pos += line.length + 1
   }
   return out

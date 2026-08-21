@@ -26,7 +26,15 @@ export function SlideShow({ slides, onClose, onExportPdf }: {
   const [scale, setScale] = useState(1)
   const [exporting, setExporting] = useState(false)
   const slideRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const n = slides.length
+
+  // モーダルとして初期フォーカスを取り、閉じたら元の位置へ戻す
+  useEffect(() => {
+    const prevFocus = document.activeElement as HTMLElement | null
+    rootRef.current?.focus()
+    return () => prevFocus?.focus?.()
+  }, [])
 
   const html = useMemo(() => renderMarkdown(slides[idx] ?? '').html, [slides, idx])
 
@@ -55,7 +63,9 @@ export function SlideShow({ slides, onClose, onExportPdf }: {
       live = false
       retained.forEach(releaseLocalUrl)
     }
-  }, [html])
+    // idx も deps に含める: DOM は key={idx} で再マウントされるので、同一内容の
+    // スライドが並ぶと html 文字列は変わらず、新しいノードが未処理のまま残る。
+  }, [html, idx])
 
   // ウィンドウに 16:9 キャンバスをフィット
   useEffect(() => {
@@ -72,6 +82,12 @@ export function SlideShow({ slides, onClose, onExportPdf }: {
   // キーボード操作。capture でアプリ側のグローバルショートカットより先に取る。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // プレゼン中は背後のページショートカット（Ctrl+F/H の検索バー等）を起動させない
+      if ((e.ctrlKey || e.metaKey) && ['f', 'h'].includes(e.key.toLowerCase())) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onClose(); return }
       if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown' || e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); step(1); return }
       if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === 'Backspace') { e.preventDefault(); e.stopPropagation(); step(-1); return }
@@ -90,11 +106,27 @@ export function SlideShow({ slides, onClose, onExportPdf }: {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] bg-slate-950/95 flex items-center justify-center select-none"
+      ref={rootRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="スライドショー"
+      tabIndex={-1}
+      className="fixed inset-0 z-[100] bg-slate-950/95 flex items-center justify-center select-none outline-none"
       onMouseDown={e => e.stopPropagation()}
       onClick={e => {
+        const t = e.target as HTMLElement
+        // スライド内リンク: レンダラウィンドウごと遷移させない。http(s) は既定ブラウザで
+        // 開き（setWindowOpenHandler 経由）、wiki:/local: 等はプレゼン中は無視する。
+        const a = t.closest('a')
+        if (a) {
+          e.preventDefault()
+          e.stopPropagation()
+          const href = a.getAttribute('href') ?? ''
+          if (/^https?:\/\//i.test(href)) window.open(href, '_blank', 'noreferrer')
+          return
+        }
         // スライド外も含め、右半分クリック=次 / 左半分=前
-        if ((e.target as HTMLElement).closest('button')) return
+        if (t.closest('button')) return
         if (e.clientX > window.innerWidth / 2) step(1); else step(-1)
       }}
     >

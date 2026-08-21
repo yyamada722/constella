@@ -39,7 +39,9 @@ export function htmlClipboardToMarkdown(html: string): string | null {
 /** タブ区切りテキスト（Excel / Sheets のプレーン形）→ Markdown 表。対象外なら null。 */
 export function tsvToMarkdownTable(text: string): string | null {
   const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim().length > 0)
-  if (lines.length === 0 || !lines.every(l => l.includes('\t'))) return null
+  // 2行以上・全行にタブ・タブ始まりの行なし（タブ字下げのコード断片や
+  // Makefile レシピを表に誤変換しない — 表計算のコピーは行頭セルが非空）。
+  if (lines.length < 2 || !lines.every(l => l.includes('\t')) || lines.some(l => l.startsWith('\t'))) return null
   const rows = lines.map(l => l.split('\t').map(c => c.trim().replace(/\|/g, '\\|')))
   const n = Math.max(...rows.map(r => r.length))
   if (n < 2) return null

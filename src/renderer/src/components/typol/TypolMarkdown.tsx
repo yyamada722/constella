@@ -28,6 +28,7 @@ import { decodeMdHref } from '../../utils/mdLink'
 import { IMAGE_ACCEPT, normalizeImageBlob } from '../../utils/image'
 import { toggleTaskAt } from '../../utils/mdTask'
 import { htmlClipboardToMarkdown, tsvToMarkdownTable } from '../../utils/richPaste'
+import { MD_CALLOUT, jpDate, jpDateTime, TPL_MINUTES, TPL_DAILY } from '../../utils/mdSnippets'
 import { useWikiLink } from '../WikiLink'
 
 export interface TypolMarkdownProps {
@@ -104,21 +105,8 @@ const mdFootnote: MdTransform = (v, s, e) => {
 const MD_TABLE = '| 見出し1 | 見出し2 |\n| --- | --- |\n| セル | セル |\n'
 const MD_MATH_BLOCK = '$$\nx = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\n$$\n'
 const MD_MERMAID = '```mermaid\nflowchart LR\n  A --> B\n  B --> C\n```\n'
-const MD_CALLOUT = '> [!NOTE] タイトル\n> 内容\n'
-
 // テンプレート（挿入時に日付を確定させるため遅延評価）
 const mdDynSnippet = (fn: () => string): MdTransform => (v, s, e) => mdSnippet(fn())(v, s, e)
-const jpDate = () => {
-  const d = new Date()
-  const wd = '日月火水木金土'[d.getDay()]
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}(${wd})`
-}
-const jpDateTime = () => {
-  const d = new Date()
-  return `${jpDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
-const TPL_MINUTES = () => `## 議事録 ${jpDate()}\n\n**参加者**: \n**目的**: \n\n### 決定事項\n\n- \n\n### TODO\n\n- [ ] \n\n### メモ\n\n- \n`
-const TPL_DAILY = () => `## 日報 ${jpDate()}\n\n### 今日やったこと\n\n- \n\n### 明日やること\n\n- [ ] \n\n### 気づき・メモ\n\n- \n`
 
 const MD_ITEMS: { label: string; run?: MdTransform; special?: 'image-file'; divider?: boolean }[] = [
   { label: '見出し 1 (#)', run: mdPrefix('# ') },
@@ -471,7 +459,6 @@ export function TypolMarkdown({
                 return
               }
             }
-            // リッチペースト: 構造のある HTML / タブ区切り → Markdown（Ctrl+Shift+V ではスキップ）
             const plain = plainPasteRef.current
             plainPasteRef.current = false
             const insertMd = (md: string) => {
@@ -482,24 +469,27 @@ export function TypolMarkdown({
               ta.setSelectionRange(caret, caret)
               onChangeRef.current?.(next)
             }
-            if (!plain) {
-              const html = dt.getData('text/html')
-              if (html) {
-                const md = htmlClipboardToMarkdown(html)
-                if (md) { e.preventDefault(); insertMd(md); return }
-              }
-            }
             const text = dt.getData('text/plain').trim()
-            if (!plain && text) {
-              const table = tsvToMarkdownTable(text)
-              if (table) { e.preventDefault(); insertMd(table); return }
-            }
+            // 選択範囲への URL 貼り付け = リンク化。リッチ変換より先に判定する —
+            // ブラウザからコピーしたリンクは text/html に <a> を含むため。
             if (text && isHttpUrl(text) && ta.selectionEnd > ta.selectionStart) {
               e.preventDefault()
               const start = ta.selectionStart, end = ta.selectionEnd
               const sel = ta.value.slice(start, end)
               insertMd(`[${sel}](${text})`)
               return
+            }
+            // リッチペースト: 構造のある HTML / タブ区切り → Markdown（Ctrl+Shift+V ではスキップ）
+            if (!plain) {
+              const html = dt.getData('text/html')
+              if (html) {
+                const md = htmlClipboardToMarkdown(html)
+                if (md) { e.preventDefault(); insertMd(md); return }
+              }
+              if (text) {
+                const table = tsvToMarkdownTable(text)
+                if (table) { e.preventDefault(); insertMd(table); return }
+              }
             }
           }}
           className={`typol-root typol-editor flex-1 min-h-0 ${textSize}`}

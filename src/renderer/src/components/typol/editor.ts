@@ -73,7 +73,12 @@ export class Editor {
     if (sel) {
       const before = value.slice(Math.max(0, start - prefix.length), start);
       const after = value.slice(end, end + suffix.length);
-      if (before === prefix && after === suffix) {
+      // さらに外側にも同じデリミタ文字が続く場合はアンラップしない —
+      // **bold** の内側で斜体(*)を実行したときに太字の * を剥がさない。
+      const partOfLonger =
+        value[start - prefix.length - 1] === prefix[0] &&
+        value[end + suffix.length] === suffix[suffix.length - 1];
+      if (before === prefix && after === suffix && !partOfLonger) {
         this.replaceRange(start - prefix.length, end + suffix.length, sel,
           start - prefix.length, end - prefix.length);
         return;
@@ -217,7 +222,7 @@ export class Editor {
         const lineStart = value.lastIndexOf("\n", start - 1) + 1;
         const line = value.slice(lineStart, start);
         const m =
-          /^(\s*)([-*+]\s\[[ x]\]\s)(.*)$/.exec(line) ||
+          /^(\s*)([-*+]\s\[[ xX]\]\s)(.*)$/.exec(line) ||
           /^(\s*)(\[[ xX]?\]\s)(.*)$/.exec(line) ||   // bare-line task: "[ ] foo" / "[] foo"
           /^(\s*)([-*+]\s)(.*)$/.exec(line) ||
           /^(\s*)(\d+\.\s)(.*)$/.exec(line) ||

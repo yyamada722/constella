@@ -15,7 +15,8 @@ import { renderMermaidIn } from '../components/typol/mermaid'
 import { getMediaBlob } from '../persistence/media'
 import { isLocalRef, getLocalBlob } from './localFile'
 import { decodeMdHref } from './mdLink'
-import { pdfApi } from './planPdf'
+import { updateFence, type FenceState } from './mdTask'
+import { pdfApi, escHtml } from './planPdf'
 import katexCss from 'katex/dist/katex.min.css?raw'
 import hljsCss from 'highlight.js/styles/github.css?raw'
 
@@ -30,20 +31,18 @@ export function splitSlides(md: string): string[] {
   const lines = md.split('\n')
   const slides: string[] = []
   let cur: string[] = []
-  let fence: string | null = null
+  let fence: FenceState | null = null
   for (const line of lines) {
-    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(line)
-    if (f) {
-      if (fence === null) fence = f[1][0]
-      else if (f[1][0] === fence) fence = null
-    }
+    const next = updateFence(fence, line)
     const prevBlank = cur.length === 0 || cur[cur.length - 1].trim() === ''
     if (fence === null && prevBlank && /^\s{0,3}(-{3,}|\*{3,})\s*$/.test(line)) {
       slides.push(cur.join('\n'))
       cur = []
+      fence = next
       continue
     }
     cur.push(line)
+    fence = next
   }
   slides.push(cur.join('\n'))
   const nonEmpty = slides.map(s => s.trim()).filter(Boolean)
@@ -69,19 +68,19 @@ export async function inlineForPrint(html: string, widthPx: number): Promise<str
   host.innerHTML = html
   document.body.appendChild(host)
   try {
-    for (const img of Array.from(host.querySelectorAll<HTMLImageElement>('img'))) {
+    await Promise.all(Array.from(host.querySelectorAll<HTMLImageElement>('img')).map(async img => {
       const src = img.getAttribute('src') ?? ''
       try {
         let blob: Blob | null = null
         if (src.startsWith('idb:')) blob = await getMediaBlob(src)
         else if (isLocalRef(src)) blob = await getLocalBlob(decodeMdHref(src))
-        else continue // http/data はそのまま（印刷ウィンドウが直接読み込む）
+        else return // http/data はそのまま（印刷ウィンドウが直接読み込む）
         if (blob) img.src = await blobToDataUrl(blob)
         else img.remove()
       } catch {
         img.remove() // 読めない画像はページを壊さず落とす
       }
-    }
+    }))
     await renderMermaidIn(host)
     host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach(box => {
       const glyph = document.createElement('span')
@@ -98,10 +97,6 @@ export async function inlineForPrint(html: string, widthPx: number): Promise<str
   } finally {
     host.remove()
   }
-}
-
-function escHtml(s: string): string {
-  return s.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] as string))
 }
 
 // 文書・スライド共通の Markdown 印刷スタイル（ライトテーマ固定）。
@@ -214,10 +209,9 @@ export async function exportNoteSlidesPdf(note: { title: string; content: string
   const api = pdfApi()
   if (!api) throw new Error('PDF書き出しはデスクトップアプリでのみ利用できます')
   const slides = splitSlides(note.content)
-  const bodies: string[] = []
-  for (const s of slides) {
-    bodies.push(await inlineForPrint(renderMarkdown(s).html, SLIDE_W_PX - SLIDE_PAD_X * 2))
-  }
+  // 各スライドは独立したオフスクリーン host で処理するので並列化できる
+  const bodies = await Promise.all(
+    slides.map(s => inlineForPrint(renderMarkdown(s).html, SLIDE_W_PX - SLIDE_PAD_X * 2)))
   const bytes = await api.render(slidesHtml(bodies), ZERO_MARGINS, {
     pageSizeInch: { width: SLIDE_W_PX / 96, height: SLIDE_H_PX / 96 },
   })

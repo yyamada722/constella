@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote } from 'lucide-react'
 import { useApp } from '../store'
@@ -11,6 +11,7 @@ import { SearchInput } from '../components/SearchInput'
 import { confirmDialog, alertDialog } from '../components/ConfirmDialog'
 import { SlideShow } from '../components/SlideShow'
 import { exportNotePdf, exportNoteSlidesPdf, splitSlides } from '../utils/notePdf'
+import { updateFence, type FenceState } from '../utils/mdTask'
 import { pdfApi } from '../utils/planPdf'
 
 export default function NotesPage() {
@@ -234,16 +235,21 @@ export default function NotesPage() {
     const idx = ((k % findMatches.length) + findMatches.length) % findMatches.length
     setFindIdx(idx)
     if (viewMode === 'preview') setViewMode('edit')
-    setTimeout(() => {
+    // プレビュー→編集切替直後はエディタ未マウントのことがあるので少しリトライ
+    const apply = (attempt: number) => {
       const ta = editorTa()
+      if (!ta) {
+        if (attempt < 4) setTimeout(() => apply(attempt + 1), 50)
+        return
+      }
       const content = selectedNoteRef.current?.content ?? ''
-      if (!ta) return
       const pos = findMatches[idx]
       ta.setSelectionRange(pos, pos + findQ.length)
       const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22
       const lineNo = content.slice(0, pos).split('\n').length - 1
       ta.scrollTop = Math.max(0, lineNo * lh - ta.clientHeight / 2)
-    }, 0)
+    }
+    setTimeout(() => apply(0), 0)
   }
   useEffect(() => { setFindIdx(0) }, [findQ, selectedId])
   // 入力のたびに先頭マッチへライブジャンプ
@@ -253,20 +259,25 @@ export default function NotesPage() {
   }, [findQ])
 
   const replaceCurrent = () => {
-    const note = selectedNoteRef.current
-    if (!note || findMatches.length === 0) return
+    if (!selectedNote || findMatches.length === 0) return
     const pos = findMatches[Math.min(findIdx, findMatches.length - 1)]
-    updateNote({ content: note.content.slice(0, pos) + replQ + note.content.slice(pos + findQ.length) })
+    updateNote({ content: selectedNote.content.slice(0, pos) + replQ + selectedNote.content.slice(pos + findQ.length) })
   }
+  // findMatches は表示用に 2000 件で打ち切るので、すべて置換は自前で全走査する
   const replaceAll = () => {
-    const note = selectedNoteRef.current
-    if (!note || !findQ || findMatches.length === 0) return
-    let next = note.content
-    for (let i = findMatches.length - 1; i >= 0; i--) {
-      const p = findMatches[i]
-      next = next.slice(0, p) + replQ + next.slice(p + findQ.length)
+    if (!selectedNote || !findQ) return
+    const hay = selectedNote.content
+    const lower = hay.toLowerCase()
+    const needle = findQ.toLowerCase()
+    let out = ''
+    let i = 0
+    for (;;) {
+      const j = lower.indexOf(needle, i)
+      if (j === -1) { out += hay.slice(i); break }
+      out += hay.slice(i, j) + replQ
+      i = j + Math.max(1, needle.length)
     }
-    updateNote({ content: next })
+    if (out !== hay) updateNote({ content: out })
   }
   const closeFind = () => { setFindOpen(false); setShowRepl(false) }
 
@@ -293,28 +304,29 @@ export default function NotesPage() {
   })
   useEffect(() => { try { localStorage.setItem('constella.notes.outline', outlineOpen ? '1' : '0') } catch { /* ignore */ } }, [outlineOpen])
   const outline = useMemo(() => {
-    if (!selectedNote) return [] as { level: number; text: string; line: number }[]
+    // パネルが閉じているときは走査しない（大きいノートのキー入力ホットパス）
+    if (!outlineOpen || !selectedNote) return [] as { level: number; text: string; line: number }[]
     const out: { level: number; text: string; line: number }[] = []
-    let fence: string | null = null
+    let fence: FenceState | null = null
     selectedNote.content.split('\n').forEach((l, i) => {
-      const f = /^\s{0,3}(`{3,}|~{3,})/.exec(l)
-      if (f) {
-        if (fence === null) fence = f[1][0]
-        else if (f[1][0] === fence) fence = null
-        return
+      const next = updateFence(fence, l)
+      if (fence === null && next === fence) {
+        const m = /^(#{1,6})\s+(.+)/.exec(l)
+        if (m) out.push({ level: m[1].length, text: m[2].replace(/\s#+\s*$/, '').trim(), line: i })
       }
-      if (fence !== null) return
-      const m = /^(#{1,6})\s+(.+)/.exec(l)
-      if (m) out.push({ level: m[1].length, text: m[2].replace(/\s#+\s*$/, '').trim(), line: i })
+      fence = next
     })
     return out
-  }, [selectedNote])
+  }, [outlineOpen, selectedNote])
 
   const jumpToHeading = (h: { text: string; line: number }, idx: number) => {
     const prev = document.querySelector('.typol-preview')
     if (prev) {
       const els = [...prev.querySelectorAll('h1,h2,h3,h4,h5,h6')]
-      const el = els.find(x => (x.textContent || '').trim() === h.text) ?? els[idx]
+      // 同名見出しが複数ある場合に備え、n番目の同名を選ぶ（テキスト一致優先、崩れたら index）
+      const nth = outline.slice(0, idx).filter(o => o.text === h.text).length
+      const sameText = els.filter(x => (x.textContent || '').trim() === h.text)
+      const el = sameText[nth] ?? sameText[0] ?? els[idx]
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
     const ta = editorTa()
@@ -330,20 +342,30 @@ export default function NotesPage() {
   }
 
   // ── バックリンク: このノートを [[タイトル]] で言及するノート/カード + 参照カード ──
+  // 全ノート+全カードの全文走査になるため、タイピングの緊急レンダーを塞がないよう
+  // 遅延値で評価する（deps は選択ノートの id/title だけ — 本文編集では再計算しない）。
+  const deferredNotes = useDeferredValue(state.notes)
+  const deferredCards = useDeferredValue(state.canvasCards)
+  const selTitle = (selectedNote?.title || '').trim().toLowerCase()
   const backlinks = useMemo(() => {
-    if (!selectedNote) return { notes: [] as Note[], cards: [] as CanvasCard[] }
-    const title = (selectedNote.title || '').trim().toLowerCase()
+    if (!selectedId) return { notes: [] as Note[], cards: [] as CanvasCard[] }
     const mentions = (content?: string) =>
-      !!title && !!content && [...content.matchAll(/\[\[([^[\]\n]+)\]\]/g)].some(m => m[1].trim().toLowerCase() === title)
+      !!selTitle && !!content && [...content.matchAll(/\[\[([^[\]\n]+)\]\]/g)].some(m => m[1].trim().toLowerCase() === selTitle)
     // テキスト/メモ系カードは複数ページ制: 本文は card.content ではなく pages[].content 側に
     // あることが多いので、両方を言及判定の対象にする。
     const cardMentions = (c: CanvasCard) =>
       mentions(c.content) || (c.pages ?? []).some(p => mentions(p.content))
     return {
-      notes: state.notes.filter(n => n.id !== selectedNote.id && !n.archivedAt && mentions(n.content)),
-      cards: state.canvasCards.filter(c => c.refNoteId === selectedNote.id || cardMentions(c)),
+      notes: deferredNotes.filter(n => n.id !== selectedId && !n.archivedAt && mentions(n.content)),
+      cards: deferredCards.filter(c => c.refNoteId === selectedId || cardMentions(c)),
     }
-  }, [selectedNote, state.notes, state.canvasCards])
+  }, [selectedId, selTitle, deferredNotes, deferredCards])
+
+  // スライド配列の identity を安定させる（毎レンダー生成すると SlideShow が現在スライドを再パースする）
+  const slideshowSlides = useMemo(
+    () => (slideshowOpen && selectedNote ? splitSlides(selectedNote.content) : []),
+    [slideshowOpen, selectedNote]
+  )
 
   async function deleteNote(id: string) {
     const title = state.notes.find(n => n.id === id)?.title
@@ -1063,7 +1085,7 @@ export default function NotesPage() {
       </div>
       {slideshowOpen && selectedNote && (
         <SlideShow
-          slides={splitSlides(selectedNote.content)}
+          slides={slideshowSlides}
           onClose={() => setSlideshowOpen(false)}
           onExportPdf={canPdf ? () => doExportSlidesPdf(selectedNote) : undefined}
         />

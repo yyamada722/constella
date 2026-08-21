@@ -5,6 +5,8 @@
 //   Enter     = 下に空行を挿入
 // どの操作でも表ブロック全体を桁揃えで整形する（全角文字は幅2として揃える）。
 
+import { inFenceAt } from './mdTask'
+
 interface EditResult { value: string; selStart: number; selEnd: number }
 
 const isTableLine = (l: string) => /^\s*\|/.test(l)
@@ -29,8 +31,9 @@ interface Row { indent: string; cells: string[] }
 function splitRow(line: string): Row {
   const m = /^(\s*)\|(.*)$/.exec(line)
   if (!m) return { indent: '', cells: [line.trim()] }
-  const body = m[2].replace(/\|\s*$/, '')
-  return { indent: m[1], cells: body.split('|').map(c => c.trim()) }
+  // エスケープされた \| はセル内容（richPaste が出力する）— 区切りとして割らない
+  const body = m[2].replace(/(?<!\\)\|\s*$/, '')
+  return { indent: m[1], cells: body.split(/(?<!\\)\|/).map(c => c.trim()) }
 }
 
 const isSepRow = (r: Row) => r.cells.length > 0 && r.cells.every(c => /^:?-+:?$/.test(c) || c === '') && r.cells.some(c => c.includes('-'))
@@ -43,6 +46,8 @@ export function tableKeydown(value: string, selStart: number, key: 'Tab' | 'Shif
   let lineEnd = value.indexOf('\n', selStart)
   if (lineEnd === -1) lineEnd = value.length
   if (!isTableLine(value.slice(lineStart, lineEnd))) return null
+  // コードフェンス内の | 行（サンプル表やシェルのパイプ）はただのテキスト
+  if (inFenceAt(value, lineStart)) return null
 
   // 表ブロック（| で始まる連続行）の範囲
   let blockStart = lineStart
@@ -60,6 +65,9 @@ export function tableKeydown(value: string, selStart: number, key: 'Tab' | 'Shif
   }
 
   const rows = value.slice(blockStart, blockEnd).split('\n').map(splitRow)
+  // 区切り行 (| --- |) を含まないブロックはレンダラも表として扱わない —
+  // 素の | 行（プロース/AAアート/書きかけヘッダー）のTab/Enterを乗っ取らない
+  if (!rows.some(isSepRow)) return null
   const rowIdx = value.slice(blockStart, lineStart).split('\n').length - 1
   const nCols = Math.max(...rows.map(r => r.cells.length))
   // caret の列 = 行頭〜caret の '|' の数 - 1
@@ -80,8 +88,11 @@ export function tableKeydown(value: string, selStart: number, key: 'Tab' | 'Shif
     while (tRow >= 0 && isSepRow(rows[tRow])) tRow--
     if (tRow < 0) { tRow = rowIdx; tCol = colIdx } // 先頭より前へは行かず、整形だけ
   } else {
-    rows.splice(rowIdx + 1, 0, { indent: rows[0].indent, cells: Array(nCols).fill('') })
-    tRow = rowIdx + 1
+    // ヘッダー行での Enter は区切り行の下に挿入（間に入れると GFM 表が壊れる）
+    let insertAt = rowIdx + 1
+    while (insertAt < rows.length && isSepRow(rows[insertAt])) insertAt++
+    rows.splice(insertAt, 0, { indent: rows[0].indent, cells: Array(nCols).fill('') })
+    tRow = insertAt
     tCol = 0
   }
 
