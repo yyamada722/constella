@@ -6,6 +6,7 @@ import { Note, NoteFolder, CanvasCard } from '../types'
 import { NoteAttachments } from '../components/NoteAttachments'
 import { generateId } from '../utils'
 import { TypolMarkdown as MarkdownText } from '../components/typol/TypolMarkdown'
+import { NoteMinimap } from '../components/NoteMinimap'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
@@ -134,6 +135,11 @@ export default function NotesPage() {
   // preview / split are available on demand. Persisted across selections — switching
   // notes does NOT force back to preview.
   const [viewMode, setViewMode] = useState<'preview' | 'edit' | 'split'>('edit')
+  const viewModeRef = useRef(viewMode)
+  viewModeRef.current = viewMode
+  // Scroll position (0–1 of the scrollable range) captured just before a mode
+  // switch, re-applied to whichever scroller the new mode mounts.
+  const pendingScrollRef = useRef<{ ratio: number; focus: boolean } | null>(null)
 
   // Shared notes from OTHER master projects that THIS project references (live instances).
   const referencedNotes = useMemo(() => {
@@ -290,9 +296,94 @@ export default function NotesPage() {
   }
   const closeFind = () => { setFindOpen(false); setShowRepl(false) }
 
+  // ── Mode switch that keeps the reading position ──
+  // The editor textarea and the preview div are different elements (the preview
+  // is even re-created on switch), so without this every toggle lands at the top.
+  const previewEl = () => document.querySelector<HTMLElement>('.typol-preview')
+  const primaryScroller = (mode: 'preview' | 'edit' | 'split'): HTMLElement | null =>
+    mode === 'preview' ? previewEl() : editorTa()
+  const scrollRatio = (el: HTMLElement) => el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight)
+  const switchMode = (next: 'preview' | 'edit' | 'split') => {
+    const cur = viewModeRef.current
+    if (next === cur) return
+    const el = primaryScroller(cur)
+    pendingScrollRef.current = { ratio: el ? scrollRatio(el) : 0, focus: next !== 'preview' }
+    setViewMode(next)
+  }
+  useEffect(() => {
+    const p = pendingScrollRef.current
+    if (!p) return
+    pendingScrollRef.current = null
+    const apply = (attempt: number) => {
+      const el = primaryScroller(viewMode)
+      if (!el) { if (attempt < 6) setTimeout(() => apply(attempt + 1), 40); return }
+      if (p.focus && el instanceof HTMLTextAreaElement) {
+        // Put the caret on the first line of the visible region BEFORE scrolling —
+        // focusing scrolls to the caret, which would otherwise undo the restore.
+        const lines = el.value.split('\n')
+        const lineIdx = Math.min(lines.length - 1, Math.round(p.ratio * Math.max(0, lines.length - 1)))
+        let pos = 0
+        for (let i = 0; i < lineIdx; i++) pos += lines[i].length + 1
+        el.focus({ preventScroll: true })
+        el.setSelectionRange(pos, pos)
+      }
+      el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight)
+      // The preview's images / mermaid blocks settle a moment later and grow the
+      // content; re-apply once so the ratio refers to the final height.
+      if (viewMode === 'preview') setTimeout(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
+    }
+    setTimeout(() => apply(0), 0)
+  }, [viewMode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Split view: keep editor and preview scrolled to the same relative position ──
+  useEffect(() => {
+    if (viewMode !== 'split') return
+    let ta: HTMLTextAreaElement | null = null
+    let pv: HTMLElement | null = null
+    let lock: HTMLElement | null = null
+    let unlockTimer: ReturnType<typeof setTimeout> | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let dead = false
+    const follow = (from: HTMLElement, to: HTMLElement) => () => {
+      // A programmatic scrollTop on `to` fires its own scroll event; ignore that
+      // echo (and only that one) so the two panes don't fight.
+      if (lock === from) return
+      lock = to
+      to.scrollTop = scrollRatio(from) * (to.scrollHeight - to.clientHeight)
+      if (unlockTimer) clearTimeout(unlockTimer)
+      unlockTimer = setTimeout(() => { lock = null }, 60)
+    }
+    let onTa: (() => void) | null = null
+    let onPv: (() => void) | null = null
+    const attach = (attempt: number) => {
+      if (dead) return
+      ta = editorTa(); pv = previewEl()
+      if (!ta || !pv) { if (attempt < 10) timer = setTimeout(() => attach(attempt + 1), 50); return }
+      onTa = follow(ta, pv); onPv = follow(pv, ta)
+      ta.addEventListener('scroll', onTa, { passive: true })
+      pv.addEventListener('scroll', onPv, { passive: true })
+    }
+    attach(0)
+    return () => {
+      dead = true
+      if (timer) clearTimeout(timer)
+      if (unlockTimer) clearTimeout(unlockTimer)
+      if (ta && onTa) ta.removeEventListener('scroll', onTa)
+      if (pv && onPv) pv.removeEventListener('scroll', onPv)
+    }
+  }, [viewMode, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      // Ctrl+Shift+E: 編集 ⇔ プレビュー（Ctrl+E はエディタのインラインコードと衝突するため Shift 付き）
+      if (e.shiftKey) {
+        if (e.key.toLowerCase() === 'e' && selectedNoteRef.current) {
+          e.preventDefault()
+          switchMode(viewModeRef.current === 'edit' ? 'preview' : 'edit')
+        }
+        return
+      }
       const k = e.key.toLowerCase()
       if ((k === 'f' || k === 'h') && selectedNoteRef.current) {
         e.preventDefault()
@@ -784,8 +875,8 @@ export default function NotesPage() {
                 {([['edit', '編集', Pencil], ['split', '分割', Columns2], ['preview', 'プレビュー', Eye]] as const).map(([mode, label, Icon]) => (
                   <button
                     key={mode}
-                    onClick={() => setViewMode(mode)}
-                    title={label}
+                    onClick={() => switchMode(mode)}
+                    title={mode === 'split' ? label : `${label} (Ctrl+Shift+E で切替)`}
                     className={`flex items-center gap-1 px-2.5 py-1 transition-colors ${viewMode === mode ? 'bg-amber-500/15 text-amber-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
                   >
                     <Icon size={15} /> {label}
@@ -1050,6 +1141,23 @@ export default function NotesPage() {
               </div>
             )}
             <div className="flex-1 flex min-h-0">
+              {outlineOpen && (
+                <aside className="w-52 shrink-0 border-r border-slate-200 overflow-y-auto py-2 px-1.5 bg-slate-50/50">
+                  <div className="px-2 pb-1 text-[10px] font-medium text-slate-400">アウトライン</div>
+                  {outline.length === 0 && <div className="px-2 text-[11px] text-slate-400">見出しがありません</div>}
+                  {outline.map((h, i) => (
+                    <button
+                      key={`${h.line}-${i}`}
+                      onClick={() => jumpToHeading(h, i)}
+                      title={h.text}
+                      className="w-full text-left py-1 pr-2 rounded text-[12px] text-slate-600 hover:bg-slate-100 hover:text-slate-900 truncate block"
+                      style={{ paddingLeft: 8 + (h.level - 1) * 12 }}
+                    >
+                      {h.text}
+                    </button>
+                  ))}
+                </aside>
+              )}
               <div className="flex-1 flex flex-col min-h-0 min-w-0">
                 {viewMode === 'split' ? (
                   <div className="flex-1 flex min-h-0 overflow-hidden" style={fontVars}>
@@ -1083,23 +1191,12 @@ export default function NotesPage() {
                   </div>
                 )}
               </div>
-              {outlineOpen && (
-                <aside className="w-52 shrink-0 border-l border-slate-200 overflow-y-auto py-2 px-1.5 bg-slate-50/50">
-                  <div className="px-2 pb-1 text-[10px] font-medium text-slate-400">アウトライン</div>
-                  {outline.length === 0 && <div className="px-2 text-[11px] text-slate-400">見出しがありません</div>}
-                  {outline.map((h, i) => (
-                    <button
-                      key={`${h.line}-${i}`}
-                      onClick={() => jumpToHeading(h, i)}
-                      title={h.text}
-                      className="w-full text-left py-1 pr-2 rounded text-[12px] text-slate-600 hover:bg-slate-100 hover:text-slate-900 truncate block"
-                      style={{ paddingLeft: 8 + (h.level - 1) * 12 }}
-                    >
-                      {h.text}
-                    </button>
-                  ))}
-                </aside>
-              )}
+              {/* Minimap follows the editor (edit/split) or the preview (preview mode). */}
+              <NoteMinimap
+                content={selectedNote.content}
+                scrollerKey={`${selectedNote.id}:${viewMode}`}
+                getScroller={viewMode === 'preview' ? previewEl : editorTa}
+              />
             </div>
           </>
         ) : (

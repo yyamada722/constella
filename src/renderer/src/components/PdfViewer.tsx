@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, memo } from 'react'
 import { createPortal } from 'react-dom'
 import * as pdfjsLib from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import { ChevronLeft, ChevronRight, List, Maximize, Maximize2, BookOpen, ListTree, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, List, Maximize, Maximize2, BookOpen, ListTree, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
@@ -21,49 +21,93 @@ type OutlineItem = { title: string; depth: number; pageNum: number | null }
 
 /* ── Single page rendered to canvas ── */
 
-const PdfPage = memo(function PdfPage({ doc, pageNum, maxW, maxH }: {
+// Upper bound on rendered canvas pixels — a zoomed-in page would otherwise ask
+// for a 10k×14k bitmap (slow to paint, may exceed the GPU texture limit).
+const MAX_RENDER_PIXELS = 24_000_000
+
+const PdfPage = memo(function PdfPage({ doc, pageNum, maxW, maxH, zoom = 1 }: {
   doc: PDFDocumentProxy
   pageNum: number
   maxW: number
   maxH?: number
+  /** Multiplier on top of the fit-to-box scale (1 = fit). */
+  zoom?: number
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  // Identity of the bitmap currently on the canvas — when only the zoom changes
+  // we can keep it and stretch it via CSS (instant), then re-render behind a
+  // short debounce so wheel-zooming stays fluid instead of re-painting per tick.
+  const bitmapRef = useRef<{ doc: PDFDocumentProxy; pageNum: number } | null>(null)
 
   useEffect(() => {
     if (!doc || maxW <= 0 || pageNum < 1 || pageNum > doc.numPages) return
     let cancelled = false
     let renderTask: ReturnType<Awaited<ReturnType<PDFDocumentProxy['getPage']>>['render']> | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
 
     doc.getPage(pageNum).then(pg => {
       if (cancelled) return
       const base = pg.getViewport({ scale: 1 })
-      let scale = maxW / base.width
-      if (maxH && maxH > 0) scale = Math.min(scale, maxH / base.height)
-      // Supersample: render at 2–3× the display resolution for crisp text,
-      // then let the browser downscale via the CSS size below.
-      const dpr = window.devicePixelRatio || 1
-      const renderRatio = Math.min(Math.max(dpr, 1) * 2.5, 3.5)
+      let fit = maxW / base.width
+      if (maxH && maxH > 0) fit = Math.min(fit, maxH / base.height)
+      const scale = fit * zoom
       const displayVp = pg.getViewport({ scale })
-      const renderVp = pg.getViewport({ scale: scale * renderRatio })
       const canvas = canvasRef.current
       if (!canvas) return
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      canvas.width = Math.floor(renderVp.width)
-      canvas.height = Math.floor(renderVp.height)
-      canvas.style.width = `${Math.floor(displayVp.width)}px`
-      canvas.style.height = `${Math.floor(displayVp.height)}px`
-      renderTask = pg.render({ canvasContext: ctx, viewport: renderVp })
-      renderTask.promise.catch(() => { /* cancelled */ })
+      const cssW = Math.floor(displayVp.width)
+      const cssH = Math.floor(displayVp.height)
+      canvas.style.width = `${cssW}px`
+      canvas.style.height = `${cssH}px`
+
+      const paint = () => {
+        if (cancelled) return
+        // Supersample: render at 2–3× the display resolution for crisp text,
+        // then let the browser downscale via the CSS size above.
+        const dpr = window.devicePixelRatio || 1
+        let renderRatio = Math.min(Math.max(dpr, 1) * 2.5, 3.5)
+        renderRatio = Math.min(renderRatio, Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, cssW * cssH)))
+        renderRatio = Math.max(renderRatio, Math.max(dpr, 1))
+        const renderVp = pg.getViewport({ scale: scale * renderRatio })
+        // Render off-screen and blit on completion, so a render cancelled by the
+        // next zoom tick never leaves the visible canvas blank / half-painted.
+        const off = document.createElement('canvas')
+        off.width = Math.floor(renderVp.width)
+        off.height = Math.floor(renderVp.height)
+        const offCtx = off.getContext('2d')
+        if (!offCtx) return
+        renderTask = pg.render({ canvasContext: offCtx, viewport: renderVp })
+        renderTask.promise
+          .then(() => {
+            if (cancelled) return
+            canvas.width = off.width
+            canvas.height = off.height
+            canvas.getContext('2d')?.drawImage(off, 0, 0)
+            bitmapRef.current = { doc, pageNum }
+          })
+          .catch(() => { /* cancelled */ })
+      }
+
+      const b = bitmapRef.current
+      const reusable = b && b.doc === doc && b.pageNum === pageNum && canvas.width > 0
+      if (reusable) timer = setTimeout(paint, 140)
+      else {
+        // Different page: blank the canvas (white box) rather than stretching
+        // the previous page's bitmap while the new one renders.
+        canvas.width = 0
+        canvas.height = 0
+        bitmapRef.current = null
+        paint()
+      }
     }).catch(() => { /* page load failed */ })
 
     return () => {
       cancelled = true
+      if (timer) clearTimeout(timer)
       try { renderTask?.cancel() } catch { /* noop */ }
     }
-  }, [doc, pageNum, maxW, maxH])
+  }, [doc, pageNum, maxW, maxH, zoom])
 
-  return <canvas ref={canvasRef} className="bg-white shadow-md rounded-sm block" />
+  return <canvas ref={canvasRef} className="bg-white shadow-md rounded-sm block shrink-0" />
 })
 
 /* ── Lazily-rendered page for scroll mode (only renders when near viewport) ── */
@@ -105,13 +149,26 @@ const LazyScrollPage = memo(function LazyScrollPage({ doc, pageNum, width, aspec
 
 /* ── PDF viewer with 3 modes ── */
 
-export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, onStateChange, noFullscreen }: {
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 8
+const ZOOM_STEP = 1.25
+
+export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, onStateChange, noFullscreen, zoomable, autoFocus, initialZoom, onZoomChange }: {
   url: string
   fixedHeight?: number
   initial?: { page?: number; mode?: PdfMode }
   onStateChange?: (s: { page: number; mode: PdfMode }) => void
   /** Internal: set on the instance INSIDE the fullscreen overlay (no nested expand). */
   noFullscreen?: boolean
+  /** Ctrl+wheel / pinch and ±ボタン zoom. Off by default so a viewer embedded in
+   *  the canvas keeps Ctrl+wheel for the canvas itself. */
+  zoomable?: boolean
+  /** Focus the render area once the document is in, so PageUp/Down・Home/End
+   *  work without a click (lightbox use). */
+  autoFocus?: boolean
+  /** Internal: fullscreen ↔ inline zoom hand-off (not persisted). */
+  initialZoom?: number
+  onZoomChange?: (z: number) => void
 }) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null)
   const [numPages, setNumPages] = useState(0)
@@ -125,6 +182,16 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
   const [aspect, setAspect] = useState(0)
   const [outline, setOutline] = useState<OutlineItem[]>([])
   const [showOutline, setShowOutline] = useState(false)
+  // 1 = fit to the render area (height-bound for portrait pages, width-bound for
+  // landscape). >1 overflows and the area becomes scrollable.
+  const [zoom, setZoom] = useState(initialZoom && initialZoom > 0 ? initialZoom : 1)
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+  const onZoomChangeRef = useRef(onZoomChange)
+  onZoomChangeRef.current = onZoomChange
+  useEffect(() => { onZoomChangeRef.current?.(zoom) }, [zoom])
+  // Cursor position (relative to the area) to keep fixed while the zoom applies.
+  const zoomAnchorRef = useRef<{ x: number; y: number; prev: number } | null>(null)
   // 全画面表示 — the toolbar expand button portals a screen-filling copy of this
   // viewer (own doc instance); page/mode changes there sync back on the fly so
   // closing it keeps the reading position.
@@ -256,14 +323,85 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
     return () => ro.disconnect()
   }, [doc])
 
-  // In scroll mode, keep wheel scrolling inside the PDF (don't zoom the canvas)
+  // Wheel policy inside the render area:
+  //  - zoomable + Ctrl/⌘ (pinch arrives as a ctrlKey wheel in Chromium): zoom
+  //    around the cursor, never let it reach the page.
+  //  - scroll mode, or a zoomed-in page: the area scrolls natively — stop the
+  //    event so an enclosing canvas doesn't pan/zoom underneath.
   useEffect(() => {
     const el = areaRef.current
-    if (!el || mode !== 'scroll') return
-    const stop = (e: WheelEvent) => e.stopPropagation()
-    el.addEventListener('wheel', stop)
-    return () => el.removeEventListener('wheel', stop)
-  }, [mode])
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (zoomable && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault()
+        e.stopPropagation()
+        const r = el.getBoundingClientRect()
+        const prev = zoomRef.current
+        const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, prev * Math.exp(-e.deltaY * 0.0015)))
+        if (next === prev) return
+        zoomAnchorRef.current = { x: e.clientX - r.left, y: e.clientY - r.top, prev }
+        setZoom(next)
+        return
+      }
+      if (mode === 'scroll' || zoomRef.current > 1) e.stopPropagation()
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [mode, zoomable, doc])
+
+  // Once the zoomed layout is committed, shift the scroll so the point under the
+  // cursor stays put (content scales proportionally around the origin).
+  useLayoutEffect(() => {
+    const a = zoomAnchorRef.current
+    const el = areaRef.current
+    if (!a || !el) return
+    zoomAnchorRef.current = null
+    const r = zoom / a.prev
+    el.scrollLeft = (el.scrollLeft + a.x) * r - a.x
+    el.scrollTop = (el.scrollTop + a.y) * r - a.y
+  }, [zoom])
+
+  // A new document or display mode starts back at "fit" — except the very first
+  // load, which may carry a zoom handed over from the inline/fullscreen twin.
+  const zoomResetArmedRef = useRef(false)
+  useEffect(() => {
+    if (!zoomResetArmedRef.current) { zoomResetArmedRef.current = !!doc; return }
+    setZoom(1)
+  }, [doc, mode])
+
+  // Lightbox: take keyboard focus so paging keys work immediately.
+  useEffect(() => {
+    if (autoFocus && doc) areaRef.current?.focus({ preventScroll: true })
+  }, [autoFocus, doc])
+
+  const onAreaKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!doc || numPages === 0) return
+    if ((e.target as HTMLElement).tagName === 'INPUT') return
+    const paged = mode !== 'scroll'
+    const st = mode === 'spread' ? 2 : 1
+    let handled = true
+    switch (e.key) {
+      case 'PageDown': if (paged) go(page + st); else handled = false; break
+      case 'PageUp': if (paged) go(page - st); else handled = false; break
+      case 'Home':
+        if (paged) go(1)
+        else if (areaRef.current) areaRef.current.scrollTop = 0
+        break
+      case 'End':
+        if (paged) go(numPages)
+        else if (areaRef.current) areaRef.current.scrollTop = areaRef.current.scrollHeight
+        break
+      default: handled = false
+    }
+    if (handled) { e.preventDefault(); e.stopPropagation() }
+  }
+
+  const zoomTo = (z: number) => {
+    const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z))
+    const el = areaRef.current
+    if (el) zoomAnchorRef.current = { x: el.clientWidth / 2, y: el.clientHeight / 2, prev: zoomRef.current }
+    setZoom(next)
+  }
 
   const step = mode === 'spread' ? 2 : 1
   const go = (p: number) => {
@@ -290,12 +428,16 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
   const pad = 16
   const availW = box.w - pad
   const availH = box.h - pad
+  const zoomed = zoom > 1.001
+  // Page box: fills the area (so the page sits centred) and grows with the page
+  // once it overflows, giving the scroll container real extents in both axes.
+  const zoomedBoxStyle = { minWidth: '100%', minHeight: '100%', width: 'max-content', padding: pad / 2 } as const
 
   // Jump to a page from the outline (scrolls the container in scroll mode)
   const jumpTo = (p: number) => {
     go(p)
     if (mode === 'scroll' && areaRef.current && aspect > 0) {
-      const pageH = availW / aspect
+      const pageH = (availW * zoom) / aspect
       areaRef.current.scrollTop = (p - 1) * (pageH + 12) + 8
     }
     setShowOutline(false)
@@ -313,31 +455,34 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
       >
         <div
           ref={areaRef}
-          className={`h-full bg-slate-100 ${mode === 'scroll' ? 'overflow-y-auto' : 'overflow-hidden'}`}
-          // Reserve the scrollbar lane permanently in scroll mode — otherwise the
-          // bar's appearance shrinks the pages, the shorter content hides the bar,
-          // the pages grow back, and the preview visibly pulses.
-          style={mode === 'scroll' ? { scrollbarGutter: 'stable' } : undefined}
+          tabIndex={0}
+          onKeyDown={onAreaKeyDown}
+          className={`h-full bg-slate-100 outline-none ${mode === 'scroll' || zoomed ? 'overflow-auto' : 'overflow-hidden'}`}
+          // Reserve the scrollbar lane permanently whenever the area can scroll —
+          // otherwise the bar's appearance shrinks the pages, the shorter content
+          // hides the bar, the pages grow back, and the preview visibly pulses
+          // (and the fit size jumps when crossing 100%).
+          style={mode === 'scroll' || zoomed ? { scrollbarGutter: 'stable' } : undefined}
         >
           {!doc ? (
             <div className="h-full flex items-center justify-center text-slate-400 text-xs">
               読み込み中...
             </div>
           ) : mode === 'scroll' ? (
-            <div className="flex flex-col items-center gap-3 py-2">
+            <div className="flex flex-col items-center gap-3 py-2" style={{ minWidth: '100%', width: 'max-content' }}>
               {Array.from({ length: numPages }, (_, i) => (
-                <LazyScrollPage key={i + 1} doc={doc} pageNum={i + 1} width={availW} aspect={aspect} scrollRef={areaRef} />
+                <LazyScrollPage key={i + 1} doc={doc} pageNum={i + 1} width={availW * zoom} aspect={aspect} scrollRef={areaRef} />
               ))}
             </div>
           ) : mode === 'single' ? (
-            <div className="h-full flex items-center justify-center">
-              <PdfPage doc={doc} pageNum={page} maxW={availW} maxH={availH} />
+            <div className="flex items-center justify-center" style={zoomedBoxStyle}>
+              <PdfPage doc={doc} pageNum={page} maxW={availW} maxH={availH} zoom={zoom} />
             </div>
           ) : (
-            <div className="h-full flex items-center justify-center gap-2">
-              <PdfPage doc={doc} pageNum={page} maxW={availW / 2 - 6} maxH={availH} />
+            <div className="flex items-center justify-center gap-2" style={zoomedBoxStyle}>
+              <PdfPage doc={doc} pageNum={page} maxW={availW / 2 - 6} maxH={availH} zoom={zoom} />
               {page + 1 <= numPages && (
-                <PdfPage doc={doc} pageNum={page + 1} maxW={availW / 2 - 6} maxH={availH} />
+                <PdfPage doc={doc} pageNum={page + 1} maxW={availW / 2 - 6} maxH={availH} zoom={zoom} />
               )}
             </div>
           )}
@@ -436,6 +581,34 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
             </button>
           ))}
         </div>
+        {zoomable && (
+          <>
+            <div className="w-px h-3.5 bg-slate-300" />
+            <button
+              onClick={() => zoomTo(zoom / ZOOM_STEP)}
+              disabled={zoom <= ZOOM_MIN + 0.001}
+              className={`rounded text-slate-500 hover:text-slate-800 disabled:text-slate-300 disabled:cursor-default ${IS_TOUCH ? 'p-2.5' : 'p-1'}`}
+              title="縮小 (Ctrl+ホイール)"
+            >
+              <ZoomOut size={IS_TOUCH ? 18 : 13} />
+            </button>
+            <button
+              onClick={() => zoomTo(1)}
+              className={`rounded text-slate-600 hover:text-rose-600 tabular-nums ${IS_TOUCH ? 'text-sm px-1.5 py-1' : 'text-[11px] px-1 py-0.5'}`}
+              title="全体表示に戻す"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              onClick={() => zoomTo(zoom * ZOOM_STEP)}
+              disabled={zoom >= ZOOM_MAX - 0.001}
+              className={`rounded text-slate-500 hover:text-slate-800 disabled:text-slate-300 disabled:cursor-default ${IS_TOUCH ? 'p-2.5' : 'p-1'}`}
+              title="拡大 (Ctrl+ホイール)"
+            >
+              <ZoomIn size={IS_TOUCH ? 18 : 13} />
+            </button>
+          </>
+        )}
         {!noFullscreen && (
           <>
             <div className="w-px h-3.5 bg-slate-300" />
@@ -476,6 +649,10 @@ export const PdfViewer = memo(function PdfViewer({ url, fixedHeight, initial, on
                 url={url}
                 initial={{ page, mode }}
                 noFullscreen
+                zoomable
+                autoFocus
+                initialZoom={zoom}
+                onZoomChange={setZoom}
                 onStateChange={s => {
                   // Mirror the fullscreen reading position back into this (inline)
                   // viewer and the persisted card view state.

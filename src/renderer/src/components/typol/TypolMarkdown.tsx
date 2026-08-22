@@ -273,6 +273,10 @@ export function TypolMarkdown({
     return () => {
       live = false
       retained.forEach(releaseLocalUrl)
+      // React never knew about the injected nodes, so drop them ourselves —
+      // otherwise they survive a mode switch and the rendered text (no markdown
+      // marks) flashes inside the editor before the textarea settles.
+      host.innerHTML = ''
     }
   }, [value, effectiveEditing, canToggleTasks])
 
@@ -382,9 +386,11 @@ export function TypolMarkdown({
   }
 
   // ── Edit mode ──
+  // Distinct keys: the preview root carries innerHTML React doesn't own, so it
+  // must be unmounted (not reused) when switching to the editor and back.
   if (effectiveEditing) {
     return (
-      <div className={`flex flex-col min-h-0 ${extraClass}`}>
+      <div key="edit" className={`flex flex-col min-h-0 ${extraClass}`}>
         <div
           className="flex items-center gap-0.5 pb-1.5 mb-2 border-b border-slate-200 shrink-0 flex-wrap"
           onMouseDown={e => e.preventDefault()}
@@ -533,6 +539,7 @@ export function TypolMarkdown({
   if (!value.trim()) {
     return (
       <div
+        key="preview-empty"
         ref={previewRef}
         onMouseDown={e => e.stopPropagation()}
         className={`typol-root typol-preview md-content ${textSize} ${extraClass}`}
@@ -543,6 +550,7 @@ export function TypolMarkdown({
   }
   return (
     <div
+      key="preview"
       ref={previewRef}
       onMouseDown={e => e.stopPropagation()}
       className={`typol-root typol-preview md-content overflow-auto ${textSize} ${extraClass}`}
