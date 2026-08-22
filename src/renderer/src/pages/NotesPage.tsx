@@ -334,7 +334,7 @@ export default function NotesPage() {
         // setSelectionRange may scroll to the caret, so the scrollTop is re-applied.
         const lh = parseFloat(getComputedStyle(el).lineHeight) || 22
         const lines = el.value.split('\n')
-        const lineIdx = Math.min(lines.length - 1, Math.max(0, Math.round(target / lh)))
+        const lineIdx = Math.min(lines.length - 1, Math.max(0, Math.floor(target / lh)))
         let pos = 0
         for (let i = 0; i < lineIdx; i++) pos += lines[i].length + 1
         el.focus({ preventScroll: true })
