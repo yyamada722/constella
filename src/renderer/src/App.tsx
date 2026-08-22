@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar'
 import { WikiLinkProvider } from './components/WikiLink'
 import AIChatPanel from './components/AIChatPanel'
 import { ConfirmHost } from './components/ConfirmDialog'
+import HelpModal, { type HelpRequest } from './components/HelpModal'
 import { UpdateNotifier } from './components/UpdateNotifier'
 import { useApp } from './store'
 import { isRemote, isElectron } from './persistence/runtime'
@@ -125,8 +126,8 @@ const SELF_UNDO_ROUTES = new Set(['/canvas', '/flow', '/sketch', '/mindtrain'])
 //  - Click-outside (and Escape) closes any open <details> menu — the app-wide
 //    "範囲外クリックで閉じる" convention for disclosure popovers.
 //  - Window title mirrors the active project.
-//  - "?" opens the keyboard shortcut cheat sheet.
-function GlobalUX({ onCheatSheet }: { onCheatSheet: () => void }) {
+//  - "?" opens the in-app help (shortcuts chapter).
+function GlobalUX({ onHelp }: { onHelp: () => void }) {
   const { state, undo, redo } = useApp()
   const location = useLocation()
   const selfUndo = SELF_UNDO_ROUTES.has(location.pathname)
@@ -152,7 +153,7 @@ function GlobalUX({ onCheatSheet }: { onCheatSheet: () => void }) {
         if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return }
         if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return }
       }
-      if (e.key === '?' && !mod) { e.preventDefault(); onCheatSheet() }
+      if (e.key === '?' && !mod) { e.preventDefault(); onHelp() }
     }
     const onPointerDown = (e: PointerEvent) => {
       // Close every open <details> popover the click landed outside of.
@@ -173,54 +174,9 @@ function GlobalUX({ onCheatSheet }: { onCheatSheet: () => void }) {
       window.removeEventListener('keydown', onEsc)
       document.removeEventListener('pointerdown', onPointerDown)
     }
-  }, [undo, redo, onCheatSheet])
+  }, [undo, redo, onHelp])
 
   return null
-}
-
-// Keyboard shortcut cheat sheet — opened with "?" or from the settings menu.
-const SHORTCUT_SECTIONS: { title: string; items: [string, string][] }[] = [
-  { title: '全般', items: [['Ctrl+Z / Ctrl+Y', '元に戻す / やり直す（全画面）'], ['?', 'このショートカット一覧'], ['Esc', 'メニュー・選択を閉じる']] },
-  { title: 'フロー', items: [['ダブルクリック', 'タスクノードを追加'], ['Tab / Enter', '子ノード（下）/ 兄弟（右）を追加'], ['●を下にドラッグ', '親→子を接続'], ['Ctrl+G / Shift+Ctrl+G', 'グループ化 / 解除'], ['Ctrl+C / V / D', 'コピー / 貼り付け / 複製'], ['矢印キー (+Shift)', 'ノードを移動 (大きく)'], ['右クリック', '追加・削除メニュー']] },
-  { title: 'キャンバス', items: [['ホイール', 'ズーム'], ['Space+ドラッグ / 中ボタン', 'パン'], ['Ctrl+G', 'グループ化'], ['Ctrl+C / V / D', 'コピー / 貼り付け / 複製'], ['Delete', '選択を削除']] },
-  { title: 'スケッチ', items: [['ホイール', 'ズーム'], ['Ctrl+Z / Y', '元に戻す / やり直す']] },
-  { title: 'ノート', items: [['Ctrl+V（編集中）', '画像を貼り付け'], ['右クリック（編集中）', 'Markdown挿入メニュー']] },
-  { title: '計画', items: [['## 2026-08-01', '日付見出し'], ['> [09:00] shoot 内容', '予定行（?ボタンで記法一覧）']] },
-]
-
-function CheatSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-  if (!open) return null
-  return (
-    <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-900/30" onMouseDown={onClose}>
-      <div className="w-[560px] max-w-[calc(100vw-48px)] max-h-[80vh] overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl p-5" onMouseDown={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-slate-800">キーボードショートカット</h2>
-          <button onClick={onClose} title="閉じる" className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700">✕</button>
-        </div>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-          {SHORTCUT_SECTIONS.map(sec => (
-            <div key={sec.title}>
-              <h3 className="text-[10px] uppercase tracking-wide text-slate-400 mb-1.5">{sec.title}</h3>
-              <div className="space-y-1">
-                {sec.items.map(([keys, desc]) => (
-                  <div key={keys} className="flex items-start gap-2 text-xs">
-                    <kbd className="shrink-0 px-1.5 py-0.5 rounded border border-slate-200 bg-slate-50 text-[10px] text-slate-600 font-mono">{keys}</kbd>
-                    <span className="text-slate-600">{desc}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
 }
 
 // Phone-sized non-Electron clients (a phone browser on the LAN server, or the vite
@@ -253,8 +209,17 @@ function useMobileShell(): boolean {
 }
 
 export default function App() {
-  const [cheatOpen, setCheatOpen] = useState(false)
+  // null = closed; an object per request so repeated opens re-target the chapter.
+  const [helpReq, setHelpReq] = useState<HelpRequest | null>(null)
   const mobileShell = useMobileShell()
+
+  // Anywhere in the app (e.g. the sidebar settings menu) can open the help via a
+  // CustomEvent — same pattern as 'constella-remote', avoids prop drilling.
+  useEffect(() => {
+    const onOpen = (e: Event) => setHelpReq({ chapter: (e as CustomEvent).detail?.chapter ?? 'intro' })
+    window.addEventListener('constella-open-help', onOpen)
+    return () => window.removeEventListener('constella-open-help', onOpen)
+  }, [])
   if (mobileShell) {
     return (
       <ThemeProvider>
@@ -269,8 +234,8 @@ export default function App() {
     <ThemeProvider>
     <WikiLinkProvider>
       <MindtrainBridge />
-      <GlobalUX onCheatSheet={() => setCheatOpen(true)} />
-      <CheatSheet open={cheatOpen} onClose={() => setCheatOpen(false)} />
+      <GlobalUX onHelp={() => setHelpReq({ chapter: 'shortcuts' })} />
+      <HelpModal open={helpReq !== null} req={helpReq} onClose={() => setHelpReq(null)} />
       <ConfirmHost />
       <SyncButton />
       <AILauncher />

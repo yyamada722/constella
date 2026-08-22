@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus, ArrowUpCircle, RefreshCw, Files } from 'lucide-react'
+import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus, ArrowUpCircle, RefreshCw, Files, CircleHelp } from 'lucide-react'
 import { useApp } from '../store'
 import { useStore as useMindtrainStore } from '../mindtrain/store/useStore'
 import { exportBackup, importBackup } from '../persistence/backup'
@@ -646,6 +646,12 @@ export default function Sidebar() {
                   {remote.enabled && <p className="mt-1 text-[10px] text-slate-400">認証なし・基本は1台ずつ。別ネット/VPNからは「Tailscale」の行のURLを使用。</p>}
                 </div>
               )}
+              <button
+                onClick={() => { window.dispatchEvent(new CustomEvent('constella-open-help')); setMenuOpen(false) }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100"
+              >
+                <CircleHelp size={15} /> ヘルプ / 使い方
+              </button>
               <button
                 onClick={() => { setSettingsOpen(true); setMenuOpen(false) }}
                 className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100"

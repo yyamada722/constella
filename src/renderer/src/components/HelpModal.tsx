@@ -1,0 +1,114 @@
+import { useEffect, useRef, useState } from 'react'
+import { HELP_CHAPTERS } from '../help'
+import { renderMarkdown } from './typol/markdown'
+import { renderMermaidIn } from './typol/mermaid'
+
+// Published docs site (GitHub Pages). Chapter ids match docs/guide/<id> there.
+const DOCS_URL = 'https://yyamada722.github.io/constella'
+
+// In-app manual — replaces the old shortcut-only cheat sheet. Opened with "?"
+// (shortcuts chapter) or from the sidebar settings menu (intro chapter).
+// `req` is a fresh object per request so pressing "?" while the modal is already
+// open still re-targets the chapter (a plain string prop would bail out).
+export interface HelpRequest { chapter?: string }
+
+export default function HelpModal({ open, req, onClose }: {
+  open: boolean
+  req?: HelpRequest | null
+  onClose: () => void
+}) {
+  const [active, setActive] = useState(HELP_CHAPTERS[0].id)
+  const hostRef = useRef<HTMLDivElement>(null)
+
+  // Every request (open or re-open) picks up its chapter, falling back to the first.
+  useEffect(() => {
+    if (!open || !req) return
+    setActive(req.chapter && HELP_CHAPTERS.some(c => c.id === req.chapter) ? req.chapter : HELP_CHAPTERS[0].id)
+  }, [open, req])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
+  // Render the active chapter through the Typol pipeline (same as note previews).
+  useEffect(() => {
+    if (!open || !hostRef.current) return
+    const host = hostRef.current
+    const body = HELP_CHAPTERS.find(c => c.id === active)?.body ?? ''
+    host.innerHTML = renderMarkdown(body).html
+    void renderMermaidIn(host)
+    host.scrollTop = 0
+  }, [open, active])
+
+  // External links open in the browser; everything else (wiki:/anchors) is inert here.
+  useEffect(() => {
+    if (!open || !hostRef.current) return
+    const host = hostRef.current
+    const onClick = (e: MouseEvent) => {
+      const a = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null
+      if (!a) return
+      const href = a.getAttribute('href') ?? ''
+      if (/^https?:\/\//i.test(href)) {
+        a.target = a.target || '_blank'
+        a.rel = 'noreferrer'
+      } else {
+        e.preventDefault()
+      }
+    }
+    host.addEventListener('click', onClick)
+    return () => host.removeEventListener('click', onClick)
+  }, [open])
+
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-900/30" onMouseDown={onClose}>
+      <div
+        className="w-[880px] max-w-[calc(100vw-48px)] h-[80vh] bg-white border border-slate-200 rounded-xl shadow-2xl flex overflow-hidden"
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <div className="w-[180px] shrink-0 border-r border-slate-200 bg-slate-50 flex flex-col">
+          <div className="px-4 pt-4 pb-2 text-sm font-semibold text-slate-800">ヘルプ</div>
+          <nav className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
+            {HELP_CHAPTERS.map(c => (
+              <button
+                key={c.id}
+                onClick={() => setActive(c.id)}
+                className={`w-full text-left px-2.5 py-1.5 rounded-md text-xs transition-colors ${
+                  active === c.id
+                    ? 'bg-slate-200 text-slate-900 font-medium'
+                    : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'
+                }`}
+              >
+                {c.title}
+              </button>
+            ))}
+          </nav>
+          <div className="px-4 py-2 border-t border-slate-200 space-y-1">
+            <a
+              href={`${DOCS_URL}/guide/${active}`}
+              target="_blank"
+              rel="noreferrer"
+              className="block text-[11px] text-indigo-600 hover:underline"
+            >
+              Web で詳しく見る ↗
+            </a>
+            <div className="text-[10px] text-slate-400">Constella v{__APP_VERSION__}</div>
+          </div>
+        </div>
+        <div className="flex-1 min-w-0 relative">
+          <button
+            onClick={onClose}
+            title="閉じる"
+            className="absolute top-3 right-3 z-10 p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700"
+          >
+            ✕
+          </button>
+          <div ref={hostRef} className="typol-root typol-preview md-content h-full overflow-y-auto px-7 py-5 text-sm" />
+        </div>
+      </div>
+    </div>
+  )
+}

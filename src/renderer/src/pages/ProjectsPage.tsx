@@ -630,18 +630,20 @@ export default function ProjectsPage() {
 
       {/* Right pane: header (with view-mode toggle) + the chosen view */}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="h-14 flex items-center px-6 border-b border-slate-200 gap-3 min-w-0">
-          <h2 className="text-lg font-semibold text-slate-800 truncate min-w-0">
+        {/* Wraps onto a second line when the window is narrow — buttons must never
+            shrink into vertically-wrapped text. */}
+        <div className="min-h-14 py-2 flex flex-wrap items-center px-6 border-b border-slate-200 gap-x-3 gap-y-1.5 min-w-0">
+          <h2 className="text-lg font-semibold text-slate-800 truncate min-w-0 max-w-full">
             {viewMode === 'kanban' ? (selectedProject?.name ?? 'ボード') : viewMode === 'gantt' ? 'ガントチャート' : 'カレンダー'}
           </h2>
           {viewMode !== 'kanban' && (
-            <span className="text-xs text-slate-400 truncate min-w-0">プロジェクト全体（全ボード横断）</span>
+            <span className="text-xs text-slate-400 whitespace-nowrap">プロジェクト全体（全ボード横断）</span>
           )}
           {viewMode === 'kanban' && (
-            <div className="flex items-center rounded-md border border-slate-200 overflow-hidden text-xs ml-2">
+            <div className="flex items-center rounded-md border border-slate-200 overflow-hidden text-xs ml-2 shrink-0">
               {([['tree', '階層', ListTree], ['flat', 'フラット', AlignLeft]] as const).map(([m, label, Icon]) => (
                 <button key={m} onClick={() => setKanbanMode(m)} title={`${label}表示`}
-                  className={`flex items-center gap-1 px-2 py-1 transition-colors ${kanbanMode === m ? 'bg-emerald-500/15 text-emerald-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}>
+                  className={`flex items-center gap-1 px-2 py-1 transition-colors whitespace-nowrap ${kanbanMode === m ? 'bg-emerald-500/15 text-emerald-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}>
                   <Icon size={13} /> {label}
                 </button>
               ))}
@@ -649,7 +651,7 @@ export default function ProjectsPage() {
           )}
           {viewMode === 'kanban' && selectedProject && (
             <>
-              <div className="ml-2 w-44">
+              <div className="ml-2 w-44 shrink-0">
                 <SearchInput
                   value={taskFilter}
                   onChange={setTaskFilter}
@@ -660,14 +662,14 @@ export default function ProjectsPage() {
               <button
                 onClick={() => setHideDone(v => !v)}
                 title={hideDone ? '完了タスクを表示' : '完了タスクを隠す'}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded-md border text-xs transition-colors ${hideDone ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300'}`}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md border text-xs transition-colors whitespace-nowrap shrink-0 ${hideDone ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300'}`}
               >
                 {hideDone ? '完了非表示' : '完了表示'}
               </button>
               <button
                 onClick={() => setBulkOpen(true)}
                 title="AI出力やリストから一括でタスクを追加"
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300 transition-colors"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300 transition-colors whitespace-nowrap shrink-0"
               >
                 <ListPlus size={13} /> 一括追加
               </button>
@@ -679,7 +681,7 @@ export default function ProjectsPage() {
                 key={mode}
                 onClick={() => setViewMode(mode)}
                 title={label}
-                className={`flex items-center gap-1 px-2.5 py-1 text-sm transition-colors ${viewMode === mode ? 'bg-emerald-500/15 text-emerald-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
+                className={`flex items-center gap-1 px-2.5 py-1 text-sm transition-colors whitespace-nowrap ${viewMode === mode ? 'bg-emerald-500/15 text-emerald-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
               >
                 <Icon size={15} /> {label}
               </button>

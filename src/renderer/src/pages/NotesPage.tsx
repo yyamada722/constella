@@ -888,12 +888,14 @@ export default function NotesPage() {
       <div className="flex-1 flex flex-col">
         {selectedNote ? (
           <>
-            <div className="h-14 flex items-center justify-between px-6 border-b border-slate-200">
+            {/* Wraps when narrow: title keeps the first line, controls drop to a
+                second line instead of squeezing into vertically-wrapped text. */}
+            <div className="min-h-14 py-2 flex flex-wrap items-center gap-y-1.5 px-6 border-b border-slate-200">
               <input
                 type="text"
                 value={selectedNote.title}
                 onChange={e => updateNote({ title: e.target.value })}
-                className="text-lg font-semibold bg-transparent border-none outline-none text-slate-900 flex-1"
+                className="text-lg font-semibold bg-transparent border-none outline-none text-slate-900 flex-1 min-w-[10rem]"
                 placeholder="タイトル"
               />
               {isReference && (
@@ -901,20 +903,20 @@ export default function NotesPage() {
                   <Share2 size={11} /> 参照 · {masterName(selectedNote.masterProjectId)}
                 </span>
               )}
-              <div className="flex items-center rounded-md border border-slate-200 overflow-hidden text-sm">
+              <div className="flex items-center rounded-md border border-slate-200 overflow-hidden text-sm shrink-0">
                 {([['edit', '編集', Pencil], ['split', '分割', Columns2], ['preview', 'プレビュー', Eye]] as const).map(([mode, label, Icon]) => (
                   <button
                     key={mode}
                     onClick={() => switchMode(mode)}
                     title={mode === 'split' ? label : `${label} (Ctrl+Shift+E で切替)`}
-                    className={`flex items-center gap-1 px-2.5 py-1 transition-colors ${viewMode === mode ? 'bg-amber-500/15 text-amber-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
+                    className={`flex items-center gap-1 px-2.5 py-1 transition-colors whitespace-nowrap ${viewMode === mode ? 'bg-amber-500/15 text-amber-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
                   >
                     <Icon size={15} /> {label}
                   </button>
                 ))}
               </div>
               {/* Font size adjuster — applies to editor + preview via CSS vars. */}
-              <div className="ml-1 flex items-center rounded-md border border-slate-200 overflow-hidden text-xs">
+              <div className="ml-1 flex items-center rounded-md border border-slate-200 overflow-hidden text-xs shrink-0">
                 <button
                   onClick={() => setFontScale(s => Math.max(0.75, Math.round((s - 0.1) * 100) / 100))}
                   title="文字を小さく"
