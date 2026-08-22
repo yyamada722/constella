@@ -15,7 +15,8 @@ async function render() {
     const { svg } = await mermaid.render(`mmd-${Date.now()}-${seq++}`, decodeURIComponent(props.code))
     el.value.innerHTML = svg
   } catch (e) {
-    el.value.innerHTML = `<pre class="mermaid-error">⚠ Mermaid: ${String((e as Error)?.message ?? e)}</pre>`
+    const msg = String((e as Error)?.message ?? e).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
+    el.value.innerHTML = `<pre class="mermaid-error">⚠ Mermaid: ${msg}</pre>`
   }
 }
 

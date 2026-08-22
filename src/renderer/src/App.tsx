@@ -5,7 +5,7 @@ import Sidebar from './components/Sidebar'
 import { WikiLinkProvider } from './components/WikiLink'
 import AIChatPanel from './components/AIChatPanel'
 import { ConfirmHost } from './components/ConfirmDialog'
-import HelpModal from './components/HelpModal'
+import HelpModal, { type HelpRequest } from './components/HelpModal'
 import { UpdateNotifier } from './components/UpdateNotifier'
 import { useApp } from './store'
 import { isRemote, isElectron } from './persistence/runtime'
@@ -209,14 +209,14 @@ function useMobileShell(): boolean {
 }
 
 export default function App() {
-  // false = closed, string = open at that chapter id.
-  const [helpOpen, setHelpOpen] = useState<false | string>(false)
+  // null = closed; an object per request so repeated opens re-target the chapter.
+  const [helpReq, setHelpReq] = useState<HelpRequest | null>(null)
   const mobileShell = useMobileShell()
 
   // Anywhere in the app (e.g. the sidebar settings menu) can open the help via a
   // CustomEvent — same pattern as 'constella-remote', avoids prop drilling.
   useEffect(() => {
-    const onOpen = (e: Event) => setHelpOpen((e as CustomEvent).detail?.chapter ?? 'intro')
+    const onOpen = (e: Event) => setHelpReq({ chapter: (e as CustomEvent).detail?.chapter ?? 'intro' })
     window.addEventListener('constella-open-help', onOpen)
     return () => window.removeEventListener('constella-open-help', onOpen)
   }, [])
@@ -234,8 +234,8 @@ export default function App() {
     <ThemeProvider>
     <WikiLinkProvider>
       <MindtrainBridge />
-      <GlobalUX onHelp={() => setHelpOpen('shortcuts')} />
-      <HelpModal open={helpOpen !== false} chapter={helpOpen || undefined} onClose={() => setHelpOpen(false)} />
+      <GlobalUX onHelp={() => setHelpReq({ chapter: 'shortcuts' })} />
+      <HelpModal open={helpReq !== null} req={helpReq} onClose={() => setHelpReq(null)} />
       <ConfirmHost />
       <SyncButton />
       <AILauncher />

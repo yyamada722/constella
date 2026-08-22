@@ -8,7 +8,7 @@
 //   npm run docs:capture                 # build app + capture every section
 //   npm run docs:capture -- canvas       # one section
 //   npm run docs:capture -- --no-build   # reuse out/ from the last build
-//   npm run docs:capture -- --only=canvas-overview   # single scenario by name
+//   npm run docs:capture -- canvas --only=overview   # single scenario (name has no section prefix)
 //
 // Requires ffmpeg on PATH for GIF encoding.
 import { spawn, execFileSync } from 'node:child_process'
@@ -399,8 +399,11 @@ async function main() {
     try { await browser?.disconnect() } catch { /* ignore */ }
     child.kill()
     await sleep(500)
-    if (!existsSync(userData)) return
-    rmSync(userData, { recursive: true, force: true })
+    // Windows may still hold the SQLite file open for a moment after kill —
+    // retry briefly and never let cleanup failure mask the run's real result.
+    for (let i = 0; i < 5 && existsSync(userData); i++) {
+      try { rmSync(userData, { recursive: true, force: true }) } catch { await sleep(1000) }
+    }
   }
   console.log('done')
 }

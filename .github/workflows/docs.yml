@@ -10,8 +10,6 @@ on:
       - 'src/renderer/src/help/**'
       - 'scripts/sync-help-docs.mjs'
       - '.github/workflows/docs.yml'
-      - 'package.json'
-      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:

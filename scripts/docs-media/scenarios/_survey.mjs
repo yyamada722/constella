@@ -5,7 +5,7 @@ const ROUTES = ['/dashboard', '/', '/projects', '/flow', '/plan', '/research', '
 const NARROW = { width: 1100, height: 750 }
 
 export const scenarios = ROUTES.map(route => ({
-  name: `narrow${route.replace(/\//g, '-') || '-notes'}`,
+  name: route === '/' ? 'narrow-notes' : `narrow${route.replace(/\//g, '-')}`,
   async run(ctx) {
     await ctx.page.setViewport({ ...NARROW, deviceScaleFactor: 1 })
     await ctx.nav(route)

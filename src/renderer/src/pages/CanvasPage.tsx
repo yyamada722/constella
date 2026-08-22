@@ -3510,8 +3510,9 @@ export default function CanvasPage() {
       {/* Toolbar */}
       {/* Wraps to a second row when both side panels leave too little width — every
           tool stays reachable instead of shrinking into vertically-wrapped text.
-          overflow-x-clip (not hidden) so the add-menu dropdown still extends below. */}
-      <div ref={toolbarRef} className="relative min-h-11 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 py-1 border-b border-slate-200 bg-slate-50 shrink-0 z-10 overflow-x-clip">
+          No overflow clipping: absolutely-positioned popovers (タスク化, the compact
+          context strip) must be able to extend past the bar's edges. */}
+      <div ref={toolbarRef} className="relative min-h-11 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 py-1 border-b border-slate-200 bg-slate-50 shrink-0 z-10">
         <div className="flex items-center gap-2 shrink-0">
           {!canvasLocked && (
             <div className="relative shrink-0" ref={addMenuRef}>
@@ -3554,7 +3555,7 @@ export default function CanvasPage() {
           )}
           {canvasLocked && (
             <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 text-sm whitespace-nowrap shrink-0" title="編集ロック中（閲覧のみ）">
-              <Lock size={15} />{!toolbarCompact && ' 編集ロック中（閲覧のみ）'}
+              <Lock size={15} /> 編集ロック中（閲覧のみ）
             </span>
           )}
           {!toolbarCompact && <span className="text-xs text-slate-400 ml-1 whitespace-nowrap shrink-0">{tabCards.length} カード</span>}
@@ -3672,7 +3673,7 @@ export default function CanvasPage() {
               row — wrapping would shove the whole canvas down the moment a card is
               selected. `contents` keeps them inline in the bar when there is room. */}
           <div className={toolbarCompact
-            ? 'absolute left-4 top-full mt-1 z-20 flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow-md px-2 py-1 empty:hidden'
+            ? 'absolute left-4 top-full mt-1 z-20 flex items-center gap-1 bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow-md px-2 py-1 empty:hidden [&>div]:ml-0 [&>div]:pl-0 [&>div]:border-l-0'
             : 'contents'}>
           {viewMode === 'canvas' && !canvasLocked && selectedIds.length + selectedLabelIds.length >= 2 && (
             <div className="flex items-center gap-0.5 ml-1 pl-2 border-l border-slate-200">

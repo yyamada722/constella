@@ -123,7 +123,9 @@ export default defineConfig({
     editLink: {
       pattern: ({ filePath }) =>
         filePath.startsWith('guide/')
-          ? `https://github.com/yyamada722/constella/edit/main/src/renderer/src/help/`
+          // Generated pages have no editable file of their own — land on the
+          // source-chapter folder (GitHub's /edit/ 404s on directories).
+          ? `https://github.com/yyamada722/constella/tree/main/src/renderer/src/help`
           : `https://github.com/yyamada722/constella/edit/main/docs/${filePath}`,
       text: 'GitHub でこのページを編集',
     },

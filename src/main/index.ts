@@ -619,11 +619,16 @@ function createWindow(state: WindowState): void {
   mainWindow = win
 
   win.on('ready-to-show', () => {
-    if (state.maximized) win.maximize()
+    // Under forced bounds the exact content size is the whole point — a stale
+    // maximized flag from a reused profile must not override it.
+    if (state.maximized && !forced) win.maximize()
     win.show()
   })
   // Capture geometry on close (not 'closed' — the window is already gone there).
   win.on('close', () => {
+    // Never persist automation bounds (deliberately off-screen) into the profile:
+    // they would make every later normal launch restore an invisible window.
+    if (forced) return
     try {
       const maximized = win.isMaximized()
       // Use the normal (restored) bounds so un-maximizing later has a sane size.

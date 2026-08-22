@@ -8,19 +8,23 @@ const DOCS_URL = 'https://yyamada722.github.io/constella'
 
 // In-app manual — replaces the old shortcut-only cheat sheet. Opened with "?"
 // (shortcuts chapter) or from the sidebar settings menu (intro chapter).
-export default function HelpModal({ open, chapter, onClose }: {
+// `req` is a fresh object per request so pressing "?" while the modal is already
+// open still re-targets the chapter (a plain string prop would bail out).
+export interface HelpRequest { chapter?: string }
+
+export default function HelpModal({ open, req, onClose }: {
   open: boolean
-  chapter?: string
+  req?: HelpRequest | null
   onClose: () => void
 }) {
   const [active, setActive] = useState(HELP_CHAPTERS[0].id)
   const hostRef = useRef<HTMLDivElement>(null)
 
-  // Each open picks up the requested chapter (or falls back to the first).
+  // Every request (open or re-open) picks up its chapter, falling back to the first.
   useEffect(() => {
-    if (!open) return
-    setActive(chapter && HELP_CHAPTERS.some(c => c.id === chapter) ? chapter : HELP_CHAPTERS[0].id)
-  }, [open, chapter])
+    if (!open || !req) return
+    setActive(req.chapter && HELP_CHAPTERS.some(c => c.id === req.chapter) ? req.chapter : HELP_CHAPTERS[0].id)
+  }, [open, req])
 
   useEffect(() => {
     if (!open) return
