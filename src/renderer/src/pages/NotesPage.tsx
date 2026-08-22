@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote } from 'lucide-react'
+import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote, Paperclip } from 'lucide-react'
 import { useApp } from '../store'
 import { Note, NoteFolder, CanvasCard } from '../types'
+import { NoteAttachments } from '../components/NoteAttachments'
 import { generateId } from '../utils'
 import { TypolMarkdown as MarkdownText } from '../components/typol/TypolMarkdown'
+import { NoteMinimap } from '../components/NoteMinimap'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
@@ -41,6 +43,12 @@ export default function NotesPage() {
     '--tp-preview-size': `${Math.round(15 * fontScale)}px`,
   }) as React.CSSProperties, [fontScale])
 
+  // 付随資料パネルの開閉（グローバルに記憶 — ノート切替では閉じない）
+  const [attachOpen, setAttachOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('constella.notes.attachPanel') === '1' } catch { return false }
+  })
+  useEffect(() => { try { localStorage.setItem('constella.notes.attachPanel', attachOpen ? '1' : '0') } catch { /* ignore */ } }, [attachOpen])
+
   // PDF書き出し / スライドショー（--- 区切り）
   const [exportingPdf, setExportingPdf] = useState(false)
   const [slideshowOpen, setSlideshowOpen] = useState(false)
@@ -65,12 +73,14 @@ export default function NotesPage() {
   }
 
   const allNotes = useMemo(() => state.notes.filter(n => n.masterProjectId === active), [state.notes, active])
+  // 添付の検索ヒット用: fileId → 小文字ファイル名（添付はライブラリ参照なので解決が要る）
+  const fileNameById = useMemo(() => new Map(state.files.map(f => [f.id, (f.name || '').toLowerCase()])), [state.files])
   // Apply archive visibility + search.
   const notes = useMemo(() => {
     const q = search.trim().toLowerCase()
     return allNotes
       .filter(n => showArchived ? !!n.archivedAt : !n.archivedAt)
-      .filter(n => !q || (n.title || '').toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q) || (n.tags || []).some(t => t.toLowerCase().includes(q)))
+      .filter(n => !q || (n.title || '').toLowerCase().includes(q) || (n.content || '').toLowerCase().includes(q) || (n.tags || []).some(t => t.toLowerCase().includes(q)) || (n.attachments || []).some(a => (fileNameById.get(a.fileId) || '').includes(q)))
       .sort((a, b) => {
         // Pinned float to the top regardless of other sort.
         const pa = a.pinned ? 1 : 0, pb = b.pinned ? 1 : 0
@@ -79,7 +89,7 @@ export default function NotesPage() {
         if (sortMode === 'created') return b.createdAt.localeCompare(a.createdAt)
         return b.updatedAt.localeCompare(a.updatedAt)
       })
-  }, [allNotes, search, sortMode, showArchived])
+  }, [allNotes, search, sortMode, showArchived, fileNameById])
 
   const folders = useMemo(
     () => state.noteFolders.filter(f => f.masterProjectId === active).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
@@ -125,6 +135,11 @@ export default function NotesPage() {
   // preview / split are available on demand. Persisted across selections — switching
   // notes does NOT force back to preview.
   const [viewMode, setViewMode] = useState<'preview' | 'edit' | 'split'>('edit')
+  const viewModeRef = useRef(viewMode)
+  viewModeRef.current = viewMode
+  // Scroll position (0–1 of the scrollable range) captured just before a mode
+  // switch, re-applied to whichever scroller the new mode mounts.
+  const pendingScrollRef = useRef<{ noteId: string; ratio: number; focus: boolean } | null>(null)
 
   // Shared notes from OTHER master projects that THIS project references (live instances).
   const referencedNotes = useMemo(() => {
@@ -281,9 +296,124 @@ export default function NotesPage() {
   }
   const closeFind = () => { setFindOpen(false); setShowRepl(false) }
 
+  // ── Mode switch that keeps the reading position ──
+  // The editor textarea and the preview div are different elements (the preview
+  // is even re-created on switch), so without this every toggle lands at the top.
+  const previewEl = () => document.querySelector<HTMLElement>('.typol-preview')
+  const primaryScroller = (mode: 'preview' | 'edit' | 'split'): HTMLElement | null =>
+    mode === 'preview' ? previewEl() : editorTa()
+  const scrollRatio = (el: HTMLElement) => el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight)
+  const switchMode = (next: 'preview' | 'edit' | 'split') => {
+    const cur = viewModeRef.current
+    if (next === cur) return
+    const el = primaryScroller(cur)
+    const noteId = selectedNoteRef.current?.id
+    pendingScrollRef.current = noteId ? { noteId, ratio: el ? scrollRatio(el) : 0, focus: next !== 'preview' } : null
+    setViewMode(next)
+  }
+  useEffect(() => {
+    const p = pendingScrollRef.current
+    if (!p) return
+    pendingScrollRef.current = null
+    // A note switch in the meantime must not inherit the old note's position.
+    if (p.noteId !== selectedNoteRef.current?.id) return
+    // Every timer is tracked so a quick second switch cancels the stale restore
+    // instead of letting it overwrite the new pane with the old ratio.
+    let dead = false
+    const timers: ReturnType<typeof setTimeout>[] = []
+    const later = (fn: () => void, ms: number) => { timers.push(setTimeout(() => { if (!dead) fn() }, ms)) }
+    const apply = (attempt: number) => {
+      const el = primaryScroller(viewMode)
+      if (!el) { if (attempt < 6) later(() => apply(attempt + 1), 40); return }
+      const target = p.ratio * (el.scrollHeight - el.clientHeight)
+      el.scrollTop = target
+      if (p.focus && el instanceof HTMLTextAreaElement) {
+        // Caret goes to the first source line of the RESTORED editor viewport
+        // (scrollTop / line-height), not to a ratio of the source-line count —
+        // the preview's images/headings make those two ratios diverge. Focus and
+        // setSelectionRange may scroll to the caret, so the scrollTop is re-applied.
+        const lh = parseFloat(getComputedStyle(el).lineHeight) || 22
+        const lines = el.value.split('\n')
+        const lineIdx = Math.min(lines.length - 1, Math.max(0, Math.floor(target / lh)))
+        let pos = 0
+        for (let i = 0; i < lineIdx; i++) pos += lines[i].length + 1
+        el.focus({ preventScroll: true })
+        el.setSelectionRange(pos, pos)
+        el.scrollTop = target
+      }
+      // The preview's images / mermaid blocks settle a moment later and grow the
+      // content; re-apply once so the ratio refers to the final height.
+      if (viewMode === 'preview') later(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
+    }
+    later(() => apply(0), 0)
+    return () => { dead = true; timers.forEach(clearTimeout) }
+  }, [viewMode, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Split view: keep editor and preview scrolled to the same relative position ──
+  useEffect(() => {
+    if (viewMode !== 'split') return
+    let ta: HTMLTextAreaElement | null = null
+    let pv: HTMLElement | null = null
+    let lock: HTMLElement | null = null
+    let unlockTimer: ReturnType<typeof setTimeout> | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let dead = false
+    const follow = (from: HTMLElement, to: HTMLElement) => () => {
+      // A programmatic scrollTop on `to` fires its own scroll event; ignore that
+      // echo (and only that one) so the two panes don't fight.
+      if (lock === from) return
+      lock = to
+      to.scrollTop = scrollRatio(from) * (to.scrollHeight - to.clientHeight)
+      if (unlockTimer) clearTimeout(unlockTimer)
+      unlockTimer = setTimeout(() => { lock = null }, 60)
+    }
+    let onTa: (() => void) | null = null
+    let onPv: (() => void) | null = null
+    let onInput: (() => void) | null = null
+    let resyncTimer: ReturnType<typeof setTimeout> | null = null
+    let mo: MutationObserver | null = null
+    const attach = (attempt: number) => {
+      if (dead) return
+      ta = editorTa(); pv = previewEl()
+      if (!ta || !pv) { if (attempt < 10) timer = setTimeout(() => attach(attempt + 1), 50); return }
+      onTa = follow(ta, pv); onPv = follow(pv, ta)
+      ta.addEventListener('scroll', onTa, { passive: true })
+      pv.addEventListener('scroll', onPv, { passive: true })
+      // Typing and late layout (images / mermaid settling) change scrollHeight
+      // without a scroll event — re-align the preview to the editor after a beat.
+      const resync = () => {
+        if (resyncTimer) clearTimeout(resyncTimer)
+        resyncTimer = setTimeout(() => { if (!dead && ta && pv) follow(ta, pv)() }, 80)
+      }
+      onInput = resync
+      ta.addEventListener('input', onInput)
+      mo = new MutationObserver(resync)
+      mo.observe(pv, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] })
+    }
+    attach(0)
+    return () => {
+      dead = true
+      if (timer) clearTimeout(timer)
+      if (unlockTimer) clearTimeout(unlockTimer)
+      if (resyncTimer) clearTimeout(resyncTimer)
+      mo?.disconnect()
+      if (ta && onTa) ta.removeEventListener('scroll', onTa)
+      if (ta && onInput) ta.removeEventListener('input', onInput)
+      if (pv && onPv) pv.removeEventListener('scroll', onPv)
+    }
+  }, [viewMode, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      // Ctrl+Shift+E: 編集 ⇔ プレビュー（Ctrl+E はエディタのインラインコードと衝突するため Shift 付き）
+      if (e.shiftKey) {
+        if (e.key.toLowerCase() === 'e' && selectedNoteRef.current) {
+          e.preventDefault()
+          switchMode(viewModeRef.current === 'edit' ? 'preview' : 'edit')
+        }
+        return
+      }
       const k = e.key.toLowerCase()
       if ((k === 'f' || k === 'h') && selectedNoteRef.current) {
         e.preventDefault()
@@ -777,8 +907,8 @@ export default function NotesPage() {
                 {([['edit', '編集', Pencil], ['split', '分割', Columns2], ['preview', 'プレビュー', Eye]] as const).map(([mode, label, Icon]) => (
                   <button
                     key={mode}
-                    onClick={() => setViewMode(mode)}
-                    title={label}
+                    onClick={() => switchMode(mode)}
+                    title={mode === 'split' ? label : `${label} (Ctrl+Shift+E で切替)`}
                     className={`flex items-center gap-1 px-2.5 py-1 transition-colors whitespace-nowrap ${viewMode === mode ? 'bg-amber-500/15 text-amber-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
                   >
                     <Icon size={15} /> {label}
@@ -805,6 +935,19 @@ export default function NotesPage() {
                   className="p-1 text-slate-500 hover:bg-slate-100"
                 ><Plus size={13} /></button>
               </div>
+              {/* 付随資料パネルの開閉 — 添付があるときは件数バッジを出す */}
+              <button
+                onClick={() => setAttachOpen(v => !v)}
+                title="付随資料（PDF・画像・動画などをこのノートに添付）"
+                className={`relative ml-1 p-1.5 rounded-md hover:bg-slate-100 transition-colors ${attachOpen ? 'text-emerald-600' : 'text-slate-500 hover:text-emerald-600'}`}
+              >
+                <Paperclip size={16} />
+                {(selectedNote.attachments?.length ?? 0) > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-emerald-500 text-white text-[9px] leading-[14px] text-center font-semibold">
+                    {selectedNote.attachments!.length}
+                  </span>
+                )}
+              </button>
               {isReference ? (
                 <>
                   <button
@@ -938,6 +1081,9 @@ export default function NotesPage() {
                 />
               </div>
             </div>
+            {/* 付随資料 — 先方資料/自分の資料などのファイルをこのノートに添付して管理。
+                実体はファイルライブラリ (FileItem)、ここは参照リンクの管理。 */}
+            {attachOpen && <NoteAttachments note={selectedNote} />}
             {/* Reverse links: tasks that point to this note. Click jumps into the Projects page with
                 the task pre-selected (the NotePanel there will re-surface this very note). */}
             {linkedTasks.length > 0 && (
@@ -1027,6 +1173,23 @@ export default function NotesPage() {
               </div>
             )}
             <div className="flex-1 flex min-h-0">
+              {outlineOpen && (
+                <aside className="w-52 shrink-0 border-r border-slate-200 overflow-y-auto py-2 px-1.5 bg-slate-50/50">
+                  <div className="px-2 pb-1 text-[10px] font-medium text-slate-400">アウトライン</div>
+                  {outline.length === 0 && <div className="px-2 text-[11px] text-slate-400">見出しがありません</div>}
+                  {outline.map((h, i) => (
+                    <button
+                      key={`${h.line}-${i}`}
+                      onClick={() => jumpToHeading(h, i)}
+                      title={h.text}
+                      className="w-full text-left py-1 pr-2 rounded text-[12px] text-slate-600 hover:bg-slate-100 hover:text-slate-900 truncate block"
+                      style={{ paddingLeft: 8 + (h.level - 1) * 12 }}
+                    >
+                      {h.text}
+                    </button>
+                  ))}
+                </aside>
+              )}
               <div className="flex-1 flex flex-col min-h-0 min-w-0">
                 {viewMode === 'split' ? (
                   <div className="flex-1 flex min-h-0 overflow-hidden" style={fontVars}>
@@ -1060,23 +1223,12 @@ export default function NotesPage() {
                   </div>
                 )}
               </div>
-              {outlineOpen && (
-                <aside className="w-52 shrink-0 border-l border-slate-200 overflow-y-auto py-2 px-1.5 bg-slate-50/50">
-                  <div className="px-2 pb-1 text-[10px] font-medium text-slate-400">アウトライン</div>
-                  {outline.length === 0 && <div className="px-2 text-[11px] text-slate-400">見出しがありません</div>}
-                  {outline.map((h, i) => (
-                    <button
-                      key={`${h.line}-${i}`}
-                      onClick={() => jumpToHeading(h, i)}
-                      title={h.text}
-                      className="w-full text-left py-1 pr-2 rounded text-[12px] text-slate-600 hover:bg-slate-100 hover:text-slate-900 truncate block"
-                      style={{ paddingLeft: 8 + (h.level - 1) * 12 }}
-                    >
-                      {h.text}
-                    </button>
-                  ))}
-                </aside>
-              )}
+              {/* Minimap follows the editor (edit/split) or the preview (preview mode). */}
+              <NoteMinimap
+                content={selectedNote.content}
+                scrollerKey={`${selectedNote.id}:${viewMode}`}
+                getScroller={viewMode === 'preview' ? previewEl : editorTa}
+              />
             </div>
           </>
         ) : (
@@ -1127,6 +1279,11 @@ function NoteRow({ note, active, onSelect, onDragStart, onDragEnd, badge }: {
         {note.pinned && <Star size={10} className="text-amber-500 shrink-0" fill="currentColor" />}
         {badge && <Share2 size={10} className="text-indigo-400 shrink-0" />}
         <span className="truncate">{note.title || '(無題)'}</span>
+        {(note.attachments?.length ?? 0) > 0 && (
+          <span className="inline-flex items-center gap-0.5 shrink-0 text-[9px] text-emerald-600" title={`付随資料 ${note.attachments!.length}件`}>
+            <Paperclip size={9} />{note.attachments!.length}
+          </span>
+        )}
         {badge && <span className="ml-auto shrink-0 text-[9px] text-indigo-400 max-w-[80px] truncate" title={`元: ${badge}`}>{badge}</span>}
       </p>
       <p className="text-xs text-slate-500 mt-1 line-clamp-2">{note.content || '空のノート'}</p>

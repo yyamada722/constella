@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useEffect } from 'react'
-import { ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevRight, PanelLeftClose, PanelLeftOpen, FileText, CalendarRange } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ChevronDown, ChevronRight as ChevRight, PanelLeftClose, PanelLeftOpen, FileText, CalendarRange, Paperclip } from 'lucide-react'
 import { useApp } from '../store'
 import { Task, Project, MasterProject, BoardColor } from '../types'
 import { addDaysIso, daysBetween, isoToday, isoToDate, isValidIso, maxIso, minIso, pad2, taskSpan } from '../utils/date'
@@ -8,6 +8,7 @@ import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
 import { holidayNameFor } from '../utils/jpHolidays'
 import { generateId } from '../utils'
 import LinkedNotesField from '../components/LinkedNotesField'
+import LinkedFilesField from '../components/LinkedFilesField'
 
 const ROW_H = 30
 const LEFT_W_DEFAULT = 280
@@ -871,6 +872,9 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
           <div className="mb-2">
             <LinkedNotesField task={editing.row.task} onChange={ids => { const v = ids.length > 0 ? ids : undefined; patchTask(editing.row, { linkedNoteIds: v }); setEditing(s => s ? { ...s, row: { ...s.row, task: { ...s.row.task, linkedNoteIds: v } } } : s) }} />
           </div>
+          <div className="mb-2">
+            <LinkedFilesField task={editing.row.task} onChange={ids => { const v = ids.length > 0 ? ids : undefined; patchTask(editing.row, { fileIds: v }); setEditing(s => s ? { ...s, row: { ...s.row, task: { ...s.row.task, fileIds: v } } } : s) }} />
+          </div>
           {/* Move / duplicate to another board — operates on the whole subtree. */}
           {boards.filter(b => b.id !== editing.row.board.id).length > 0 && (
             <div className="flex items-center gap-1.5 mb-2 text-[11px] text-slate-500">
@@ -1136,6 +1140,9 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
                   {r.task.shared && <span className="shrink-0" title={`他プロジェクトのガントに「${r.task.sharedAlias || '予定'}」として表示中`}><CalendarRange size={11} className="text-teal-500" /></span>}
                   {(r.task.linkedNoteIds?.length ?? 0) > 0 && (
                     <FileText size={10} className="text-indigo-400 shrink-0" />
+                  )}
+                  {(r.task.fileIds?.length ?? 0) > 0 && (
+                    <Paperclip size={10} className="text-orange-400 shrink-0" />
                   )}
                   {(() => {
                     const boardCol = boardColorFor(r.board, boardIndex.get(r.board.id) ?? 0)

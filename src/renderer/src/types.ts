@@ -8,6 +8,58 @@ export interface MasterProject {
   folder?: string // optional group name — the switcher renders projects sharing a folder under one collapsible header (plain string, no folder entity)
 }
 
+/* ── ファイル (Files) — cross-project file library ── */
+
+// A file in the library (PDF / image / video / audio / anything). Bytes live in
+// the IndexedDB media store; `url` is the stable `idb:<id>` ref. Registered
+// under ONE owning master project, and additionally surfaced in every project
+// listed in `linkedMasterIds` (same idiom as note sharing) — the file itself is
+// a single source; metadata edits from any project write back here.
+// A superseded revision of a FileItem — kept when a new version is uploaded so
+// 先方資料の改訂 can be rolled back / compared. Bytes stay in the media store.
+export interface FileVersion {
+  url: string
+  mime: string
+  size: number
+  createdAt: string   // when THIS revision was originally registered
+  replacedAt: string  // when it was superseded by a newer upload
+}
+
+export interface FileItem {
+  id: string
+  masterProjectId: string    // owning (registering) master project
+  linkedMasterIds?: string[] // other master projects that also show this file (参照)
+  name: string
+  url: string                // idb:<id> media ref, or local:<path> (server reference)
+  mime: string               // MIME type at registration — drives preview/thumbnail
+  size: number               // bytes
+  tags: string[]
+  folderId?: string          // folder within the OWNING project (undefined = 未分類)
+  comment?: string           // 自由記入のメモ（"先方からのMTG資料" 等）。検索対象
+  versions?: FileVersion[]   // superseded revisions, newest first（差し替え履歴）
+  createdAt: string
+}
+
+// Grouping container for FileItem — same shape/UX as NoteFolder (nesting + color).
+export interface FileFolder {
+  id: string
+  masterProjectId: string
+  name: string
+  createdAt: string
+  parentId?: string
+  color?: BoardColor
+}
+
+// 付随資料 — a link from a Note to a library FileItem. The bytes/metadata live
+// on the FileItem (shared across notes); only the per-note organization — the
+// free-text `group` bucket ("先方資料" / "自分の資料" など) — lives on the link.
+export interface NoteAttachment {
+  id: string
+  fileId: string    // referenced FileItem
+  group?: string    // optional bucket; undefined renders under 未分類
+  createdAt: string
+}
+
 export interface Note {
   id: string
   masterProjectId: string // owning master project
@@ -19,6 +71,7 @@ export interface Note {
   folderId?: string // optional grouping — items without folderId render under "未分類"
   pinned?: boolean  // pinned notes sort to the top regardless of other order
   archivedAt?: string // ISO timestamp — when set, hidden from default list (soft delete)
+  attachments?: NoteAttachment[] // 付随資料 (undefined = none)
   // Cross-project note sharing: `shared` marks this note as a referenceable master —
   // common content (URLs, contacts…) maintained in one place. Every other master
   // project listed in `refByMasterIds` shows it as a live instance; edits made from
@@ -49,6 +102,7 @@ export interface Task {
   endDate?: string   // YYYY-MM-DD (optional, inclusive). If only one of start/end is set, the task is a 1-day item on that date.
   parentId?: string  // task hierarchy: when set, this task is a subtask of `parentId` (within the same board).
   linkedNoteIds?: string[] // ids of Notes that hold richer detail for this task (contact info, references, etc.)
+  fileIds?: string[] // ids of library FileItems attached to this task (資料の参照リンク)
   priority?: 1 | 2 | 3 | 4 // 1 = highest (P1 / urgent), 4 = lowest. undefined = unset.
   completedAt?: string // ISO timestamp when status flipped to 'done'. Surfaces in "hide done" filtering and history.
   // Cross-project schedule sharing: when true, this task's date span also shows on
@@ -304,6 +358,7 @@ export interface CanvasCard {
   refSketchId?: string // when set on a 'sketch' card, the card live-mirrors this Sketch (read-only on canvas)
   refTabId?: string // when set on a 'canvasLink' card, the card is a shortcut to that canvas tab
   refPlanId?: string // when set on a 'mindtrain' card, the card live-mirrors that 路線図 plan (read-only on canvas)
+  refFileId?: string // when set on a media card (pdf/image/video/audio), url came from this library FileItem — enables "ライブラリで開く" (the card keeps its own url copy, so it survives library deletion)
   draftWhen?: DraftWhen // 'taskDraft' cards: rough target timing, converted to endDate on タスク化
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
 

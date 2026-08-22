@@ -1,9 +1,10 @@
 import { createContext, useContext, useReducer, useEffect, useMemo, useState, useRef, useCallback, ReactNode } from 'react'
-import { Note, NoteFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Flow, Plan, PlanFolder, TimelineBand } from './types'
+import { Note, NoteAttachment, NoteFolder, FileItem, FileFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Flow, Plan, PlanFolder, TimelineBand } from './types'
 import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNotice } from './persistence/db'
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
+import { generateId } from './utils'
 
 // The single default master project that all pre-existing data is migrated under.
 // Keep this id in sync with db.ts (SQL migration) and mindtrain (workspace id).
@@ -15,6 +16,8 @@ export interface AppState {
   activeMasterProjectId: string
   notes: Note[]
   noteFolders: NoteFolder[]
+  files: FileItem[]
+  fileFolders: FileFolder[]
   projects: Project[]
   research: ResearchItem[]
   researchFolders: ResearchFolder[]
@@ -46,6 +49,16 @@ export type Action =
   | { type: 'ADD_NOTE_FOLDER'; payload: NoteFolder }
   | { type: 'UPDATE_NOTE_FOLDER'; payload: NoteFolder }
   | { type: 'DELETE_NOTE_FOLDER'; payload: string }
+  | { type: 'ADD_FILE_ITEM'; payload: FileItem }
+  | { type: 'UPDATE_FILE_ITEM'; payload: FileItem }
+  | { type: 'DELETE_FILE_ITEM'; payload: string }
+  // 非同期アップロード完了時の「追記」— reducer が現在のノート/タスクから足すので、
+  // await 中の編集や並行アップロードを clobber しない（stale spread 対策）。
+  | { type: 'APPEND_NOTE_ATTACHMENTS'; payload: { noteId: string; links: NoteAttachment[] } }
+  | { type: 'APPEND_TASK_FILE_IDS'; payload: { taskId: string; fileIds: string[] } }
+  | { type: 'ADD_FILE_FOLDER'; payload: FileFolder }
+  | { type: 'UPDATE_FILE_FOLDER'; payload: FileFolder }
+  | { type: 'DELETE_FILE_FOLDER'; payload: string }
   | { type: 'ADD_PROJECT'; payload: Project }
   | { type: 'UPDATE_PROJECT'; payload: Project }
   | { type: 'DELETE_PROJECT'; payload: string }
@@ -140,6 +153,8 @@ const initialState: AppState = {
     }
   ],
   noteFolders: [],
+  files: [],
+  fileFolders: [],
   projects: [
     {
       id: '1',
@@ -222,12 +237,36 @@ function reducer(state: AppState, action: Action): AppState {
       // Cascade: drop the master project and everything scoped to it across every tool.
       const mid = action.payload
       const removedTabs = new Set(state.canvasTabs.filter(t => t.projectId === mid).map(t => t.id))
+      // Files owned by the doomed master disappear (their attachment links in
+      // OTHER projects' notes are stripped below); files merely LINKED into it
+      // survive, minus the link.
+      const doomedFileIds = new Set(state.files.filter(f => f.masterProjectId === mid).map(f => f.id))
       return {
         ...state,
         masterProjects: state.masterProjects.filter(p => p.id !== mid),
-        notes: state.notes.filter(n => n.masterProjectId !== mid),
+        notes: state.notes.filter(n => n.masterProjectId !== mid).map(n => {
+          if (!n.attachments?.some(a => doomedFileIds.has(a.fileId))) return n
+          const next = n.attachments.filter(a => !doomedFileIds.has(a.fileId))
+          return { ...n, attachments: next.length > 0 ? next : undefined }
+        }),
         noteFolders: state.noteFolders.filter(f => f.masterProjectId !== mid),
-        projects: state.projects.filter(p => p.masterProjectId !== mid),
+        projects: state.projects.filter(p => p.masterProjectId !== mid).map(p => {
+          if (!p.tasks.some(t => t.fileIds?.some(id => doomedFileIds.has(id)))) return p
+          return {
+            ...p,
+            tasks: p.tasks.map(t => {
+              if (!t.fileIds?.some(id => doomedFileIds.has(id))) return t
+              const next = t.fileIds.filter(id => !doomedFileIds.has(id))
+              return { ...t, fileIds: next.length > 0 ? next : undefined }
+            }),
+          }
+        }),
+        files: state.files.filter(f => f.masterProjectId !== mid).map(f => {
+          if (!f.linkedMasterIds?.includes(mid)) return f
+          const linked = f.linkedMasterIds.filter(id => id !== mid)
+          return { ...f, linkedMasterIds: linked.length > 0 ? linked : undefined }
+        }),
+        fileFolders: state.fileFolders.filter(f => f.masterProjectId !== mid),
         research: state.research.filter(r => r.masterProjectId !== mid),
         researchFolders: state.researchFolders.filter(f => f.masterProjectId !== mid),
         sketches: state.sketches.filter(s => s.masterProjectId !== mid),
@@ -239,7 +278,14 @@ function reducer(state: AppState, action: Action): AppState {
         aiConversations: state.aiConversations.filter(c => c.masterProjectId !== mid),
         canvasBoards: state.canvasBoards.filter(b => b.projectId !== mid),
         canvasTabs: state.canvasTabs.filter(t => t.projectId !== mid),
-        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)).map(c => c.refTabId && removedTabs.has(c.refTabId) ? { ...c, refTabId: undefined } : c),
+        canvasCards: state.canvasCards.filter(c => !removedTabs.has(c.tabId)).map(c => {
+          // 消えるタブへの canvasLink 参照と、消えるファイルへの refFileId を両方掃除
+          // （DELETE_FILE_ITEM と同じ整合性 — url のコピーは残すので表示は生きる）。
+          let next = c
+          if (next.refTabId && removedTabs.has(next.refTabId)) next = { ...next, refTabId: undefined }
+          if (next.refFileId && doomedFileIds.has(next.refFileId)) next = { ...next, refFileId: undefined }
+          return next
+        }),
         canvasArrows: state.canvasArrows.filter(a => !removedTabs.has(a.tabId)),
         canvasGroups: state.canvasGroups.filter(g => !removedTabs.has(g.tabId)),
         canvasStrokes: state.canvasStrokes.filter(s => !removedTabs.has(s.tabId)),
@@ -286,6 +332,99 @@ function reducer(state: AppState, action: Action): AppState {
           .filter(f => f.id !== action.payload)
           .map(f => f.parentId === action.payload ? { ...f, parentId: undefined } : f),
         notes: state.notes.map(n => n.folderId === action.payload ? { ...n, folderId: undefined } : n),
+      }
+    case 'ADD_FILE_ITEM':
+      return { ...state, files: [action.payload, ...state.files] }
+    case 'UPDATE_FILE_ITEM': {
+      const next = action.payload
+      const prev = state.files.find(f => f.id === next.id)
+      // 版の差し替え/復元で実体URLが変わったら、そのファイルを参照している
+      // キャンバスカードのURLコピーも追随させる（ノート/タスクは fileId 解決なので
+      // 自動追随 — カードだけ旧版で止まる非対称を防ぐ）。手動で別メディアに
+      // 差し替え済みのカード（url がすでに一致しない）は触らない。
+      const urlChanged = !!prev && prev.url !== next.url
+      return {
+        ...state,
+        files: state.files.map(f => f.id === next.id ? next : f),
+        canvasCards: urlChanged
+          ? state.canvasCards.map(c => c.refFileId === next.id && c.url === prev!.url ? { ...c, url: next.url } : c)
+          : state.canvasCards,
+      }
+    }
+    case 'APPEND_NOTE_ATTACHMENTS': {
+      const { noteId, links } = action.payload
+      return {
+        ...state,
+        notes: state.notes.map(n => {
+          if (n.id !== noteId) return n
+          // 二重適用防止（同じ fileId+id のリンクは足さない）
+          const have = new Set((n.attachments ?? []).map(a => a.id))
+          const add = links.filter(l => !have.has(l.id))
+          if (add.length === 0) return n
+          return { ...n, attachments: [...(n.attachments ?? []), ...add], updatedAt: new Date().toISOString() }
+        }),
+      }
+    }
+    case 'APPEND_TASK_FILE_IDS': {
+      const { taskId, fileIds } = action.payload
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (!p.tasks.some(t => t.id === taskId)) return p
+          return {
+            ...p,
+            tasks: p.tasks.map(t => {
+              if (t.id !== taskId) return t
+              const have = new Set(t.fileIds ?? [])
+              const add = fileIds.filter(id => !have.has(id))
+              if (add.length === 0) return t
+              return { ...t, fileIds: [...(t.fileIds ?? []), ...add] }
+            }),
+          }
+        }),
+      }
+    }
+    case 'DELETE_FILE_ITEM': {
+      // Cascade: strip every note-attachment link AND task file link that
+      // references this file — otherwise they keep "broken" chips pointing at nothing.
+      const fid = action.payload
+      return {
+        ...state,
+        files: state.files.filter(f => f.id !== fid),
+        notes: state.notes.map(n => {
+          if (!n.attachments?.some(a => a.fileId === fid)) return n
+          const next = n.attachments.filter(a => a.fileId !== fid)
+          return { ...n, attachments: next.length > 0 ? next : undefined }
+        }),
+        projects: state.projects.map(p => {
+          if (!p.tasks.some(t => t.fileIds?.includes(fid))) return p
+          return {
+            ...p,
+            tasks: p.tasks.map(t => {
+              if (!t.fileIds?.includes(fid)) return t
+              const next = t.fileIds.filter(id => id !== fid)
+              return { ...t, fileIds: next.length > 0 ? next : undefined }
+            }),
+          }
+        }),
+        // Canvas cards keep their own url copy (still rendered, blob kept alive by
+        // collectMediaRefs) — only the back-reference to the deleted file is cleared.
+        canvasCards: state.canvasCards.map(c => c.refFileId === fid ? { ...c, refFileId: undefined } : c),
+      }
+    }
+    case 'ADD_FILE_FOLDER':
+      return { ...state, fileFolders: [...state.fileFolders, action.payload] }
+    case 'UPDATE_FILE_FOLDER':
+      return { ...state, fileFolders: state.fileFolders.map(f => f.id === action.payload.id ? action.payload : f) }
+    case 'DELETE_FILE_FOLDER':
+      // Cascade-promote (same as note folders): child folders bubble up to root,
+      // files in the deleted folder become unfiled.
+      return {
+        ...state,
+        fileFolders: state.fileFolders
+          .filter(f => f.id !== action.payload)
+          .map(f => f.parentId === action.payload ? { ...f, parentId: undefined } : f),
+        files: state.files.map(f => f.folderId === action.payload ? { ...f, folderId: undefined } : f),
       }
     case 'ADD_PROJECT':
       return { ...state, projects: [action.payload, ...state.projects] }
@@ -585,6 +724,8 @@ const COALESCABLE = new Set<Action['type']>([
   // Dragging a 駅 / typing a 路線 name fires many dispatches — one undo step.
   'UPDATE_CANVAS_STATION', 'UPDATE_CANVAS_RAIL',
   'UPDATE_NOTE', 'UPDATE_PROJECT', 'UPDATE_RESEARCH', 'UPDATE_TASK', 'UPDATE_CANVAS_TAB', 'UPDATE_CANVAS_BOARD',
+  // ファイル名・タグのタイピング — one undo step per burst.
+  'UPDATE_FILE_ITEM', 'UPDATE_FILE_FOLDER',
   'UPDATE_MASTER_PROJECT',
   // Flow node drags / title typing produce many UPDATE_FLOW dispatches — one undo step.
   'UPDATE_FLOW',
@@ -688,10 +829,49 @@ function collectMediaRefs(s: AppState): string[] {
     c.pages?.forEach(p => scan(p.content))
   }
   s.notes.forEach(n => scan(n.content))
+  s.files.forEach(f => {
+    if (f.url) refs.push(f.url) // ファイルライブラリ（ノート添付の実体もここ）
+    f.versions?.forEach(v => { if (v.url) refs.push(v.url) }) // 差し替え履歴の旧版も生存
+  })
   s.projects.forEach(p => p.tasks.forEach(t => scan(t.description)))
   s.research.forEach(r => scan(r.description))
   s.plans.forEach(p => scan(p.content)) // e-ticket attachments referenced as [x](idb:…)
   return refs
+}
+
+// One-time shape migration: 初期の付随資料は url/mime/size をリンク側に直接持って
+// いた（ライブラリ以前の形）。ライブラリ導入後は FileItem が実体・リンクは fileId
+// 参照なので、旧形式の添付をロード時に FileItem 化して参照へ書き換える。同じ
+// idb: URL が複数ノートに現れたら1つの FileItem に集約する。
+type LegacyAttachment = NoteAttachment & { url?: string; name?: string; mime?: string; size?: number }
+function migrateLegacyAttachments(s: AppState): AppState {
+  const byUrl = new Map<string, FileItem>()
+  let changed = false
+  const notes = s.notes.map(n => {
+    if (!n.attachments?.some(a => !(a as LegacyAttachment).fileId && (a as LegacyAttachment).url)) return n
+    changed = true
+    const attachments = n.attachments.map(raw => {
+      const a = raw as LegacyAttachment
+      if (a.fileId || !a.url) return raw
+      let file = byUrl.get(a.url)
+      if (!file) {
+        file = {
+          id: generateId(), masterProjectId: n.masterProjectId,
+          name: a.name || '(無名)', url: a.url, mime: a.mime || '', size: a.size || 0,
+          tags: [], createdAt: a.createdAt,
+        }
+        byUrl.set(a.url, file)
+      } else if (file.masterProjectId !== n.masterProjectId && !(file.linkedMasterIds ?? []).includes(n.masterProjectId)) {
+        // 同一URLが別プロジェクトのノートにも現れた → 集約先を参照リンクで見えるようにする
+        // （こうしないと2つ目以降のプロジェクトのライブラリ/ピッカーから辿れない）。
+        file.linkedMasterIds = [...(file.linkedMasterIds ?? []), n.masterProjectId]
+      }
+      return { id: a.id, fileId: file.id, group: a.group, createdAt: a.createdAt } satisfies NoteAttachment
+    })
+    return { ...n, attachments }
+  })
+  if (!changed) return s
+  return { ...s, notes, files: [...s.files, ...byUrl.values()] }
 }
 
 // Ensure the master-project layer is well-formed for state from any source: older
@@ -715,6 +895,9 @@ function normalizeMasterProjects(s: AppState): AppState {
     })
   const notes = fixScope(s.notes)
   const noteFolders = fixScope(s.noteFolders ?? [])
+  if (!s.files || !s.fileFolders) changed = true // pre-files snapshots: materialize the fields
+  const files = fixScope(s.files ?? [])
+  const fileFolders = fixScope(s.fileFolders ?? [])
   const projects = fixScope(s.projects)
   const research = fixScope(s.research)
   const researchFolders = fixScope(s.researchFolders ?? [])
@@ -738,7 +921,7 @@ function normalizeMasterProjects(s: AppState): AppState {
   if (!activeMasterProjectId || !ids.has(activeMasterProjectId)) { changed = true; activeMasterProjectId = fallback }
 
   if (!changed) return s
-  return { ...s, masterProjects, notes, noteFolders, projects, research, researchFolders, sketches, flows, plans, planFolders, timelineBands, aiConversations, canvasTabs, canvasBoards, activeMasterProjectId }
+  return { ...s, masterProjects, notes, noteFolders, files, fileFolders, projects, research, researchFolders, sketches, flows, plans, planFolders, timelineBands, aiConversations, canvasTabs, canvasBoards, activeMasterProjectId }
 }
 
 const AppContext = createContext<{
@@ -778,7 +961,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const loaded = await reloadState()
       if (loaded) {
-        dispatch({ type: '__HYDRATE', payload: normalizeMasterProjects(loaded) })
+        dispatch({ type: '__HYDRATE', payload: migrateLegacyAttachments(normalizeMasterProjects(loaded)) })
         try { lastEtag.current = await dbEtag() } catch { /* ignore */ }
       }
     } catch { /* ignore */ } finally { syncing.current = false }
@@ -798,10 +981,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return
       }
       if (loaded === null) {
-        loaded = normalizeMasterProjects(readLegacyState() ?? initialState)
+        loaded = migrateLegacyAttachments(normalizeMasterProjects(readLegacyState() ?? initialState))
         try { await saveState(loaded) } catch { /* ignore */ }
       } else {
-        loaded = normalizeMasterProjects(loaded)
+        loaded = migrateLegacyAttachments(normalizeMasterProjects(loaded))
       }
       if (!alive) return
       // Reclaim blobs no longer referenced by anything (safe here: no undo history

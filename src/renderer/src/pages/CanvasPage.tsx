@@ -1,12 +1,13 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus, Files as FilesGlyph } from 'lucide-react'
 import { useApp, type Action } from '../store'
 import { CanvasCard, CanvasTab, CanvasBoard, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
+import { fileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
 import { MarkdownText } from '../components/MarkdownText'
 import { ImageCropper } from '../components/ImageCropper'
@@ -764,6 +765,8 @@ interface DragState {
   cards?: { id: string; x: number; y: number }[]
   arrow?: CanvasArrow
   wayIndex?: number // 'arrow-way': which entry of arrow.points is being dragged
+  // 'card': arrows moved alongside (free ends + waypoints); filled lazily on first move.
+  arrows?: CanvasArrow[]
   group?: CanvasGroup
   groupCards?: { id: string; x: number; y: number }[]
   groupGroups?: CanvasGroup[]
@@ -841,6 +844,12 @@ export default function CanvasPage() {
   // ラベル・グループ枠のクリップボード（全選択→コピーで一緒に運ぶ）。
   const labelClipboardRef = useRef<CanvasLabel[]>([])
   const groupClipboardRef = useRef<CanvasGroup[]>([])
+  // 矢印: コピー時点の全矢印＋選択矢印ID。貼り付け時にコピー元カードID→新IDで付け替える。
+  const arrowClipboardRef = useRef<{ arrows: CanvasArrow[]; selectedIds: string[] }>({ arrows: [], selectedIds: [] })
+  // 自由端だけの選択矢印はカード無しでも単独で貼り付けられる（貼り付け可否判定と共有）。
+  const clipboardFreeArrows = () => arrowClipboardRef.current.arrows.filter(a => arrowClipboardRef.current.selectedIds.includes(a.id) && !a.fromCardId && !a.toCardId)
+  const clipboardHasContent = () =>
+    clipboardRef.current.length > 0 || railClipboardRef.current.stations.length > 0 || labelClipboardRef.current.length > 0 || groupClipboardRef.current.length > 0 || clipboardFreeArrows().length > 0
   // True while the most recent copy was an in-app card copy (no window blur since),
   // so Ctrl+V prefers pasting cards over a stale image left in the OS clipboard.
   const internalCopyFreshRef = useRef(false)
@@ -864,7 +873,12 @@ export default function CanvasPage() {
   const [tool, setTool] = useState<'select' | 'arrow' | 'group' | 'pen' | 'eraser' | 'label' | 'taskdraft' | 'rail'>('select')
   const toolRef = useRef(tool)
   toolRef.current = tool
-  const [selectedArrowId, setSelectedArrowId] = useState<string | null>(null)
+  // 矢印も複数選択に参加する（範囲選択・Shift+クリック・全選択）。単一選択時だけ
+  // プロパティパネル/ツールバーの対象になるよう selectedArrowId は派生値。
+  const [selectedArrowIds, setSelectedArrowIds] = useState<string[]>([])
+  const selectedArrowId = selectedArrowIds.length === 1 ? selectedArrowIds[0] : null
+  const setSelectedArrowId = useCallback((id: string | null) => setSelectedArrowIds(id ? [id] : []), [])
+  const selectedArrowIdsRef = useRef(selectedArrowIds); selectedArrowIdsRef.current = selectedArrowIds
   const [editingArrowId, setEditingArrowId] = useState<string | null>(null)
   // グループ枠は複数選択可（全選択・範囲選択・混在ドラッグに参加させるため配列）。
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
@@ -1067,7 +1081,9 @@ export default function CanvasPage() {
   }, [tool])
   // The single-label toolbar (size/color) only applies when exactly one label is selected.
   const selectedLabel = selectedLabelIds.length === 1 ? (tabLabels.find(l => l.id === selectedLabelIds[0]) ?? null) : null
-  const selectedArrow = tabArrows.find(a => a.id === selectedArrowId) ?? null
+  // 矢印のスタイル操作（ツールバー/プロパティ）は「矢印だけを1本選んでいる」時のみ。
+  const arrowSolo = selectedArrowIds.length === 1 && selectedIds.length === 0 && selectedLabelIds.length === 0 && selectedGroupIds.length === 0 && selectedStationIds.length === 0
+  const selectedArrow = arrowSolo ? (tabArrows.find(a => a.id === selectedArrowId) ?? null) : null
 
   const toCanvas = useCallback((clientX: number, clientY: number) => {
     const vp = viewportRef.current
@@ -1485,6 +1501,7 @@ export default function CanvasPage() {
     selectRectRef.current = { x0: p.x, y0: p.y }
     setSelectRect({ x: p.x, y: p.y, w: 0, h: 0 })
     setSelectedIds([])
+    setSelectedArrowIds([])
     setIsDragging(true)
     e.preventDefault()
   }, [tool, toCanvas, dispatch, activeTabId, canvasLocked, nearestPort])
@@ -1536,7 +1553,7 @@ export default function CanvasPage() {
       return
     }
     const selStations = selectedStationIdsRef.current
-    const inMulti = selStations.includes(st.id) && (selStations.length + selectedIds.length + selectedLabelIds.length + selectedGroupIds.length > 1)
+    const inMulti = selStations.includes(st.id) && (selStations.length + selectedIds.length + selectedLabelIds.length + selectedGroupIds.length + selectedArrowIdsRef.current.length > 1)
     if (!inMulti) {
       setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setEditingLabelId(null)
       setSelectedStationIds([st.id])
@@ -1596,8 +1613,7 @@ export default function CanvasPage() {
   }, [])
 
   const selectCard = useCallback((id: string, additive: boolean) => {
-    setSelectedArrowId(null)
-    if (!additive) { setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]) } // keep labels/駅/グループ枠 when shift-extending a mixed selection
+    if (!additive) { setSelectedArrowIds([]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]) } // keep labels/駅/グループ枠/矢印 when shift-extending a mixed selection
     if (additive) setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
     else setSelectedIds(prev => (prev.length > 1 && prev.includes(id)) ? prev : [id])
   }, [])
@@ -1605,14 +1621,13 @@ export default function CanvasPage() {
   const handleCardHeaderDown = useCallback((e: React.MouseEvent, card: CanvasCard) => {
     if (e.button !== 0) return
     e.stopPropagation()
-    setSelectedArrowId(null)
-    // Keep the multi-selection (cards + labels + 駅 + グループ枠) when grabbing one of its members.
-    const inMulti = selectedIds.includes(card.id) && (selectedIds.length > 1 || selectedLabelIds.length > 0 || selectedStationIds.length > 0 || selectedGroupIds.length > 0)
+    // Keep the multi-selection (cards + labels + 駅 + グループ枠 + 矢印) when grabbing one of its members.
+    const inMulti = selectedIds.includes(card.id) && (selectedIds.length > 1 || selectedLabelIds.length > 0 || selectedStationIds.length > 0 || selectedGroupIds.length > 0 || selectedArrowIds.length > 0)
     const movingCards = inMulti ? selectedIds : [card.id]
     const movingLabels = inMulti ? selectedLabelIds : []
     const movingStations = inMulti ? selectedStationIds : []
     const movingGroups = inMulti ? selectedGroupIds : []
-    if (!inMulti) { setSelectedIds([card.id]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]) }
+    if (!inMulti) { setSelectedIds([card.id]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]); setSelectedArrowIds([]) }
     const cards = canvasLockedRef.current ? [] : tabCards.filter(c => movingCards.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
     const labels = canvasLockedRef.current ? [] : tabLabels.filter(l => movingLabels.includes(l.id))
     const stations = canvasLockedRef.current ? [] : tabStations.filter(s => movingStations.includes(s.id))
@@ -1621,7 +1636,7 @@ export default function CanvasPage() {
     // Don't enter "dragging" (which mounts the full-screen overlay) until the pointer
     // actually moves — otherwise the overlay intercepts the mouseup between a header
     // double-click's two clicks and title editing never opens (handled in handleMouseMove).
-  }, [selectedIds, selectedLabelIds, selectedStationIds, selectedGroupIds, tabCards, tabLabels, tabStations, tabGroups])
+  }, [selectedIds, selectedLabelIds, selectedStationIds, selectedGroupIds, selectedArrowIds, tabCards, tabLabels, tabStations, tabGroups])
 
   const handleResizeDown = useCallback((e: React.MouseEvent, card: CanvasCard) => {
     if (e.button !== 0) return
@@ -1715,7 +1730,16 @@ export default function CanvasPage() {
       const x = Math.min(r.x0, p.x), y = Math.min(r.y0, p.y)
       const w = Math.abs(p.x - r.x0), h = Math.abs(p.y - r.y0)
       setSelectRect({ x, y, w, h })
-      setSelectedIds(tabCards.filter(c => c.x < x + w && c.x + c.width > x && c.y < y + h && c.y + c.height > y).map(c => c.id))
+      const cardIds = tabCards.filter(c => c.x < x + w && c.x + c.width > x && c.y < y + h && c.y + c.height > y).map(c => c.id)
+      setSelectedIds(cardIds)
+      // 矢印は「両端が選択に入る」ものを選ぶ: カードに付いた端はそのカードが選択済み、
+      // 自由な端は矩形内にあること。
+      const cardSet = new Set(cardIds)
+      const inRect = (px: number, py: number) => px >= x && px <= x + w && py >= y && py <= y + h
+      setSelectedArrowIds(tabArrows.filter(a =>
+        (a.fromCardId ? cardSet.has(a.fromCardId) : inRect(a.x1, a.y1)) &&
+        (a.toCardId ? cardSet.has(a.toCardId) : inRect(a.x2, a.y2))
+      ).map(a => a.id))
       setSelectedLabelIds(tabLabels.filter(l => { const b = labelBox(l); return b.x < x + w && b.x + b.w > x && b.y < y + h && b.y + b.h > y }).map(l => l.id))
       setSelectedStationIds(tabStations.filter(s => s.x >= x && s.x <= x + w && s.y >= y && s.y <= y + h).map(s => s.id))
       // グループ枠は「全体が矩形に収まったもの」だけ選択に入れる — 交差判定だと
@@ -1741,7 +1765,26 @@ export default function CanvasPage() {
     if (d.kind === 'pan') {
       setViewport(v => ({ ...v, x: d.startX + dx, y: d.startY + dy }))
     } else if (d.kind === 'card') {
+      // Arrows ride along when BOTH ends travel with the drag: an end docked to a
+      // moving card, or a free end of a selected arrow. Snapshot their original
+      // geometry on the first moved frame (before any dispatch) so the offsets
+      // stay absolute like the cards'.
+      if (!d.arrows) {
+        const moving = new Set((d.cards ?? []).map(c => c.id))
+        const selArrows = new Set(selectedArrowIdsRef.current)
+        d.arrows = tabArrowsRef.current.filter(a => {
+          const fromIn = a.fromCardId ? moving.has(a.fromCardId) : selArrows.has(a.id)
+          const toIn = a.toCardId ? moving.has(a.toCardId) : selArrows.has(a.id)
+          return fromIn && toIn && (!a.fromCardId || !a.toCardId || (a.points?.length ?? 0) > 0)
+        })
+      }
       d.cards?.forEach(c => dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: snap(c.x + dx / zoom), y: snap(c.y + dy / zoom) } }))
+      d.arrows.forEach(a => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: {
+        ...a,
+        ...(a.fromCardId ? {} : { x1: snap(a.x1 + dx / zoom), y1: snap(a.y1 + dy / zoom) }),
+        ...(a.toCardId ? {} : { x2: snap(a.x2 + dx / zoom), y2: snap(a.y2 + dy / zoom) }),
+        points: a.points?.map(p => ({ x: snap(p.x + dx / zoom), y: snap(p.y + dy / zoom) })),
+      } }))
       d.labels?.forEach(l => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: snap(l.x + dx / zoom), y: snap(l.y + dy / zoom) } }))
       d.stations?.forEach(s => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...s, x: snap(s.x + dx / zoom), y: snap(s.y + dy / zoom) } }))
       d.groups?.forEach(g => dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...g, x: snap(g.x + dx / zoom), y: snap(g.y + dy / zoom) } }))
@@ -1769,6 +1812,12 @@ export default function CanvasPage() {
       const gx = snap(d.startX + dx / zoom), gy = snap(d.startY + dy / zoom)
       dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...d.group, x: gx, y: gy } })
       d.groupCards?.forEach(c => dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: snap(c.x + dx / zoom), y: snap(c.y + dy / zoom) } }))
+      // Bent arrows between two contained cards: carry the waypoints along too.
+      if (!d.arrows) {
+        const moving = new Set((d.groupCards ?? []).map(c => c.id))
+        d.arrows = tabArrowsRef.current.filter(a => !!a.fromCardId && !!a.toCardId && moving.has(a.fromCardId) && moving.has(a.toCardId) && (a.points?.length ?? 0) > 0)
+      }
+      d.arrows.forEach(a => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...a, points: a.points?.map(p => ({ x: snap(p.x + dx / zoom), y: snap(p.y + dy / zoom) })) } }))
       d.groupGroups?.forEach(g => dispatch({ type: 'UPDATE_CANVAS_GROUP', payload: { ...g, x: snap(g.x + dx / zoom), y: snap(g.y + dy / zoom) } }))
       d.labels?.forEach(l => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: snap(l.x + dx / zoom), y: snap(l.y + dy / zoom) } }))
       d.stations?.forEach(s => dispatch({ type: 'UPDATE_CANVAS_STATION', payload: { ...s, x: snap(s.x + dx / zoom), y: snap(s.y + dy / zoom) } }))
@@ -1779,7 +1828,7 @@ export default function CanvasPage() {
     } else if (d.kind === 'label-move' && d.label) {
       dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...d.label, x: snap(d.startX + dx / zoom), y: snap(d.startY + dy / zoom) } })
     }
-  }, [dispatch, toCanvas, tabCards, tabLabels, tabStations, tabGroups, applyBrush, nearestPort])
+  }, [dispatch, toCanvas, tabCards, tabLabels, tabStations, tabGroups, tabArrows, applyBrush, nearestPort])
 
   // タスク端子 → 実タスク親子化: dragging the 端子 between two LIVE task-ref
   // cards writes the real parent-child relation (from = 親, to = 子). Invoked
@@ -1997,15 +2046,13 @@ export default function CanvasPage() {
     e.stopPropagation()
     if (e.shiftKey) {
       // toggle this group in/out of the multi-selection (no drag)
-      setSelectedArrowId(null) // 矢印は混在選択に参加しない — 残すと見かけ上の同時選択になる
       setSelectedGroupIds(prev => prev.includes(group.id) ? prev.filter(x => x !== group.id) : [...prev, group.id])
       return
     }
     // 複数選択（全選択・範囲選択）のメンバーを掴んだときは選択全体をまとめて動かす。
     // このとき枠は「枠だけ」動く — 中身の追従は選択されたカード側が担う。
-    const inMulti = selectedGroupIds.includes(group.id) && (selectedGroupIds.length + selectedIds.length + selectedLabelIds.length + selectedStationIds.length > 1)
+    const inMulti = selectedGroupIds.includes(group.id) && (selectedGroupIds.length + selectedIds.length + selectedLabelIds.length + selectedStationIds.length + selectedArrowIdsRef.current.length > 1)
     if (inMulti) {
-      setSelectedArrowId(null)
       if (canvasLockedRef.current) return
       const cards = tabCards.filter(c => selectedIds.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
       const labels = tabLabels.filter(l => selectedLabelIds.includes(l.id))
@@ -2057,7 +2104,6 @@ export default function CanvasPage() {
   const handleLabelDown = useCallback((e: React.MouseEvent, label: CanvasLabel) => {
     if (e.button !== 0) return
     e.stopPropagation()
-    setSelectedArrowId(null)
     if (e.shiftKey) {
       // toggle this label in/out of the multi-selection (no drag)
       setSelectedLabelIds(prev => prev.includes(label.id) ? prev.filter(x => x !== label.id) : [...prev, label.id])
@@ -2065,12 +2111,12 @@ export default function CanvasPage() {
     }
     // Clicking a member of an existing multi-selection keeps it and drags the whole
     // set — cards, labels, 駅 AND グループ枠 (same as grabbing a card or a station).
-    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length + selectedStationIds.length + selectedGroupIds.length > 1)
+    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length + selectedStationIds.length + selectedGroupIds.length + selectedArrowIdsRef.current.length > 1)
     const labelSel = inMulti ? selectedLabelIds : [label.id]
     const cardSel = inMulti ? selectedIds : []
     const stationSel = inMulti ? selectedStationIds : []
     const groupSel = inMulti ? selectedGroupIds : []
-    if (!inMulti) { setSelectedLabelIds([label.id]); setSelectedIds([]); setSelectedStationIds([]); setSelectedGroupIds([]) }
+    if (!inMulti) { setSelectedLabelIds([label.id]); setSelectedIds([]); setSelectedStationIds([]); setSelectedGroupIds([]); setSelectedArrowIds([]) }
     if (canvasLockedRef.current) return
     const labels = tabLabels.filter(l => labelSel.includes(l.id))
     const cards = tabCards.filter(c => cardSel.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
@@ -2150,11 +2196,39 @@ export default function CanvasPage() {
     setEraserCursor(null)
   }, [])
 
+  // 複製/貼り付けに同行する矢印: 両端が「複製されるカード」か「選択中の矢印の自由端」
+  // のもの。カード端は idMap で新カードへ付け替え、自由端と経由点はオフセット。
+  function cloneArrows(
+    arrows: CanvasArrow[], selArrowIds: string[], idMap: Map<string, string>,
+    targetTabId: string, ox: number, oy: number,
+  ): { actions: Action[]; ids: string[] } {
+    const sel = new Set(selArrowIds)
+    const actions: Action[] = []
+    const ids: string[] = []
+    const now = new Date().toISOString()
+    for (const a of arrows) {
+      const fromIn = a.fromCardId ? idMap.has(a.fromCardId) : sel.has(a.id)
+      const toIn = a.toCardId ? idMap.has(a.toCardId) : sel.has(a.id)
+      if (!fromIn || !toIn) continue
+      const copy: CanvasArrow = {
+        ...a, id: generateId(), tabId: targetTabId, createdAt: now,
+        fromCardId: a.fromCardId ? idMap.get(a.fromCardId) : undefined,
+        toCardId: a.toCardId ? idMap.get(a.toCardId) : undefined,
+        x1: a.x1 + ox, y1: a.y1 + oy, x2: a.x2 + ox, y2: a.y2 + oy,
+        points: a.points?.map(p => ({ x: p.x + ox, y: p.y + oy })),
+      }
+      actions.push({ type: 'ADD_CANVAS_ARROW', payload: copy })
+      ids.push(copy.id)
+    }
+    return { actions, ids }
+  }
+
   // Duplicate the selected cards (offset by a grid step)
   const duplicateSelection = useCallback(() => {
-    if (canvasLockedRef.current || (selectedIds.length === 0 && selectedStationIds.length === 0 && selectedLabelIds.length === 0 && selectedGroupIds.length === 0)) return
+    if (canvasLockedRef.current || (selectedIds.length === 0 && selectedStationIds.length === 0 && selectedLabelIds.length === 0 && selectedGroupIds.length === 0 && selectedArrowIds.length === 0)) return
     const actions: Action[] = []
     const newIds: string[] = []
+    const cardIdMap = new Map<string, string>()
     tabCards.filter(c => selectedIds.includes(c.id)).forEach(c => {
       const copy: CanvasCard = {
         ...c,
@@ -2165,7 +2239,10 @@ export default function CanvasPage() {
       }
       actions.push({ type: 'ADD_CANVAS_CARD', payload: copy })
       newIds.push(copy.id)
+      cardIdMap.set(c.id, copy.id)
     })
+    const arrowClone = cloneArrows(tabArrows, selectedArrowIds, cardIdMap, activeTabId, 24, 24)
+    actions.push(...arrowClone.actions)
     // 選択中の駅も複製 — 選択駅を2つ以上通る路線は、そのサブスレッドごと
     // 新しい路線として複製する（路線図を丸ごと選んで Ctrl+D した時の期待動作）。
     const selStations = tabStations.filter(s => selectedStationIds.includes(s.id))
@@ -2191,8 +2268,8 @@ export default function CanvasPage() {
     if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
     setSelectedStationIds(clone.stationIds)
-    setSelectedArrowId(null); setSelectedGroupIds(newGroupIds); setSelectedLabelIds(newLabelIds)
-  }, [selectedIds, selectedStationIds, selectedLabelIds, selectedGroupIds, tabCards, tabStations, tabRails, tabLabels, tabGroups, activeTabId, dispatch])
+    setSelectedArrowIds(arrowClone.ids); setSelectedGroupIds(newGroupIds); setSelectedLabelIds(newLabelIds)
+  }, [selectedIds, selectedStationIds, selectedLabelIds, selectedGroupIds, selectedArrowIds, tabCards, tabArrows, tabStations, tabRails, tabLabels, tabGroups, activeTabId, dispatch])
 
   // stations を新IDで複製し、threads（選択駅のみを順序維持で辿ったもの）のうち
   // 2駅以上残るものを新しい路線にするアクション配列を組み立てて返す（dispatch は
@@ -2225,8 +2302,9 @@ export default function CanvasPage() {
     const selStations = tabStations.filter(s => selectedStationIds.includes(s.id))
     const selLabels = tabLabels.filter(l => selectedLabelIds.includes(l.id))
     const selGroups = tabGroups.filter(g => selectedGroupIds.includes(g.id))
-    if (sel.length > 0 || selStations.length > 0 || selLabels.length > 0 || selGroups.length > 0) {
+    if (sel.length > 0 || selStations.length > 0 || selLabels.length > 0 || selGroups.length > 0 || selectedArrowIds.length > 0) {
       clipboardRef.current = sel.map(c => ({ ...c, pages: c.pages?.map(p => ({ ...p })) }))
+      arrowClipboardRef.current = { arrows: tabArrows.map(a => ({ ...a, points: a.points?.map(p => ({ ...p })) })), selectedIds: [...selectedArrowIds] }
       railClipboardRef.current = {
         stations: selStations.map(s => ({ ...s })),
         threads: tabRails.map(r => ({ name: r.name, color: r.color, stationIds: [...r.stationIds] })),
@@ -2235,7 +2313,7 @@ export default function CanvasPage() {
       groupClipboardRef.current = selGroups.map(g => ({ ...g }))
       internalCopyFreshRef.current = true
     }
-  }, [tabCards, selectedIds, tabStations, selectedStationIds, tabRails, tabLabels, selectedLabelIds, tabGroups, selectedGroupIds])
+  }, [tabCards, selectedIds, tabStations, selectedStationIds, tabRails, tabLabels, selectedLabelIds, tabGroups, selectedGroupIds, tabArrows, selectedArrowIds])
 
   const pasteCards = useCallback((atX?: number, atY?: number) => {
     if (canvasLockedRef.current) return
@@ -2243,26 +2321,41 @@ export default function CanvasPage() {
     const railClip = railClipboardRef.current
     const labelClip = labelClipboardRef.current
     const groupClip = groupClipboardRef.current
-    if (clip.length === 0 && railClip.stations.length === 0 && labelClip.length === 0 && groupClip.length === 0) return
+    const arrowClip = arrowClipboardRef.current
+    const freeArrows = clipboardFreeArrows()
+    if (!clipboardHasContent()) return
     let ox = 24, oy = 24
     if (atX != null && atY != null) {
-      const minX = Math.min(...clip.map(c => c.x), ...railClip.stations.map(s => s.x), ...labelClip.map(l => l.x), ...groupClip.map(g => g.x))
-      const minY = Math.min(...clip.map(c => c.y), ...railClip.stations.map(s => s.y), ...labelClip.map(l => l.y), ...groupClip.map(g => g.y))
+      const minX = Math.min(...clip.map(c => c.x), ...railClip.stations.map(s => s.x), ...labelClip.map(l => l.x), ...groupClip.map(g => g.x), ...freeArrows.flatMap(a => [a.x1, a.x2, ...(a.points ?? []).map(p => p.x)]))
+      const minY = Math.min(...clip.map(c => c.y), ...railClip.stations.map(s => s.y), ...labelClip.map(l => l.y), ...groupClip.map(g => g.y), ...freeArrows.flatMap(a => [a.y1, a.y2, ...(a.points ?? []).map(p => p.y)]))
       ox = atX - minX
       oy = atY - minY
     }
     const actions: Action[] = []
     const newIds: string[] = []
+    const cardIdMap = new Map<string, string>()
     clip.forEach(c => {
-      const copy: CanvasCard = {
+      let copy: CanvasCard = {
         ...c, id: generateId(), tabId: activeTabId, locked: false,
         x: c.x + ox, y: c.y + oy,
         pages: c.pages?.map(p => ({ ...p, id: generateId() })),
         createdAt: new Date().toISOString(),
       }
+      // ライブラリ参照カードの越境ガード: クリップボードはプロジェクト切替後も残る
+      // ため、貼り付け先プロジェクトから参照できないファイル（非所有かつ未リンク、
+      // または消滅済み）のカードは url ごと落とす（fail-closed — ピッカーの
+      // プロジェクトフィルターを貼り付けで迂回させない）。
+      if (copy.refFileId) {
+        const f = state.files.find(x => x.id === copy.refFileId)
+        const accessible = !!f && (f.masterProjectId === activeProjectId || (f.linkedMasterIds ?? []).includes(activeProjectId))
+        if (!accessible) copy = { ...copy, url: '', content: '', refFileId: undefined, bookmarks: undefined, pdf: undefined, crop: undefined }
+      }
       actions.push({ type: 'ADD_CANVAS_CARD', payload: copy })
       newIds.push(copy.id)
+      cardIdMap.set(c.id, copy.id)
     })
+    const arrowClone = cloneArrows(arrowClip.arrows, arrowClip.selectedIds, cardIdMap, activeTabId, ox, oy)
+    actions.push(...arrowClone.actions)
     const clone = cloneStationsWithThreads(railClip.stations, railClip.threads, activeTabId, ox, oy)
     actions.push(...clone.actions)
     const newLabelIds: string[] = []
@@ -2280,8 +2373,8 @@ export default function CanvasPage() {
     if (actions.length > 0) dispatch({ type: 'BATCH', payload: actions }) // 1 undoステップ
     setSelectedIds(newIds)
     setSelectedStationIds(clone.stationIds)
-    setSelectedArrowId(null); setSelectedGroupIds(newGroupIds); setSelectedLabelIds(newLabelIds)
-  }, [activeTabId, dispatch])
+    setSelectedArrowIds(arrowClone.ids); setSelectedGroupIds(newGroupIds); setSelectedLabelIds(newLabelIds)
+  }, [activeTabId, dispatch, state.files, activeProjectId])
 
   // Align the selected cards (2+) along an edge or center
   const alignSelection = useCallback((mode: 'left' | 'center-h' | 'right' | 'top' | 'middle-v' | 'bottom') => {
@@ -2377,7 +2470,10 @@ export default function CanvasPage() {
   const handleArrowContextMenu = useCallback((e: React.MouseEvent, arrow: CanvasArrow) => {
     if (canvasLockedRef.current) return
     e.preventDefault(); e.stopPropagation()
-    setSelectedArrowId(arrow.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([])
+    // 複数選択のメンバーを右クリックしたときは選択を保つ（削除はまとめて効く）。
+    if (!selectedArrowIdsRef.current.includes(arrow.id)) {
+      setSelectedArrowId(arrow.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([]); setSelectedStationIds([])
+    }
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 160), kind: 'arrow', canvasX: 0, canvasY: 0 })
   }, [])
 
@@ -2401,12 +2497,20 @@ export default function CanvasPage() {
   // (cards/labels, or a single arrow or group). Every delete path funnels here.
   const requestDeleteSelection = useCallback(() => {
     const nCards = selectedIds.length, nLabels = selectedLabelIds.length, nStations = selectedStationIds.length, nGroups = selectedGroupIds.length
-    if (nCards + nLabels + nStations + nGroups > 0) {
+    // 複数選択に含まれる矢印のうち、カード削除で一緒に消えないもの（両端が残る矢印）だけ数える。
+    const cardSet = new Set(selectedIds)
+    const aids = selectedArrowIds.filter(id => {
+      const a = tabArrowsRef.current.find(x => x.id === id)
+      return a && !(a.fromCardId && cardSet.has(a.fromCardId)) && !(a.toCardId && cardSet.has(a.toCardId))
+    })
+    const nArrows = aids.length
+    if (nCards + nLabels + nStations + nGroups > 0 || selectedArrowIds.length > 1) {
       const parts: string[] = []
       if (nCards) parts.push(`カード${nCards}枚`)
       if (nLabels) parts.push(`ラベル${nLabels}個`)
       if (nStations) parts.push(`駅${nStations}個`)
       if (nGroups) parts.push(`グループ枠${nGroups}個`)
+      if (nArrows) parts.push(`矢印${nArrows}本`)
       const ids = [...selectedIds], lids = [...selectedLabelIds], sids = [...selectedStationIds], gids = [...selectedGroupIds]
       // グループ枠は枠だけ消える（中のカードは、それ自体が選択されていない限り残る）。
       const groupNote = nGroups && !nCards ? 'グループ枠は枠のみ消え、中のカードは残ります。' : ''
@@ -2418,15 +2522,16 @@ export default function CanvasPage() {
             ...lids.map(id => ({ type: 'DELETE_CANVAS_LABEL' as const, payload: id })),
             ...sids.map(id => ({ type: 'DELETE_CANVAS_STATION' as const, payload: id })),
             ...gids.map(id => ({ type: 'DELETE_CANVAS_GROUP' as const, payload: id })),
+            ...aids.map(id => ({ type: 'DELETE_CANVAS_ARROW' as const, payload: id })),
           ] })
-          setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([])
+          setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedGroupIds([]); setSelectedArrowIds([])
         },
       })
     } else if (selectedArrowId) {
       const id = selectedArrowId
       setConfirmDelete({ message: '矢印を削除します。元に戻すには Ctrl+Z。', run: () => { dispatch({ type: 'DELETE_CANVAS_ARROW', payload: id }); setSelectedArrowId(null) } })
     }
-  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupIds, selectedStationIds, dispatch])
+  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedArrowIds, selectedGroupIds, selectedStationIds, dispatch])
 
   // Keyboard: Delete removes the selection, Ctrl+D duplicates, Escape exits the active tool
   useEffect(() => {
@@ -2476,7 +2581,7 @@ export default function CanvasPage() {
         return
       }
       // 全選択はカード・駅だけでなくラベル・グループ枠も対象にする（移動/削除に参加させる）。
-      if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedStationIds(tabStationsRef.current.map(s => s.id)); setSelectedLabelIds(tabLabelsRef.current.map(l => l.id)); setSelectedGroupIds(tabGroupsRef.current.map(g => g.id)); setSelectedArrowId(null); return }
+      if (mod && (e.key === 'a' || e.key === 'A')) { e.preventDefault(); setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedStationIds(tabStationsRef.current.map(s => s.id)); setSelectedLabelIds(tabLabelsRef.current.map(l => l.id)); setSelectedGroupIds(tabGroupsRef.current.map(g => g.id)); setSelectedArrowIds(tabArrowsRef.current.map(a => a.id)); return }
       if (mod && (e.key === 'c' || e.key === 'C')) {
         // 本文テキストを範囲選択中はネイティブのテキストコピーを優先する
         // （ここで preventDefault するとカード内テキストが一切コピーできない）。
@@ -2486,7 +2591,7 @@ export default function CanvasPage() {
       }
       // Ctrl+V is handled by the native 'paste' event listener (so clipboard image
       // data is available); preventing it here would suppress that event.
-      if (!locked && (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedStationIds.length > 0 || selectedGroupIds.length > 0) && e.key.startsWith('Arrow')) {
+      if (!locked && (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedStationIds.length > 0 || selectedGroupIds.length > 0 || selectedArrowIds.length > 0) && e.key.startsWith('Arrow')) {
         e.preventDefault()
         const base = snapRef.current ? 20 : 1
         const step = e.shiftKey ? base * 10 : base
@@ -2494,6 +2599,21 @@ export default function CanvasPage() {
         const ny = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
         const sel = new Set(selectedIds)
         tabCardsRef.current.forEach(c => { if (sel.has(c.id) && !c.locked) dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: c.x + nx, y: c.y + ny } }) })
+        // 矢印はドラッグ移動と同じ規則: 両端が一緒に動く場合だけ自由端・経由点を動かす
+        // （ロック済みカードは上で動いていないので端点集合からも外す）。
+        const moving = new Set(tabCardsRef.current.filter(c => sel.has(c.id) && !c.locked).map(c => c.id))
+        const asel = new Set(selectedArrowIds)
+        tabArrowsRef.current.forEach(a => {
+          const fromIn = a.fromCardId ? moving.has(a.fromCardId) : asel.has(a.id)
+          const toIn = a.toCardId ? moving.has(a.toCardId) : asel.has(a.id)
+          if (!fromIn || !toIn || (a.fromCardId && a.toCardId && !(a.points?.length))) return
+          dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: {
+            ...a,
+            ...(a.fromCardId ? {} : { x1: a.x1 + nx, y1: a.y1 + ny }),
+            ...(a.toCardId ? {} : { x2: a.x2 + nx, y2: a.y2 + ny }),
+            points: a.points?.map(p => ({ x: p.x + nx, y: p.y + ny })),
+          } })
+        })
         const lsel = new Set(selectedLabelIds)
         tabLabelsRef.current.forEach(l => { if (lsel.has(l.id)) dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...l, x: l.x + nx, y: l.y + ny } }) })
         const ssel = new Set(selectedStationIds)
@@ -2505,7 +2625,7 @@ export default function CanvasPage() {
       }
       if (e.key === 'Escape') { setTool('select'); setSelectedIds([]); setSelectedArrowId(null); setEditingArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setEditingLabelId(null); setSelectedStationIds([]); setEditingStationId(null); setShowAddMenu(false); setContextMenu(null); setConvertOpen(false); setPickerOpenCardId(null); setDetachOpenCardId(null); setPickerChecked([]) }
       if (!locked && (e.key === 'Delete' || e.key === 'Backspace')) {
-        if (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedArrowId || selectedGroupIds.length > 0 || selectedStationIds.length > 0) {
+        if (selectedIds.length > 0 || selectedLabelIds.length > 0 || selectedArrowIds.length > 0 || selectedGroupIds.length > 0 || selectedStationIds.length > 0) {
           e.preventDefault()
           requestDeleteSelection() // every delete path goes through the confirm modal
         }
@@ -2575,7 +2695,7 @@ export default function CanvasPage() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedGroupIds, selectedStationIds, dispatch, undo, redo, duplicateSelection, copyCards, pasteCards, groupSelection, confirmDelete, requestDeleteSelection])
+  }, [selectedIds, selectedLabelIds, selectedArrowId, selectedArrowIds, selectedGroupIds, selectedStationIds, dispatch, undo, redo, duplicateSelection, copyCards, pasteCards, groupSelection, confirmDelete, requestDeleteSelection])
 
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
     if (canvasLockedRef.current) return
@@ -2712,7 +2832,7 @@ export default function CanvasPage() {
       if (canvasLockedRef.current) return
       const items = e.clipboardData?.items
       const imgItem = items && Array.from(items).find(i => i.kind === 'file' && i.type.startsWith('image/'))
-      const hasCards = clipboardRef.current.length > 0 || railClipboardRef.current.stations.length > 0 || labelClipboardRef.current.length > 0 || groupClipboardRef.current.length > 0
+      const hasCards = clipboardHasContent()
       // A fresh in-app card copy wins over a stale OS-clipboard image (keeps card duplication working).
       if (imgItem && !(internalCopyFreshRef.current && hasCards)) {
         const file = imgItem.getAsFile()
@@ -4192,9 +4312,13 @@ export default function CanvasPage() {
                     arrow={a}
                     ends={ends}
                     d={arrowGeometry(ends, a.curved, a.points).d}
-                    selected={selectedArrowId === a.id}
+                    selected={selectedArrowIds.includes(a.id)}
+                    solo={arrowSolo && selectedArrowId === a.id}
                     interactive={tool === 'select'}
-                    onSelect={() => { setSelectedArrowId(a.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([]); setSelectedStationIds([]) }}
+                    onSelect={additive => {
+                      if (additive) { setSelectedArrowIds(prev => prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id]); return }
+                      setSelectedArrowId(a.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([]); setSelectedStationIds([])
+                    }}
                     onEndDown={handleArrowEndDown}
                     onWayDown={handleWayDown}
                     onWayInsert={handleWayInsert}
@@ -4463,7 +4587,7 @@ export default function CanvasPage() {
             >
               {contextMenu.kind === 'canvas' ? (
                 <>
-                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={clipboardRef.current.length === 0 && railClipboardRef.current.stations.length === 0 && labelClipboardRef.current.length === 0 && groupClipboardRef.current.length === 0} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
+                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={!clipboardHasContent()} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
                     <span className="flex items-center gap-2"><ClipboardPaste size={14} /> ここに貼り付け</span><kbd className="text-[10px] text-slate-400">Ctrl+V</kbd>
                   </button>
                   <div className="h-px bg-slate-200 my-1" />
@@ -4516,7 +4640,12 @@ export default function CanvasPage() {
                 </>
               ) : contextMenu.kind === 'arrow' ? (
                 <>
-                  <button onClick={() => { if (selectedArrowId) setEditingArrowId(selectedArrowId); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> ラベルを編集</button>
+                  {arrowSolo && selectedArrowId && (
+                    <button onClick={() => { setEditingArrowId(selectedArrowId); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> ラベルを編集</button>
+                  )}
+                  {!arrowSolo && (
+                    <div className="px-3 py-1 text-[11px] text-slate-400">複数選択中（矢印{selectedArrowIds.length}本）</div>
+                  )}
                   {selArrow && (
                     <button onClick={() => { dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selArrow, curved: !selArrow.curved } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Spline size={14} /> {selArrow.curved ? '直線にする' : '曲線にする'}</button>
                   )}
@@ -4570,6 +4699,11 @@ export default function CanvasPage() {
                       <button onClick={() => { navigate(`/projects?taskId=${selCards[0].refTaskId}`); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-emerald-600 flex items-center gap-2"><CheckSquare size={14} /> タスクで開く</button>
                       <div className="h-px bg-slate-200 my-1" />
                     </>
+                  )}
+                  {selCards.length === 1 && selCards[0].refFileId && state.files.some(f => f.id === selCards[0].refFileId) && (
+                    <div>
+                      <button onClick={() => { navigate('/files', { state: { focusFileId: selCards[0].refFileId } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-orange-600 flex items-center gap-2"><FilesGlyph size={14} /> ライブラリで開く</button>
+                    </div>
                   )}
                   {selCards.length === 1 && selCards[0].refSketchId && state.sketches.some(s => s.id === selCards[0].refSketchId) && (
                     <>
@@ -4954,9 +5088,10 @@ export default function CanvasPage() {
 
 async function applyImageFile(file: File | null | undefined, card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {
   if (!file || !isImageFile(file)) return
-  if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
+  // ライブラリ参照カード (refFileId) の url はライブラリ実体と共有 — 消すとライブラリ側も壊れる
+  if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
   const url = await putMedia(await normalizeImageBlob(file)) // TIFF/TGA → PNG
-  onUpdate({ url, title: card.title || file.name, content: file.name })
+  onUpdate({ url, title: card.title || file.name, content: file.name, refFileId: undefined })
 }
 
 // サーバー(NAS)やローカルディスク上のファイルを「取り込まず」パス参照でカードに
@@ -4983,10 +5118,11 @@ async function linkLocalFileForCard(card: CanvasCard, onUpdate: (u: Partial<Canv
     await alertDialog(`このカードには${LOCAL_KIND_LABEL[want]}ファイルのみリンクできます。\n選択されたファイル: ${localFileName(p)}`)
     return
   }
-  if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
+  // ライブラリ参照カード (refFileId) の url はライブラリ実体と共有 — 消すとライブラリ側も壊れる
+  if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
   const name = localFileName(p)
   const extra = card.type === 'video' || card.type === 'audio' ? { bookmarks: [] as Bookmark[] } : {}
-  onUpdate({ url: toLocalRef(p), title: card.title || name, content: name, ...extra })
+  onUpdate({ url: toLocalRef(p), title: card.title || name, content: name, refFileId: undefined, ...extra })
 }
 
 function pickFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {
@@ -4997,12 +5133,76 @@ function pickFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) =>
     const file = input.files?.[0]
     if (!file) return
     if (card.type === 'image') { applyImageFile(file, card, onUpdate); return }
-    if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {})
+    // ライブラリ参照カードの url は共有実体なので消さない（自前アップロード分のみ削除）
+    if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
     const url = await putMedia(file)
     // Swapping in a different recording invalidates the old time-anchored bookmarks.
-    onUpdate({ url, title: card.title || file.name, content: file.name, bookmarks: [] })
+    onUpdate({ url, title: card.title || file.name, content: file.name, refFileId: undefined, bookmarks: [] })
   }
   input.click()
+}
+
+// ファイルライブラリから選んでメディアカードに設定するボタン+ピッカー。カードは
+// ライブラリの idb: URL をそのまま使い、refFileId で「ライブラリで開く」へ辿れる
+// （実体は共有 — ライブラリ側で削除されてもカードの参照が blob を生かし続ける）。
+function LibraryPickButtonForCard({ card, onUpdate }: { card: CanvasCard; onUpdate: (u: Partial<CanvasCard>) => void }) {
+  const { state } = useApp()
+  const active = state.activeMasterProjectId
+  const want = CARD_LOCAL_KIND[card.type]
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const files = useMemo(() => {
+    const qq = q.trim().toLowerCase()
+    return state.files
+      .filter(f => f.masterProjectId === active || (f.linkedMasterIds ?? []).includes(active))
+      .filter(f => !want || fileKind(f.mime, f.name) === want)
+      .filter(f => !qq || f.name.toLowerCase().includes(qq) || f.tags.some(t => t.toLowerCase().includes(qq)) || (f.comment || '').toLowerCase().includes(qq))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [state.files, active, want, q])
+  if (!open) {
+    return (
+      <button
+        onClick={e => { e.stopPropagation(); setOpen(true) }}
+        title="ファイルライブラリから選択"
+        className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-orange-600 hover:border-orange-300 transition-colors"
+      >
+        <FilesGlyph size={11} /> ライブラリ
+      </button>
+    )
+  }
+  return (
+    <>
+      <div className="fixed inset-0 z-40" onMouseDown={e => { e.stopPropagation(); setOpen(false) }} />
+      <div className="absolute z-50 left-1/2 -translate-x-1/2 top-8 w-[260px] bg-white border border-slate-200 rounded-lg shadow-xl p-2" onMouseDown={e => e.stopPropagation()}>
+        <input
+          autoFocus
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder={`ライブラリの${want ? LOCAL_KIND_LABEL[want] : 'ファイル'}を検索…`}
+          className="w-full text-xs bg-slate-50 border border-slate-200 rounded px-2 py-1 outline-none focus:border-orange-400 mb-1"
+        />
+        <div className="max-h-[200px] overflow-y-auto">
+          {files.length === 0 && <div className="text-[10px] text-slate-400 px-1 py-2 text-center">該当するファイルがありません<br />（「ファイル」ページで登録できます）</div>}
+          {files.map(f => (
+            <button
+              key={f.id}
+              onClick={() => {
+                if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {})
+                const extra = card.type === 'video' || card.type === 'audio' ? { bookmarks: [] as Bookmark[] } : {}
+                onUpdate({ url: f.url, refFileId: f.id, title: card.title || f.name, content: f.name, ...extra })
+                setOpen(false)
+              }}
+              className="w-full text-left px-1.5 py-1 hover:bg-orange-50 rounded text-xs text-slate-700 flex items-center gap-1.5"
+              title={f.comment || undefined}
+            >
+              <span className="truncate flex-1">{f.name || '(無名)'}</span>
+              {f.masterProjectId !== active && <Share2 size={9} className="shrink-0 text-indigo-400" />}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  )
 }
 
 // Player params that suppress the related-videos / end-screen / annotation clutter
@@ -5058,13 +5258,16 @@ function labelBox(l: CanvasLabel): { x: number; y: number; w: number; h: number 
 
 /* ── Arrow (SVG) ── */
 
-const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, interactive, onSelect, onEndDown, onWayDown, onWayInsert, onWayRemove, onEditLabel, onContextMenu }: {
+const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, solo, interactive, onSelect, onEndDown, onWayDown, onWayInsert, onWayRemove, onEditLabel, onContextMenu }: {
   arrow: CanvasArrow
   ends: { x1: number; y1: number; x2: number; y2: number }
   d: string
+  /** Part of the current selection (halo). */
   selected: boolean
+  /** The ONLY selected element — shows the end/waypoint handles. */
+  solo: boolean
   interactive: boolean
-  onSelect: () => void
+  onSelect: (additive: boolean) => void
   onEndDown: (e: React.MouseEvent, arrow: CanvasArrow, which: 'p1' | 'p2') => void
   onWayDown: (e: React.MouseEvent, arrow: CanvasArrow, idx: number) => void
   onWayInsert: (e: React.MouseEvent, arrow: CanvasArrow, idx: number, x: number, y: number) => void
@@ -5080,6 +5283,10 @@ const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, interactiv
   const chain = [{ x: ends.x1, y: ends.y1 }, ...wps, { x: ends.x2, y: ends.y2 }]
   return (
     <g>
+      {selected && (
+        // Selection halo — same cue for a solo pick and for membership in a marquee.
+        <path d={d} fill="none" stroke="#6366f1" strokeOpacity={0.25} strokeWidth={width + 8} strokeLinecap="round" style={{ pointerEvents: 'none' }} />
+      )}
       <path
         d={d} fill="none"
         stroke={color} strokeWidth={selected ? width + 1 : width} markerEnd="url(#arrowhead)"
@@ -5090,12 +5297,12 @@ const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, interactiv
           d={d} fill="none"
           stroke="transparent" strokeWidth={14}
           style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
-          onMouseDown={e => { e.stopPropagation(); onSelect() }}
+          onMouseDown={e => { if (e.button !== 0) return; e.stopPropagation(); onSelect(e.shiftKey) }}
           onDoubleClick={e => { e.stopPropagation(); onEditLabel() }}
-          onContextMenu={e => { e.stopPropagation(); onSelect(); onContextMenu(e) }}
+          onContextMenu={e => { e.stopPropagation(); if (!selected) onSelect(false); onContextMenu(e) }}
         />
       )}
-      {selected && interactive && (
+      {solo && interactive && (
         <>
           <circle cx={ends.x1} cy={ends.y1} r={5} stroke="#4f46e5" strokeWidth={2}
             style={{ fill: arrow.fromCardId ? '#4f46e5' : 'var(--handle-fill)', pointerEvents: 'all', cursor: 'move' }} onMouseDown={e => onEndDown(e, arrow, 'p1')} />
@@ -5573,14 +5780,19 @@ const PdfCardBody = memo(function PdfCardBody({ card, onUpdate, fixedHeight, loc
             <FileDown size={22} className="opacity-50" />
             {locked ? 'PDF未設定' : 'PDFファイルを選択'}
           </button>
-          {!locked && localFileApi() && (
-            <button
-              onClick={() => linkLocalFileForCard(card, onUpdate)}
-              title="サーバー / ローカルのファイルを取り込まずパス参照でリンク"
-              className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
-            >
-              <Link2 size={11} /> サーバー参照
-            </button>
+          {!locked && (
+            <div className="relative flex items-center gap-1.5">
+              {localFileApi() && (
+                <button
+                  onClick={() => linkLocalFileForCard(card, onUpdate)}
+                  title="サーバー / ローカルのファイルを取り込まずパス参照でリンク"
+                  className="flex items-center gap-1 px-2 py-1 rounded border border-slate-200 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+                >
+                  <Link2 size={11} /> サーバー参照
+                </button>
+              )}
+              <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
+            </div>
           )}
         </div>
       )}
@@ -5636,14 +5848,19 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
             <ImageIcon size={26} className="mx-auto mb-1.5 opacity-40" />
             {locked ? '画像未設定' : <>画像を選択<br />ドラッグ&ドロップ / 貼り付け</>}
           </div>
-          {!locked && localFileApi() && (
-            <button
-              onClick={e => { e.stopPropagation(); linkLocalFileForCard(card, onUpdate) }}
-              title="サーバー / ローカルの画像を取り込まずパス参照でリンク"
-              className="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 bg-white/70 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
-            >
-              <Link2 size={11} /> サーバー参照
-            </button>
+          {!locked && (
+            <div className="relative mt-2 inline-flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+              {localFileApi() && (
+                <button
+                  onClick={() => linkLocalFileForCard(card, onUpdate)}
+                  title="サーバー / ローカルの画像を取り込まずパス参照でリンク"
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded border border-slate-200 bg-white/70 text-[10px] text-slate-400 hover:text-cyan-600 hover:border-cyan-300 transition-colors"
+                >
+                  <Link2 size={11} /> サーバー参照
+                </button>
+              )}
+              <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
+            </div>
           )}
         </div>
       )}
@@ -5767,7 +5984,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-1.5">
+            <div className="relative flex items-center gap-1.5">
               <button
                 onClick={() => pickFileForCard(card, onUpdate)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-600 hover:bg-fuchsia-500/20 transition-colors text-xs"
@@ -5784,6 +6001,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
                   <Link2 size={11} /> サーバー参照
                 </button>
               )}
+              <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
             </div>
             <span className="text-[10px] text-slate-400">または URL を貼り付け</span>
             <input
@@ -5843,7 +6061,7 @@ const VideoCardBody = memo(function VideoCardBody({ card, onUpdate, fixedHeight,
         )}
         {!locked && (
           <button
-            onClick={() => { if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [] }) }}
+            onClick={() => { if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [], refFileId: undefined }) }}
             title="クリア"
             className="absolute top-1 right-1 p-1 rounded bg-black/50 text-white/80 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity"
           >
@@ -6086,7 +6304,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
         {locked ? (
           <div className="flex items-center gap-1.5 text-slate-400 text-xs"><AudioLines size={13} /> 音声未設定</div>
         ) : (
-          <div className="flex items-center gap-1.5">
+          <div className="relative flex items-center gap-1.5">
             <button
               onClick={() => pickFileForCard(card, onUpdate)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-orange-500/10 border border-orange-500/30 text-orange-600 hover:bg-orange-500/20 transition-colors text-xs"
@@ -6102,6 +6320,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
                 <Link2 size={11} /> サーバー参照
               </button>
             )}
+            <LibraryPickButtonForCard card={card} onUpdate={onUpdate} />
           </div>
         )}
       </div>
@@ -6168,7 +6387,7 @@ const AudioCardBody = memo(function AudioCardBody({ card, onUpdate, fixedHeight,
         </div>
         {!locked && (
           <button
-            onClick={() => { if (isMediaRef(card.url)) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [] }) }}
+            onClick={() => { if (isMediaRef(card.url) && !card.refFileId) deleteMedia(card.url!).catch(() => {}); onUpdate({ url: '', content: '', bookmarks: [], refFileId: undefined }) }}
             title="クリア"
             className="p-1 rounded text-slate-400 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
           >

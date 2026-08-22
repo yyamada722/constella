@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2 } from 'lucide-react'
+import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip } from 'lucide-react'
 import { useApp } from '../store'
 import { Task, Project, BoardColor } from '../types'
 import { generateId } from '../utils'
@@ -8,6 +8,7 @@ import { aggregateFor, childrenMap, descendantIds, rootsOf, wouldCycle } from '.
 import { BOARD_COLOR_CLASSES, ALL_BOARD_COLORS, boardColorFor } from '../utils/boardColor'
 import { SearchInput } from '../components/SearchInput'
 import LinkedNotesField from '../components/LinkedNotesField'
+import LinkedFilesField from '../components/LinkedFilesField'
 import NotePanel from '../components/NotePanel'
 import { confirmDialog, chooseDialog } from '../components/ConfirmDialog'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
@@ -1167,6 +1168,7 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
           />
         </div>
         <LinkedNotesField task={task} onChange={ids => onUpdate({ ...task, linkedNoteIds: ids.length > 0 ? ids : undefined })} />
+        <LinkedFilesField task={task} onChange={ids => onUpdate({ ...task, fileIds: ids.length > 0 ? ids : undefined })} />
         {otherBoards.length > 0 && (
           <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
             <span className="shrink-0">ボード</span>
@@ -1308,6 +1310,9 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
               <p className="text-sm text-slate-800 font-medium truncate flex-1">{task.title || '(無題)'}</p>
               {(task.linkedNoteIds?.length ?? 0) > 0 && (
                 <FileText size={11} className="text-indigo-400 shrink-0" />
+              )}
+              {(task.fileIds?.length ?? 0) > 0 && (
+                <Paperclip size={11} className="text-orange-400 shrink-0" />
               )}
             </div>
             {/* In flat mode, show parent breadcrumb for context. */}

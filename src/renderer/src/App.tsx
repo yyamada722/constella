@@ -15,6 +15,7 @@ import NotesPage from './pages/NotesPage'
 import ProjectsPage from './pages/ProjectsPage'
 import DashboardPage from './pages/DashboardPage'
 import ResearchPage from './pages/ResearchPage'
+import FilesPage from './pages/FilesPage'
 import SearchPage from './pages/SearchPage'
 import CanvasPage from './pages/CanvasPage'
 import SketchPage from './pages/SketchPage'
@@ -249,6 +250,7 @@ export default function App() {
             <Route path="/flow" element={<FlowPage />} />
             <Route path="/plan" element={<PlanPage />} />
             <Route path="/research" element={<ResearchPage />} />
+            <Route path="/files" element={<FilesPage />} />
             <Route path="/canvas" element={<CanvasPage />} />
             <Route path="/sketch" element={<SketchPage />} />
             <Route path="/mindtrain" element={<MindtrainView />} />
