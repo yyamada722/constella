@@ -6,8 +6,10 @@ out/
 dist/
 release/
 
-# Docs site (docs/guide is generated from src/renderer/src/help by docs:sync)
+# Docs site (docs/guide is generated from src/renderer/src/help by docs:sync;
+# docs/public/media is captured by CI onto the docs-media branch)
 docs/guide/
+docs/public/media/
 docs/.vitepress/dist/
 docs/.vitepress/cache/
 

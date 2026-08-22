@@ -32,6 +32,18 @@ jobs:
           cache: npm
       - uses: actions/configure-pages@v5
       - run: npm ci --ignore-scripts
+      # Screenshots / GIFs live on the force-pushed docs-media branch (kept out of
+      # main so 17MB of media never accumulates in history). Only a MISSING branch
+      # is tolerated — a failed fetch/extract must not deploy a site full of 404s.
+      - name: Pull captured media
+        run: |
+          if git ls-remote --exit-code origin docs-media > /dev/null 2>&1; then
+            npm run docs:media
+          else
+            # Deploying without media would replace the site with 404ing images.
+            echo "docs-media branch not found — refusing to deploy" >&2
+            exit 1
+          fi
       - run: npm run docs:build
       - uses: actions/upload-pages-artifact@v3
         with:

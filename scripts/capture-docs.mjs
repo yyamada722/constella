@@ -42,10 +42,14 @@ function buildApp() {
 }
 
 function launchApp(userData) {
-  const child = spawn(electronPath, ['.', `--remote-debugging-port=${DEBUG_PORT}`], {
+  // Locally the window parks off-screen (no desktop flicker). Under CI/xvfb there
+  // is no desktop to protect and negative coords may be clamped — park at 0,0.
+  // Chromium's sandbox needs user namespaces that GitHub runners restrict.
+  const park = process.env.CI ? '0,0' : '-4000,0'
+  const args = ['.', `--remote-debugging-port=${DEBUG_PORT}`, ...(process.env.CI ? ['--no-sandbox'] : [])]
+  const child = spawn(electronPath, args, {
     cwd: root,
-    // Off-screen, exact content size (see forcedBounds() in src/main/index.ts).
-    env: { ...process.env, CONSTELLA_USERDATA: userData, CONSTELLA_WINDOW_BOUNDS: `-4000,0,${VIEW.width},${VIEW.height}`, ELECTRON_ENABLE_LOGGING: '0' },
+    env: { ...process.env, CONSTELLA_USERDATA: userData, CONSTELLA_WINDOW_BOUNDS: `${park},${VIEW.width},${VIEW.height}`, ELECTRON_ENABLE_LOGGING: '0' },
     stdio: 'ignore',
   })
   return child

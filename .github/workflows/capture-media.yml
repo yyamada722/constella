@@ -1,0 +1,74 @@
+name: Capture docs media
+
+# Renderer-affecting merges to main re-shoot every docs screenshot / GIF with the
+# real app (xvfb + puppeteer + ffmpeg), publish them to the single-commit
+# `docs-media` branch (force-push — the media never bloats main's history), then
+# kick the Docs deploy so the site picks them up.
+#
+# Known window: a push that ALSO matches docs.yml (help/docs changes) deploys the
+# text first with the previous media; this workflow's final dispatch re-deploys
+# with the fresh media ~30 min later, so any newly referenced asset 404s only in
+# that window and then self-heals.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/renderer/**'
+      - 'src/main/**'
+      - 'src/preload/**'
+      - 'scripts/capture-docs.mjs'
+      - 'scripts/docs-media/**'
+      - '.github/workflows/capture-media.yml'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: capture-media
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    # workflow_dispatch can target any ref — never overwrite production media
+    # (docs-media) with screenshots of unreleased code.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The publish step authenticates explicitly — don't leave the write-scoped
+          # token in .git/config for npm ci / the captured app to read.
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install ffmpeg / xvfb / CJK fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg xvfb fonts-noto-cjk
+      - run: npm ci
+      - name: Capture screenshots and GIFs
+        env:
+          CI: 'true'
+        run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run docs:capture
+      - name: Publish to the docs-media branch (single commit, force-pushed)
+        run: |
+          cd docs/public/media
+          git init -q -b docs-media
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "docs media for ${GITHUB_SHA} ($(date -u +%F))"
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" docs-media
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Redeploy the docs site with the fresh media
+        run: gh workflow run docs.yml --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
