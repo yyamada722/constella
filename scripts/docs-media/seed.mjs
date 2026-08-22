@@ -338,6 +338,55 @@ currency: JPY
     },
   })
 
+  // ── Files (ファイルライブラリ) — real blobs travel in backup.media as data URLs ──
+  const svgPhoto = (label, a, b) => 'data:image/svg+xml;base64,' + Buffer.from(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="1200" height="800" fill="url(#g)"/><circle cx="960" cy="180" r="70" fill="#fff8" /><text x="60" y="720" font-family="sans-serif" font-size="56" fill="#fff" font-weight="700">${label}</text></svg>`
+  ).toString('base64')
+  // Minimal one-page PDF (ASCII only — core fonts have no Japanese glyphs).
+  const pdfText = (lines) => {
+    const NL = String.fromCharCode(10)
+    const content = `BT /F1 28 Tf 60 740 Td ${lines.map((l, i) => `${i ? '0 -44 Td ' : ''}(${l}) Tj`).join(' ')} ET`
+    const objs = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+      `<< /Length ${content.length} >>${NL}stream${NL}${content}${NL}endstream`,
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ]
+    let out = '%PDF-1.4' + NL
+    const offs = []
+    objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj${NL}${o}${NL}endobj${NL}` })
+    const xref = out.length
+    out += `xref${NL}0 ${objs.length + 1}${NL}0000000000 65535 f ${NL}` + offs.map(o => String(o).padStart(10, '0') + ' 00000 n ' + NL).join('')
+    out += `trailer${NL}<< /Size ${objs.length + 1} /Root 1 0 R >>${NL}startxref${NL}${xref}${NL}%%EOF`
+    return 'data:application/pdf;base64,' + Buffer.from(out, 'latin1').toString('base64')
+  }
+  const media = {
+    'med-odori': svgPhoto('Odori Park - 07:00', '#f59e0b', '#ef4444'),
+    'med-tower': svgPhoto('TV Tower - rooftop', '#6366f1', '#0ea5e9'),
+    'med-moiwa': svgPhoto('Mt. Moiwa - night', '#1e293b', '#7c3aed'),
+    'med-eticket': pdfText(['E-TICKET  JAL503', 'HND 07:30  ->  CTS 09:10', '2026-08-18  Seat 12A', 'Passenger: YAMADA / YUSUKE']),
+    'med-permit': pdfText(['Shooting Permit Application', 'Sapporo City - Parks Division', 'Location: Odori Park', 'Date: 2026-09-01 / 09-02']),
+  }
+  const fileFolders = [
+    { id: 'ff-loc', masterProjectId: m, name: 'ロケ地写真', createdAt: T0, color: 'emerald' },
+    { id: 'ff-doc', masterProjectId: m, name: '書類', createdAt: T0, color: 'rose' },
+  ]
+  const files = [
+    { id: 'file-odori', masterProjectId: m, folderId: 'ff-loc', name: '大通公園_朝.jpg', url: 'idb:med-odori', mime: 'image/svg+xml', size: 1843, tags: ['ロケ地'], comment: '7:00 東向き。テレビ塔が背景に入る', createdAt: T0 },
+    { id: 'file-tower', masterProjectId: m, folderId: 'ff-loc', name: 'テレビ塔_展望台.jpg', url: 'idb:med-tower', mime: 'image/svg+xml', size: 1790, tags: ['ロケ地'], createdAt: T0 },
+    { id: 'file-moiwa', masterProjectId: m, folderId: 'ff-loc', name: '藻岩山_夜景.jpg', url: 'idb:med-moiwa', mime: 'image/svg+xml', size: 1810, tags: ['ロケ地', 'ドローン'], createdAt: T0 },
+    { id: 'file-eticket', masterProjectId: m, folderId: 'ff-doc', name: 'eチケット_JAL503.pdf', url: 'idb:med-eticket', mime: 'application/pdf', size: 820, tags: ['チケット'], comment: '往路。復路は別ファイル', createdAt: T0 },
+    { id: 'file-permit', masterProjectId: m, folderId: 'ff-doc', name: '撮影許可申請書.pdf', url: 'idb:med-permit', mime: 'application/pdf', size: 900, tags: ['許可'], comment: '先方からの控え', createdAt: T0, linkedMasterIds: ['docs-master-2'] },
+    { id: 'file-raw', masterProjectId: m, name: 'ロケハン素材_RAW.mp4', url: String.raw`local:\\nas\shoot\2026-08\locscout_raw.mp4`, mime: 'video/mp4', size: 4_830_000_000, tags: ['素材'], comment: 'NAS 上の元データ（取り込みなし）', createdAt: T0 },
+  ]
+  notes[0].attachments = [
+    { id: 'att-1', fileId: 'file-permit', group: '先方', createdAt: T0 },
+    { id: 'att-2', fileId: 'file-eticket', group: '自分', createdAt: T0 },
+  ]
+  boardPrep.tasks[0].fileIds = ['file-permit']
+  boardPrep.tasks[1].fileIds = ['file-odori', 'file-tower']
+
   const state = {
     masterProjects: [
       { id: m, name: '札幌ロケハン 2026', createdAt: T0, folder: '映像制作' },
@@ -351,6 +400,8 @@ currency: JPY
     research,
     researchFolders,
     sketches: [sketch],
+    files,
+    fileFolders,
     flows: [flow],
     plans: [plan],
     planFolders: [],
@@ -367,5 +418,5 @@ currency: JPY
     canvasStations: stations,
   }
 
-  return { app: 'constella', version: 2, exportedAt: T0, state, media: {}, mindtrain }
+  return { app: 'constella', version: 2, exportedAt: T0, state, media, mindtrain }
 }

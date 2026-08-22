@@ -7,7 +7,7 @@ async function openBrief(ctx, mode = '分割') {
   // Folder rows: the name itself is "click to rename" — expand via the chevron.
   await expandFolder(ctx, '企画')
   await ctx.clickText('撮影企画ブリーフ', { selector: 'button, div, span', wait: 700 })
-  await ctx.clickTitle(mode, 700)
+  await ctx.clickText(mode, { selector: 'button', wait: 700 })
 }
 
 async function expandFolder(ctx, name) {
@@ -66,7 +66,7 @@ export const scenarios = [
     async run(ctx) {
       await openBrief(ctx, 'プレビュー')
       await ctx.shot('preview-mode')
-      const a = await ctx.rectOfTitle('編集')
+      const a = await ctx.rectOf('編集', { selector: 'button' })
       const b = await ctx.rectOfTitle('文字を大きく')
       await ctx.shot('mode-toggle', { clip: { x: a.x, y: a.y, w: b.x + b.w - a.x, h: Math.max(a.h, b.h) }, pad: 8 })
     },
@@ -171,12 +171,26 @@ export const scenarios = [
     },
   },
   {
+    name: 'attachments',
+    async run(ctx) {
+      await openBrief(ctx, 'プレビュー')
+      await ctx.shot('minimap')
+      // 📎 badge in the header opens the attachments panel
+      await ctx.page.evaluate(() => document.querySelector('[title="付随資料（PDF・画像・動画などをこのノートに添付）"]').click())
+      await ctx.pause(1200)
+      await ctx.shot('attachments')
+      // the panel state is remembered globally — close it again
+      await ctx.page.evaluate(() => document.querySelector('[title="付随資料（PDF・画像・動画などをこのノートに添付）"]').click())
+      await ctx.pause(400)
+    },
+  },
+  {
     name: 'shared',
     async run(ctx) {
       await ctx.nav('/')
       await expandFolder(ctx, 'ロケ地')
       await ctx.clickText('関係者連絡先', { selector: 'button, div, span', wait: 700 })
-      await ctx.clickTitle('プレビュー', 500)
+      await ctx.clickText('プレビュー', { selector: 'button', wait: 500 })
       await ctx.shot('shared-note')
     },
   },

@@ -63,6 +63,7 @@ const features = [
     items: [
       { text: 'ダッシュボード', link: '/features/pages/dashboard' },
       { text: 'リサーチ', link: '/features/pages/research' },
+      { text: 'ファイル', link: '/features/pages/files' },
       { text: 'スケッチ', link: '/features/pages/sketch' },
       { text: '路線図', link: '/features/pages/mindtrain' },
       { text: '検索', link: '/features/pages/search' },

@@ -16,6 +16,22 @@ export const scenarios = [
     },
   },
   {
+    name: 'files',
+    async run(ctx) {
+      await ctx.nav('/files')
+      await ctx.pause(1200)
+      await ctx.clickTitle('グリッド表示', 700)
+      await ctx.shot('files-grid')
+      await ctx.clickTitle('リスト表示', 700)
+      await ctx.shot('files-list')
+      await ctx.clickTitle('グリッド表示', 500)
+      // open a file in the lightbox / detail view
+      await ctx.clickText('eチケット_JAL503.pdf', { selector: 'div, span, button', wait: 1500 })
+      await ctx.shot('files-detail')
+      await ctx.key('Escape')
+    },
+  },
+  {
     name: 'research',
     async run(ctx) {
       await ctx.nav('/research')

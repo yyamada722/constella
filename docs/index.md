@@ -36,6 +36,10 @@ features:
     title: 計画
     details: テキスト記法で出張・ロケハンの旅程を組み、タイムライン表示と費用の自動集計、e チケット付き PDF を生成。
     link: /guide/plan
+  - icon: 🗂
+    title: ファイル
+    details: 写真・PDF・動画をプロジェクトのライブラリで一元管理。ノート・タスク・キャンバスからは参照で、版の差し替えも一括反映。
+    link: /features/pages/files
   - icon: 🚇
     title: フロー・路線図
     details: 段取りをノードでつないでそのままタスク化。プロジェクトの進み具合を路線図のように俯瞰。
