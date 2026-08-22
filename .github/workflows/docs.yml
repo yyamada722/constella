@@ -32,6 +32,10 @@ jobs:
           cache: npm
       - uses: actions/configure-pages@v5
       - run: npm ci --ignore-scripts
+      # Screenshots / GIFs live on the force-pushed docs-media branch (kept out of
+      # main so 17MB of media never accumulates in history). Tolerate its absence.
+      - name: Pull captured media
+        run: npm run docs:media || echo "docs-media branch not available — building without media"
       - run: npm run docs:build
       - uses: actions/upload-pages-artifact@v3
         with:
