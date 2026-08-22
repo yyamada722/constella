@@ -572,12 +572,21 @@ async function loadWindowState(): Promise<WindowState> {
   return { width: 1200, height: 800 }
 }
 
+// Automation hook (docs capture / E2E): CONSTELLA_WINDOW_BOUNDS="x,y,w,h" pins the
+// window at an exact CONTENT size — off-screen x keeps the capture run from
+// flickering on the desktop while Chromium still paints frames.
+function forcedBounds(): { x: number; y: number; width: number; height: number } | null {
+  const m = /^(-?\d+),(-?\d+),(\d+),(\d+)$/.exec(process.env.CONSTELLA_WINDOW_BOUNDS ?? '')
+  return m ? { x: +m[1], y: +m[2], width: +m[3], height: +m[4] } : null
+}
+
 function createWindow(state: WindowState): void {
+  const forced = forcedBounds()
   const win = new BrowserWindow({
     title: 'Constella',
-    width: Math.max(800, state.width),
-    height: Math.max(600, state.height),
-    ...(state.x != null && state.y != null ? { x: state.x, y: state.y } : {}),
+    width: forced ? forced.width : Math.max(800, state.width),
+    height: forced ? forced.height : Math.max(600, state.height),
+    ...(forced ? { x: forced.x, y: forced.y, useContentSize: true } : state.x != null && state.y != null ? { x: state.x, y: state.y } : {}),
     minWidth: 800,
     minHeight: 600,
     show: false,

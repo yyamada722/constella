@@ -910,6 +910,18 @@ export default function CanvasPage() {
   // Click-outside / Escape dismissal for the toolbar dropdowns (these wrap both
   // their trigger and popover, so a click on the trigger doesn't self-close).
   const addMenuRef = usePopoverDismiss<HTMLDivElement>(showAddMenu, () => setShowAddMenu(false))
+  // The toolbar row competes with both side panels for width. Below this width
+  // text labels give way to icons so the tool buttons never get squeezed into
+  // vertically-wrapped text (tailwind breakpoints can't see the available width).
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  const [toolbarCompact, setToolbarCompact] = useState(false)
+  useEffect(() => {
+    const el = toolbarRef.current
+    if (!el) return
+    const ro = new ResizeObserver(([e]) => setToolbarCompact(e.contentRect.width < 1040))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   const convertRef = usePopoverDismiss<HTMLDivElement>(convertOpen, () => setConvertOpen(false))
 
   viewportRef.current = viewport
@@ -3376,15 +3388,19 @@ export default function CanvasPage() {
         )
       })()}
       {/* Toolbar */}
-      <div className="h-11 flex items-center justify-between px-4 border-b border-slate-200 bg-slate-50 shrink-0 z-10">
-        <div className="flex items-center gap-2">
+      {/* Wraps to a second row when both side panels leave too little width — every
+          tool stays reachable instead of shrinking into vertically-wrapped text.
+          overflow-x-clip (not hidden) so the add-menu dropdown still extends below. */}
+      <div ref={toolbarRef} className="min-h-11 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 py-1 border-b border-slate-200 bg-slate-50 shrink-0 z-10 overflow-x-clip">
+        <div className="flex items-center gap-2 shrink-0">
           {!canvasLocked && (
-            <div className="relative" ref={addMenuRef}>
+            <div className="relative shrink-0" ref={addMenuRef}>
               <button
                 onClick={() => setShowAddMenu(!showAddMenu)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-600 text-sm hover:bg-indigo-500/20 transition-colors"
+                title="カード追加"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-600 text-sm hover:bg-indigo-500/20 transition-colors whitespace-nowrap"
               >
-                <Plus size={16} /> カード追加
+                <Plus size={16} />{!toolbarCompact && ' カード追加'}
               </button>
               {showAddMenu && (
                 <div className="absolute left-0 top-10 z-20 bg-slate-100 border border-slate-300 rounded-lg shadow-xl py-1 min-w-[200px]">
@@ -3417,13 +3433,13 @@ export default function CanvasPage() {
             </div>
           )}
           {canvasLocked && (
-            <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 text-sm">
-              <Lock size={15} /> 編集ロック中（閲覧のみ）
+            <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-600 text-sm whitespace-nowrap shrink-0" title="編集ロック中（閲覧のみ）">
+              <Lock size={15} />{!toolbarCompact && ' 編集ロック中（閲覧のみ）'}
             </span>
           )}
-          <span className="text-xs text-slate-400 ml-1">{tabCards.length} カード</span>
+          {!toolbarCompact && <span className="text-xs text-slate-400 ml-1 whitespace-nowrap shrink-0">{tabCards.length} カード</span>}
           {viewMode === 'canvas' && !canvasLocked && (
-            <div className="flex items-center gap-0.5 ml-2 pl-2 border-l border-slate-200">
+            <div className="flex items-center gap-0.5 ml-2 pl-2 border-l border-slate-200 shrink-0">
               <button
                 onClick={() => setTool('select')}
                 title="選択 / 移動"
@@ -3696,7 +3712,7 @@ export default function CanvasPage() {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0 ml-auto">
           <button
             onClick={undo}
             disabled={!canUndo}
@@ -4378,7 +4394,7 @@ export default function CanvasPage() {
             />
           )}
 
-          {tabCards.length === 0 && !dragFileOver && (
+          {tabCards.length === 0 && tabStations.length === 0 && tabLabels.length === 0 && tabStrokes.length === 0 && tabGroups.length === 0 && !dragFileOver && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
               <p className="text-slate-400 text-sm">ダブルクリックまたは「カード追加」でカードを配置</p>
             </div>

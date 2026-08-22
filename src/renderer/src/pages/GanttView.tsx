@@ -646,10 +646,10 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
     <div className="flex-1 flex flex-col min-h-0 min-w-0 select-none">
       {/* Top bar: nav + summary */}
       <div className="h-10 px-4 flex items-center gap-2 border-b border-slate-200 shrink-0">
-        <button onClick={() => setRangeStart(addDaysIso(rangeStart, -navStep))} className="p-1 rounded hover:bg-slate-100 text-slate-600" title={`${navStep}日前へ`}><ChevronLeft size={16} /></button>
-        <button onClick={() => setRangeStart(addDaysIso(isoToday(), -PRESET_LOOKBACK_DAYS))} className="px-2 py-0.5 rounded text-xs text-slate-600 hover:bg-slate-100" title="左端を今日付近に">今日へ</button>
-        <button onClick={() => setRangeStart(addDaysIso(rangeStart, navStep))} className="p-1 rounded hover:bg-slate-100 text-slate-600" title={`${navStep}日後へ`}><ChevronRight size={16} /></button>
-        <span className="text-xs text-slate-400 ml-2 truncate min-w-0 shrink-0">{rangeStart} ～ {addDaysIso(rangeStart, rangeDays - 1)}</span>
+        <button onClick={() => setRangeStart(addDaysIso(rangeStart, -navStep))} className="p-1 rounded hover:bg-slate-100 text-slate-600 shrink-0" title={`${navStep}日前へ`}><ChevronLeft size={16} /></button>
+        <button onClick={() => setRangeStart(addDaysIso(isoToday(), -PRESET_LOOKBACK_DAYS))} className="px-2 py-0.5 rounded text-xs text-slate-600 hover:bg-slate-100 whitespace-nowrap shrink-0" title="左端を今日付近に">今日へ</button>
+        <button onClick={() => setRangeStart(addDaysIso(rangeStart, navStep))} className="p-1 rounded hover:bg-slate-100 text-slate-600 shrink-0" title={`${navStep}日後へ`}><ChevronRight size={16} /></button>
+        <span className="text-xs text-slate-400 ml-2 whitespace-nowrap shrink-0">{rangeStart} ～ {addDaysIso(rangeStart, rangeDays - 1)}</span>
         {/* Board filter chips — toggle to hide/show a board's tasks. Click filtering OR Alt-click to solo. */}
         {boards.length > 1 && (
           <div className="flex items-center gap-1 ml-3 min-w-0 overflow-x-auto">
@@ -710,7 +710,7 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
             </button>
           ))}
         </div>
-        <span className="ml-3 text-xs text-slate-500 shrink-0">
+        <span className="ml-3 text-xs text-slate-500 shrink-0 whitespace-nowrap">
           {rows.length - undatedCount} 件
           {undatedCount > 0 && <span className="ml-2 text-amber-600">・未設定 {undatedCount}</span>}
         </span>
