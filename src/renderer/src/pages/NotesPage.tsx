@@ -139,7 +139,7 @@ export default function NotesPage() {
   viewModeRef.current = viewMode
   // Scroll position (0–1 of the scrollable range) captured just before a mode
   // switch, re-applied to whichever scroller the new mode mounts.
-  const pendingScrollRef = useRef<{ ratio: number; focus: boolean } | null>(null)
+  const pendingScrollRef = useRef<{ noteId: string; ratio: number; focus: boolean } | null>(null)
 
   // Shared notes from OTHER master projects that THIS project references (live instances).
   const referencedNotes = useMemo(() => {
@@ -307,13 +307,16 @@ export default function NotesPage() {
     const cur = viewModeRef.current
     if (next === cur) return
     const el = primaryScroller(cur)
-    pendingScrollRef.current = { ratio: el ? scrollRatio(el) : 0, focus: next !== 'preview' }
+    const noteId = selectedNoteRef.current?.id
+    pendingScrollRef.current = noteId ? { noteId, ratio: el ? scrollRatio(el) : 0, focus: next !== 'preview' } : null
     setViewMode(next)
   }
   useEffect(() => {
     const p = pendingScrollRef.current
     if (!p) return
     pendingScrollRef.current = null
+    // A note switch in the meantime must not inherit the old note's position.
+    if (p.noteId !== selectedNoteRef.current?.id) return
     // Every timer is tracked so a quick second switch cancels the stale restore
     // instead of letting it overwrite the new pane with the old ratio.
     let dead = false
@@ -344,7 +347,7 @@ export default function NotesPage() {
     }
     later(() => apply(0), 0)
     return () => { dead = true; timers.forEach(clearTimeout) }
-  }, [viewMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [viewMode, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Split view: keep editor and preview scrolled to the same relative position ──
   useEffect(() => {
@@ -366,6 +369,9 @@ export default function NotesPage() {
     }
     let onTa: (() => void) | null = null
     let onPv: (() => void) | null = null
+    let onInput: (() => void) | null = null
+    let resyncTimer: ReturnType<typeof setTimeout> | null = null
+    let mo: MutationObserver | null = null
     const attach = (attempt: number) => {
       if (dead) return
       ta = editorTa(); pv = previewEl()
@@ -373,13 +379,26 @@ export default function NotesPage() {
       onTa = follow(ta, pv); onPv = follow(pv, ta)
       ta.addEventListener('scroll', onTa, { passive: true })
       pv.addEventListener('scroll', onPv, { passive: true })
+      // Typing and late layout (images / mermaid settling) change scrollHeight
+      // without a scroll event — re-align the preview to the editor after a beat.
+      const resync = () => {
+        if (resyncTimer) clearTimeout(resyncTimer)
+        resyncTimer = setTimeout(() => { if (!dead && ta && pv) follow(ta, pv)() }, 80)
+      }
+      onInput = resync
+      ta.addEventListener('input', onInput)
+      mo = new MutationObserver(resync)
+      mo.observe(pv, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] })
     }
     attach(0)
     return () => {
       dead = true
       if (timer) clearTimeout(timer)
       if (unlockTimer) clearTimeout(unlockTimer)
+      if (resyncTimer) clearTimeout(resyncTimer)
+      mo?.disconnect()
       if (ta && onTa) ta.removeEventListener('scroll', onTa)
+      if (ta && onInput) ta.removeEventListener('input', onInput)
       if (pv && onPv) pv.removeEventListener('scroll', onPv)
     }
   }, [viewMode, selectedId]) // eslint-disable-line react-hooks/exhaustive-deps

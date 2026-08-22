@@ -1541,7 +1541,7 @@ export default function CanvasPage() {
       return
     }
     const selStations = selectedStationIdsRef.current
-    const inMulti = selStations.includes(st.id) && (selStations.length + selectedIds.length + selectedLabelIds.length + selectedGroupIds.length > 1)
+    const inMulti = selStations.includes(st.id) && (selStations.length + selectedIds.length + selectedLabelIds.length + selectedGroupIds.length + selectedArrowIdsRef.current.length > 1)
     if (!inMulti) {
       setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([]); setEditingLabelId(null)
       setSelectedStationIds([st.id])
@@ -2033,7 +2033,7 @@ export default function CanvasPage() {
     }
     // 複数選択（全選択・範囲選択）のメンバーを掴んだときは選択全体をまとめて動かす。
     // このとき枠は「枠だけ」動く — 中身の追従は選択されたカード側が担う。
-    const inMulti = selectedGroupIds.includes(group.id) && (selectedGroupIds.length + selectedIds.length + selectedLabelIds.length + selectedStationIds.length > 1)
+    const inMulti = selectedGroupIds.includes(group.id) && (selectedGroupIds.length + selectedIds.length + selectedLabelIds.length + selectedStationIds.length + selectedArrowIdsRef.current.length > 1)
     if (inMulti) {
       if (canvasLockedRef.current) return
       const cards = tabCards.filter(c => selectedIds.includes(c.id) && !c.locked).map(c => ({ id: c.id, x: c.x, y: c.y }))
@@ -2093,7 +2093,7 @@ export default function CanvasPage() {
     }
     // Clicking a member of an existing multi-selection keeps it and drags the whole
     // set — cards, labels, 駅 AND グループ枠 (same as grabbing a card or a station).
-    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length + selectedStationIds.length + selectedGroupIds.length > 1)
+    const inMulti = selectedLabelIds.includes(label.id) && (selectedLabelIds.length + selectedIds.length + selectedStationIds.length + selectedGroupIds.length + selectedArrowIdsRef.current.length > 1)
     const labelSel = inMulti ? selectedLabelIds : [label.id]
     const cardSel = inMulti ? selectedIds : []
     const stationSel = inMulti ? selectedStationIds : []

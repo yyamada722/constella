@@ -226,10 +226,9 @@ export function TypolMarkdown({
   useEffect(() => {
     if (effectiveEditing || !previewRef.current) return
     const host = previewRef.current
-    if (!value.trim()) {
-      host.innerHTML = ''
-      return
-    }
+    // Empty value: the "preview-empty" root is a fresh element (own key) whose
+    // placeholder span is React-managed — don't wipe it.
+    if (!value.trim()) return
     const { html } = renderMarkdown(value)
     host.innerHTML = html
     host.querySelectorAll<HTMLImageElement>('img[src^="idb:"]').forEach(img => {
