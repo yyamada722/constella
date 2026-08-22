@@ -4,12 +4,18 @@ name: Capture docs media
 # real app (xvfb + puppeteer + ffmpeg), publish them to the single-commit
 # `docs-media` branch (force-push — the media never bloats main's history), then
 # kick the Docs deploy so the site picks them up.
+#
+# Known window: a push that ALSO matches docs.yml (help/docs changes) deploys the
+# text first with the previous media; this workflow's final dispatch re-deploys
+# with the fresh media ~30 min later, so any newly referenced asset 404s only in
+# that window and then self-heals.
 on:
   push:
     branches: [main]
     paths:
       - 'src/renderer/**'
       - 'src/main/**'
+      - 'src/preload/**'
       - 'scripts/capture-docs.mjs'
       - 'scripts/docs-media/**'
       - '.github/workflows/capture-media.yml'
@@ -25,6 +31,9 @@ concurrency:
 
 jobs:
   capture:
+    # workflow_dispatch can target any ref — never overwrite production media
+    # (docs-media) with screenshots of unreleased code.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

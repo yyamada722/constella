@@ -13,7 +13,9 @@ const dest = join(root, 'docs/public/media')
 execFileSync('git', ['fetch', 'origin', 'docs-media'], { cwd: root, stdio: 'inherit' })
 rmSync(dest, { recursive: true, force: true })
 mkdirSync(dest, { recursive: true })
+// FETCH_HEAD is what the fetch above actually updated — origin/docs-media may be
+// stale (force-pushed branch) or absent entirely (single-branch clones).
 // git archive → tar keeps this cross-platform (bsdtar ships with Windows 10+).
-const tarBuf = execFileSync('git', ['archive', 'origin/docs-media'], { cwd: root, maxBuffer: 1024 * 1024 * 200 })
+const tarBuf = execFileSync('git', ['archive', 'FETCH_HEAD'], { cwd: root, maxBuffer: 1024 * 1024 * 200 })
 execFileSync('tar', ['-x', '-C', dest], { input: tarBuf })
 console.log('docs-media → docs/public/media 取得完了')
