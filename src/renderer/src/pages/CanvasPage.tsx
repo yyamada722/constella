@@ -2581,11 +2581,13 @@ export default function CanvasPage() {
         const ny = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
         const sel = new Set(selectedIds)
         tabCardsRef.current.forEach(c => { if (sel.has(c.id) && !c.locked) dispatch({ type: 'MOVE_CANVAS_CARD', payload: { id: c.id, x: c.x + nx, y: c.y + ny } }) })
-        // 矢印はドラッグ移動と同じ規則: 両端が一緒に動く場合だけ自由端・経由点を動かす。
+        // 矢印はドラッグ移動と同じ規則: 両端が一緒に動く場合だけ自由端・経由点を動かす
+        // （ロック済みカードは上で動いていないので端点集合からも外す）。
+        const moving = new Set(tabCardsRef.current.filter(c => sel.has(c.id) && !c.locked).map(c => c.id))
         const asel = new Set(selectedArrowIds)
         tabArrowsRef.current.forEach(a => {
-          const fromIn = a.fromCardId ? sel.has(a.fromCardId) : asel.has(a.id)
-          const toIn = a.toCardId ? sel.has(a.toCardId) : asel.has(a.id)
+          const fromIn = a.fromCardId ? moving.has(a.fromCardId) : asel.has(a.id)
+          const toIn = a.toCardId ? moving.has(a.toCardId) : asel.has(a.id)
           if (!fromIn || !toIn || (a.fromCardId && a.toCardId && !(a.points?.length))) return
           dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: {
             ...a,
@@ -4608,7 +4610,12 @@ export default function CanvasPage() {
                 </>
               ) : contextMenu.kind === 'arrow' ? (
                 <>
-                  <button onClick={() => { if (selectedArrowId) setEditingArrowId(selectedArrowId); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> ラベルを編集</button>
+                  {selectedArrowId && (
+                    <button onClick={() => { setEditingArrowId(selectedArrowId); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> ラベルを編集</button>
+                  )}
+                  {!selectedArrowId && selectedArrowIds.length > 1 && (
+                    <div className="px-3 py-1 text-[11px] text-slate-400">矢印{selectedArrowIds.length}本を選択中</div>
+                  )}
                   {selArrow && (
                     <button onClick={() => { dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selArrow, curved: !selArrow.curved } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Spline size={14} /> {selArrow.curved ? '直線にする' : '曲線にする'}</button>
                   )}

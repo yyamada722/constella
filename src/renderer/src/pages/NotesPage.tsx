@@ -322,17 +322,22 @@ export default function NotesPage() {
     const apply = (attempt: number) => {
       const el = primaryScroller(viewMode)
       if (!el) { if (attempt < 6) later(() => apply(attempt + 1), 40); return }
+      const target = p.ratio * (el.scrollHeight - el.clientHeight)
+      el.scrollTop = target
       if (p.focus && el instanceof HTMLTextAreaElement) {
-        // Put the caret on the first line of the visible region BEFORE scrolling —
-        // focusing scrolls to the caret, which would otherwise undo the restore.
+        // Caret goes to the first source line of the RESTORED editor viewport
+        // (scrollTop / line-height), not to a ratio of the source-line count —
+        // the preview's images/headings make those two ratios diverge. Focus and
+        // setSelectionRange may scroll to the caret, so the scrollTop is re-applied.
+        const lh = parseFloat(getComputedStyle(el).lineHeight) || 22
         const lines = el.value.split('\n')
-        const lineIdx = Math.min(lines.length - 1, Math.round(p.ratio * Math.max(0, lines.length - 1)))
+        const lineIdx = Math.min(lines.length - 1, Math.max(0, Math.round(target / lh)))
         let pos = 0
         for (let i = 0; i < lineIdx; i++) pos += lines[i].length + 1
         el.focus({ preventScroll: true })
         el.setSelectionRange(pos, pos)
+        el.scrollTop = target
       }
-      el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight)
       // The preview's images / mermaid blocks settle a moment later and grow the
       // content; re-apply once so the ratio refers to the final height.
       if (viewMode === 'preview') later(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
