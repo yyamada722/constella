@@ -16,7 +16,8 @@
     "docs:sync": "node scripts/sync-help-docs.mjs",
     "docs:dev": "npm run docs:sync && vitepress dev docs",
     "docs:build": "npm run docs:sync && vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "docs:capture": "node scripts/capture-docs.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",

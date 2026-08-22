@@ -28,3 +28,6 @@ test_dompurify.js
 # OS
 .DS_Store
 Thumbs.db
+
+# Docs media diagnostics
+docs/public/media/_survey/

@@ -13,6 +13,23 @@ const guide = [
   { text: 'データとバックアップ', link: '/guide/data' },
 ]
 
+// Per-feature deep dives with screenshots / GIFs (docs/features/**, media from
+// `npm run docs:capture`).
+const features = [
+  {
+    text: 'キャンバス',
+    collapsed: false,
+    items: [
+      { text: '全体像', link: '/features/canvas/' },
+      { text: 'カードの種類と操作', link: '/features/canvas/cards' },
+      { text: 'ツール', link: '/features/canvas/tools' },
+      { text: '移動・ズーム・表示', link: '/features/canvas/navigation' },
+      { text: 'タスク下書きからタスクへ', link: '/features/canvas/task-draft' },
+      { text: '書き出しと共有', link: '/features/canvas/export' },
+    ],
+  },
+]
+
 const reference = [
   { text: 'Markdown 記法リファレンス', link: '/reference/markdown' },
   { text: '計画（旅程）記法リファレンス', link: '/reference/plan-syntax' },
@@ -45,11 +62,13 @@ export default defineConfig({
     logo: '/favicon.svg',
     nav: [
       { text: 'ガイド', link: '/guide/intro', activeMatch: '/guide/' },
+      { text: '機能詳細', link: '/features/canvas/', activeMatch: '/features/' },
       { text: 'リファレンス', link: '/reference/markdown', activeMatch: '/reference/' },
       { text: 'ダウンロード', link: 'https://github.com/yyamada722/constella/releases/latest' },
     ],
     sidebar: [
       { text: 'ガイド', items: guide },
+      { text: '機能詳細', items: features },
       { text: 'リファレンス', items: reference },
     ],
     socialLinks: [{ icon: 'github', link: 'https://github.com/yyamada722/constella' }],
