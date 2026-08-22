@@ -85,14 +85,15 @@ async function installCursor(page) {
     const c = document.createElement('div')
     c.id = '__docs-cursor'
     c.innerHTML = `<svg width="22" height="30" viewBox="0 0 22 30"><path d="M2 2 L2 24 L8 18 L12 28 L16 26 L12 17 L20 17 Z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`
-    Object.assign(c.style, { position: 'fixed', left: '-50px', top: '-50px', zIndex: '2147483647', pointerEvents: 'none' })
+    // left/top must be 0: the translate() below is added to them.
+    Object.assign(c.style, { position: 'fixed', left: '0', top: '0', opacity: '0', zIndex: '2147483647', pointerEvents: 'none' })
     document.body.appendChild(c)
     const ring = document.createElement('div')
     ring.id = '__docs-click'
     Object.assign(ring.style, { position: 'fixed', width: '28px', height: '28px', borderRadius: '50%', border: '3px solid #6366f1', zIndex: '2147483646', pointerEvents: 'none', opacity: '0', transform: 'translate(-50%,-50%)' })
     document.body.appendChild(ring)
     let x = 0, y = 0
-    window.addEventListener('mousemove', e => { x = e.clientX; y = e.clientY; c.style.transform = `translate(${x}px,${y}px)` }, true)
+    window.addEventListener('mousemove', e => { x = e.clientX; y = e.clientY; c.style.opacity = '1'; c.style.transform = `translate(${x}px,${y}px)` }, true)
     window.addEventListener('mousedown', e => {
       ring.style.left = e.clientX + 'px'; ring.style.top = e.clientY + 'px'
       ring.animate([{ opacity: 0.9, transform: 'translate(-50%,-50%) scale(0.5)' }, { opacity: 0, transform: 'translate(-50%,-50%) scale(1.6)' }], { duration: 450 })
@@ -135,6 +136,52 @@ function makeCtx(page, outDir) {
         return { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 }
       }, { text, selector, box })
     },
+    // Off-screen coordinates are clamped by the input pipeline, so bring the
+    // element into view first (horizontal scroll panes like the Gantt chart).
+    async rectOfSel(selector) {
+      const r = await page.evaluate(sel => {
+        const el = document.querySelector(sel)
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        if (r.right > window.innerWidth || r.left < 0 || r.bottom > window.innerHeight || r.top < 0) {
+          // Scroll only the nearest scrollable ancestor (scrollIntoView would also
+          // nudge outer flex containers and shift the whole page sideways).
+          let p = el.parentElement
+          while (p && p !== document.body) {
+            const cs = getComputedStyle(p)
+            const sx = /(auto|scroll)/.test(cs.overflowX) && p.scrollWidth > p.clientWidth
+            const sy = /(auto|scroll)/.test(cs.overflowY) && p.scrollHeight > p.clientHeight
+            if (sx || sy) {
+              const pr = p.getBoundingClientRect()
+              if (sx) p.scrollLeft += (r.left + r.width / 2) - (pr.left + pr.width / 2)
+              if (sy) p.scrollTop += (r.top + r.height / 2) - (pr.top + pr.height / 2)
+              break
+            }
+            p = p.parentElement
+          }
+          return 'scrolled'
+        }
+        return { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 }
+      }, selector)
+      if (r !== 'scrolled') return r
+      await sleep(400)
+      return page.evaluate(sel => {
+        const el = document.querySelector(sel)
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 }
+      }, selector)
+    },
+    // Rect of an <input>/<textarea> whose current value equals `text` (node
+    // titles on the Flow page are editable fields, not text nodes).
+    async rectOfValue(text) {
+      return page.evaluate(text => {
+        const el = [...document.querySelectorAll('input, textarea')].find(e => e.value.trim() === text && e.getBoundingClientRect().width > 0)
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: r.x, y: r.y, w: r.width, h: r.height, cx: r.x + r.width / 2, cy: r.y + r.height / 2 }
+      }, text)
+    },
     async rectOfTitle(title) {
       return page.evaluate(title => {
         const el = document.querySelector(`[title="${title.replace(/"/g, '\\"')}"]`)
@@ -153,11 +200,33 @@ function makeCtx(page, outDir) {
       await page.evaluate(({ text, selector }) => {
         const els = [...document.querySelectorAll(selector)].filter(e => e.childElementCount === 0 ? e.textContent.trim() === text : [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim() === text))
         const el = els.find(e => e.getBoundingClientRect().width > 0)
-        const target = el.closest('button, a, [role="button"], summary, li, div')
-        ;(target ?? el).click()
+        // Click the innermost match: the event bubbles to whichever ancestor owns
+        // the handler, whereas clicking an ancestor never reaches a child's handler.
+        el.click()
       }, { text, selector: opts.selector ?? '*' })
       await sleep(opts.wait ?? PAUSE)
       return r
+    },
+    // Click a control INSIDE the row/container that holds `text` (e.g. the
+    // expand chevron of the folder named X): climbs `up` ancestors from the
+    // text node and queries `inner` there.
+    async clickNear(text, inner, { up = 8, wait } = {}) {
+      const r = await page.evaluate(({ text, inner, up }) => {
+        const els = [...document.querySelectorAll('*')].filter(e => [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim() === text))
+        const el = els.find(e => e.getBoundingClientRect().width > 0)
+        if (!el) return null
+        // Climb until an ancestor contains a match (nearest enclosing row/card wins).
+        let row = el, t = null
+        for (let i = 0; i <= up && row; i++) { t = row.querySelector(inner); if (t) break; row = row.parentElement }
+        if (!t) return null
+        const b = t.getBoundingClientRect()
+        t.__docsTarget = true
+        return { cx: b.x + b.width / 2, cy: b.y + b.height / 2 }
+      }, { text, inner, up })
+      if (!r) throw new Error(`clickNear: ${inner} not found near "${text}"`)
+      await ctx.moveTo(r.cx, r.cy)
+      await page.evaluate(() => { const all = [...document.querySelectorAll('*')]; const t = all.find(e => e.__docsTarget); if (t) { delete t.__docsTarget; t.click() } })
+      await sleep(wait ?? PAUSE)
     },
     async clickTitle(title, wait) {
       const r = await ctx.rectOfTitle(title)
@@ -244,11 +313,15 @@ function makeCtx(page, outDir) {
       })()
       await ctx.cursor(true)
       await sleep(lead)
-      await fn()
-      await sleep(tail)
-      stop = true
-      await recording
-      recording = null
+      try {
+        await fn()
+        await sleep(tail)
+      } finally {
+        // Always stop the frame loop, or a failed scenario poisons the next gif().
+        stop = true
+        await recording
+        recording = null
+      }
       // Screenshots are slow (~150–250 ms each), so encode at the fps we actually
       // achieved — otherwise the clip plays back 2× too fast.
       const realFps = Math.max(1, n / ((Date.now() - t0) / 1000)).toFixed(2)
@@ -332,4 +405,4 @@ async function main() {
   console.log('done')
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+main().then(() => process.exit(process.exitCode ?? 0)).catch(e => { console.error(e); process.exit(1) })

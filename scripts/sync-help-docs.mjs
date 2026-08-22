@@ -14,7 +14,13 @@ mkdirSync(dst, { recursive: true })
 
 // Docs-only footer linking a quick-guide chapter to its deep-dive section. The
 // in-app help has no such pages, so the link is appended here, not in the source.
-const DEEP_DIVES = { canvas: { title: 'キャンバス', link: '/features/canvas/' } }
+const DEEP_DIVES = {
+  notes: { title: 'ノート', link: '/features/notes/' },
+  tasks: { title: 'タスク・ガント', link: '/features/tasks/' },
+  canvas: { title: 'キャンバス', link: '/features/canvas/' },
+  plan: { title: '計画', link: '/features/plan/' },
+  pages: { title: 'その他のページ', link: '/features/pages/dashboard' },
+}
 
 const files = readdirSync(src).filter(f => /^\d\d-.+\.md$/.test(f)).sort()
 for (const f of files) {

@@ -25,6 +25,8 @@ export function buildSeed() {
 
 札幌市内の**観光プロモーション映像**（90 秒）の素材撮影。秋の紅葉シーズンに合わせて 2 日間で回る。
 
+---
+
 ## 納品物
 
 | 項目 | 仕様 |
@@ -32,6 +34,8 @@ export function buildSeed() {
 | 本編 | 90 秒 / 4K / 16:9 |
 | SNS 用 | 15 秒 × 3 本 / 9:16 |
 | 静止画 | 20 カット以上 |
+
+---
 
 ## スケジュール
 
@@ -274,6 +278,66 @@ currency: JPY
   ]
   const researchFolders = [{ id: 'rf-permit', masterProjectId: m, name: '許可・申請', createdAt: T0, color: 'rose' }]
 
+  // ── Sketch (storyboard frame drawn with a few strokes) ──
+  const poly = (pts, color = '#1e293b', width = 4) => ({ points: pts.flat(), color, width })
+  const ring = (cx, cy, r, n = 40) => Array.from({ length: n + 1 }, (_, i) => [cx + r * Math.cos((i / n) * Math.PI * 2), cy + r * Math.sin((i / n) * Math.PI * 2)])
+  const sketch = {
+    id: 'sketch-storyboard', masterProjectId: m, name: '絵コンテ 大通公園', createdAt: T0, updatedAt: T0,
+    strokes: [
+      poly([[200, 160], [1000, 160], [1000, 610], [200, 610], [200, 160]], '#1e293b', 5), // frame 16:9
+      poly([[200, 470], [1000, 470]], '#64748b', 3), // horizon
+      poly(ring(840, 260, 50), '#f59e0b', 5), // sun
+      poly([[330, 470], [330, 300], [470, 300], [470, 470]], '#1e293b', 4), // tower body
+      poly([[400, 300], [400, 220], [395, 215], [405, 215], [400, 220]], '#1e293b', 4), // antenna
+      poly([[560, 470], [600, 400], [640, 470]], '#10b981', 4), poly([[600, 400], [600, 470]], '#10b981', 4), // tree
+      poly([[1040, 380], [1180, 380]], '#ef4444', 4), poly([[1150, 360], [1180, 380], [1150, 400]], '#ef4444', 4), // pan arrow
+      poly([[220, 660], [238, 640], [250, 660], [262, 640], [280, 660]], '#6366f1', 3), // caption scribble
+      poly([[300, 650], [420, 650]], '#6366f1', 3), poly([[440, 650], [520, 650]], '#6366f1', 3),
+    ],
+  }
+
+  // ── 路線図 (mindtrain) plan — zustand persist blob stored under kv 'mindtrain' ──
+  const mst = (id, name, x, y, lineIds, status, extra = {}) => [id, { id, name, x, y, lineIds, notes: '', links: [], status, ...extra }]
+  const mStations = Object.fromEntries([
+    mst('ms-plan', '企画', 140, 240, ['ml-main'], 'done'),
+    mst('ms-scout', 'ロケハン', 340, 240, ['ml-main'], 'done'),
+    mst('ms-permit', '許可申請', 540, 240, ['ml-main'], 'doing', { shape: 'diamond' }),
+    mst('ms-shoot', '本番撮影', 740, 240, ['ml-main', 'ml-sns'], 'todo', { shape: 'hexagon' }),
+    mst('ms-edit', '編集', 940, 240, ['ml-main'], 'todo'),
+    mst('ms-deliver', '納品', 1140, 240, ['ml-main'], 'todo', { shape: 'circle' }),
+    mst('ms-sns1', 'SNS 切り出し', 840, 420, ['ml-sns'], 'todo'),
+    mst('ms-sns2', 'SNS 公開', 1140, 420, ['ml-sns'], 'todo'),
+    mst('ms-gear', '機材手配', 440, 80, ['ml-gear'], 'doing'),
+    mst('ms-gear2', '機材返却', 940, 80, ['ml-gear'], 'todo'),
+  ])
+  const lines = {
+    'ml-main': { id: 'ml-main', name: '本編', color: '#6366f1', stationIds: ['ms-plan', 'ms-scout', 'ms-permit', 'ms-shoot', 'ms-edit', 'ms-deliver'] },
+    'ml-sns': { id: 'ml-sns', name: 'SNS', color: '#f59e0b', stationIds: ['ms-shoot', 'ms-sns1', 'ms-sns2'] },
+    'ml-gear': { id: 'ml-gear', name: '機材', color: '#10b981', stationIds: ['ms-gear', 'ms-gear2'] },
+  }
+  const trains = { 'mt-1': { id: 'mt-1', lineId: 'ml-main', name: '進行', fromStationId: 'ms-plan', toStationId: 'ms-deliver', shape: 'capsule' } }
+  const annotations = {
+    'ma-area': { kind: 'area', id: 'ma-area', x: 60, y: 170, width: 620, height: 150, color: '#6366f1', text: '準備フェーズ' },
+    'ma-label': { kind: 'label', id: 'ma-label', x: 60, y: 30, text: '札幌ロケハン 2026 — 工程', fontSize: 22, fontWeight: 700 },
+  }
+  const snapshot = {
+    stations: mStations, lines, lineOrder: Object.keys(lines), trains, trainOrder: Object.keys(trains),
+    annotations, annotationOrder: Object.keys(annotations),
+    activeLineId: 'ml-main', selectedStationId: null, selectedAnnotationId: null,
+  }
+  const mindtrain = JSON.stringify({
+    version: 5,
+    state: {
+      ...snapshot,
+      workspaces: { 'ws-docs': snapshot },
+      workspaceMeta: { 'ws-docs': { id: 'ws-docs', name: '撮影工程', projectId: m } },
+      workspaceOrder: ['ws-docs'],
+      activeWorkspaceId: 'ws-docs',
+      activeProjectId: m,
+      activePlanByProject: { [m]: 'ws-docs' },
+    },
+  })
+
   const state = {
     masterProjects: [
       { id: m, name: '札幌ロケハン 2026', createdAt: T0, folder: '映像制作' },
@@ -286,7 +350,7 @@ currency: JPY
     projects: [boardPrep, boardPost],
     research,
     researchFolders,
-    sketches: [],
+    sketches: [sketch],
     flows: [flow],
     plans: [plan],
     planFolders: [],
@@ -303,5 +367,5 @@ currency: JPY
     canvasStations: stations,
   }
 
-  return { app: 'constella', version: 2, exportedAt: T0, state, media: {} }
+  return { app: 'constella', version: 2, exportedAt: T0, state, media: {}, mindtrain }
 }

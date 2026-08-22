@@ -17,8 +17,27 @@ const guide = [
 // `npm run docs:capture`).
 const features = [
   {
+    text: 'ノート',
+    collapsed: true,
+    items: [
+      { text: '全体像', link: '/features/notes/' },
+      { text: 'エディタの使い方', link: '/features/notes/editor' },
+      { text: '書き出し・スライド・共有', link: '/features/notes/output' },
+    ],
+  },
+  {
+    text: 'タスク・ガント',
+    collapsed: true,
+    items: [
+      { text: '全体像', link: '/features/tasks/' },
+      { text: 'カンバン', link: '/features/tasks/kanban' },
+      { text: 'タスクの追加と編集', link: '/features/tasks/edit' },
+      { text: 'ガント', link: '/features/tasks/gantt' },
+    ],
+  },
+  {
     text: 'キャンバス',
-    collapsed: false,
+    collapsed: true,
     items: [
       { text: '全体像', link: '/features/canvas/' },
       { text: 'カードの種類と操作', link: '/features/canvas/cards' },
@@ -26,6 +45,27 @@ const features = [
       { text: '移動・ズーム・表示', link: '/features/canvas/navigation' },
       { text: 'タスク下書きからタスクへ', link: '/features/canvas/task-draft' },
       { text: '書き出しと共有', link: '/features/canvas/export' },
+    ],
+  },
+  {
+    text: 'フロー',
+    collapsed: true,
+    items: [{ text: 'フローの全体像', link: '/features/flow/' }],
+  },
+  {
+    text: '計画',
+    collapsed: true,
+    items: [{ text: '計画（旅程）の全体像', link: '/features/plan/' }],
+  },
+  {
+    text: 'その他のページ',
+    collapsed: true,
+    items: [
+      { text: 'ダッシュボード', link: '/features/pages/dashboard' },
+      { text: 'リサーチ', link: '/features/pages/research' },
+      { text: 'スケッチ', link: '/features/pages/sketch' },
+      { text: '路線図', link: '/features/pages/mindtrain' },
+      { text: '検索', link: '/features/pages/search' },
     ],
   },
 ]
