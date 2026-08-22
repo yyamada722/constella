@@ -166,7 +166,12 @@ export const scenarios = [
       })
       await ctx.key('Escape')
       await ctx.clickTitle('完全削除', 500)
-      await ctx.page.evaluate(() => [...document.querySelectorAll('button')].find(b => /削除/.test(b.textContent) && b.closest('[role="dialog"], .fixed'))?.click())
+      const confirmed = await ctx.page.evaluate(() => {
+        const b = [...document.querySelectorAll('button')].find(b => /削除/.test(b.textContent) && b.closest('[role="dialog"], .fixed'))
+        if (b) b.click()
+        return !!b
+      })
+      if (!confirmed) throw new Error('削除確認ボタンが見つからない — 作成したノートが残ると後続シナリオの画像に写り込む')
       await ctx.pause()
     },
   },

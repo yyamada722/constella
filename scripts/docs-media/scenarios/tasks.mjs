@@ -80,8 +80,11 @@ export const scenarios = [
         await ctx.moveTo(src.cx, src.cy)
         await ctx.pause()
         await ctx.page.setDragInterception(true)
-        await ctx.page.mouse.dragAndDrop({ x: src.cx, y: src.cy }, { x: dst.cx, y: dst.cy + 26 }, { delay: 900 })
-        await ctx.page.setDragInterception(false)
+        try {
+          await ctx.page.mouse.dragAndDrop({ x: src.cx, y: src.cy }, { x: dst.cx, y: dst.cy + 26 }, { delay: 900 })
+        } finally {
+          await ctx.page.setDragInterception(false)
+        }
         await ctx.moveTo(dst.cx, dst.cy + 26)
       })
       await ctx.key('z', { ctrl: true })

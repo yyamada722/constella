@@ -306,7 +306,8 @@ function makeCtx(page, outDir) {
       recording = (async () => {
         while (!stop) {
           const t = Date.now()
-          try { await page.screenshot({ path: join(frames, `f${String(n++).padStart(4, '0')}.png`) }) } catch { /* page busy */ }
+          // Number only successful shots — a gap in f%04d makes ffmpeg stop early.
+          try { await page.screenshot({ path: join(frames, `f${String(n).padStart(4, '0')}.png`) }); n++ } catch { /* page busy */ }
           const wait = 1000 / fps - (Date.now() - t)
           if (wait > 0) await sleep(wait)
         }

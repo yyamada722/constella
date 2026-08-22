@@ -10,8 +10,8 @@
     },
     {
       "name": "docs",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vitepress", "preview", "docs", "--port", "4173"],
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "docs:dev", "--", "--port", "4173"],
       "port": 4173
     }
   ]

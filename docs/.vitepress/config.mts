@@ -121,12 +121,20 @@ export default defineConfig({
     sidebarMenuLabel: 'メニュー',
     darkModeSwitchLabel: 'テーマ',
     editLink: {
-      pattern: ({ filePath }) =>
-        filePath.startsWith('guide/')
-          // Generated pages have no editable file of their own — land on the
-          // source-chapter folder (GitHub's /edit/ 404s on directories).
-          ? `https://github.com/yyamada722/constella/tree/main/src/renderer/src/help`
-          : `https://github.com/yyamada722/constella/edit/main/docs/${filePath}`,
+      // NOTE: this function is serialized into the client bundle — it must be
+      // self-contained (no closure over module-scope constants like `guide`).
+      pattern: ({ filePath }) => {
+        if (filePath.startsWith('guide/')) {
+          // Generated pages map back to their numbered source chapter
+          // (src/renderer/src/help/NN-<id>.md, numbering = sidebar order).
+          const ids = ['intro', 'notes', 'tasks', 'canvas', 'plan', 'pages', 'shortcuts', 'data']
+          const id = filePath.slice('guide/'.length).replace(/\.md$/, '')
+          const i = ids.indexOf(id)
+          if (i >= 0) return `https://github.com/yyamada722/constella/edit/main/src/renderer/src/help/${String(i + 1).padStart(2, '0')}-${id}.md`
+          return 'https://github.com/yyamada722/constella/tree/main/src/renderer/src/help'
+        }
+        return `https://github.com/yyamada722/constella/edit/main/docs/${filePath}`
+      },
       text: 'GitHub でこのページを編集',
     },
     footer: { message: 'Constella — 情報整理デスクトップアプリ', copyright: '© Yusuke Yamada' },

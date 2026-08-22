@@ -8,11 +8,11 @@ async function openPlan(ctx, mode) {
 }
 
 async function snapshotEditor(ctx) {
-  return ctx.page.evaluate(() => document.querySelector('textarea')?.value ?? null)
+  return ctx.page.evaluate(() => document.querySelector('main textarea')?.value ?? null)
 }
 async function restoreEditor(ctx, snap) {
   if (snap == null) return
-  await ctx.page.evaluate(v => { const ta = document.querySelector('textarea'); if (!ta) return; ta.focus(); ta.select(); document.execCommand('insertText', false, v); ta.blur() }, snap)
+  await ctx.page.evaluate(v => { const ta = document.querySelector('main textarea'); if (!ta) return; ta.focus(); ta.select(); document.execCommand('insertText', false, v); ta.blur() }, snap)
   await ctx.pause(400)
 }
 
@@ -51,7 +51,7 @@ export const scenarios = [
       await openPlan(ctx, '分割')
       const snap = await snapshotEditor(ctx)
       await ctx.gif('typing', async () => {
-        const r = await ctx.page.evaluate(() => { const r = document.querySelector('textarea').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
+        const r = await ctx.page.evaluate(() => { const r = document.querySelector('main textarea').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
         await ctx.moveTo(r.x, r.y)
         await ctx.page.mouse.click(r.x, r.y)
         await ctx.key('End', { ctrl: true })

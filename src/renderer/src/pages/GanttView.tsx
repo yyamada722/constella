@@ -646,7 +646,7 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 select-none">
       {/* Top bar: nav + summary */}
-      <div className="h-10 px-4 flex items-center gap-2 border-b border-slate-200 shrink-0">
+      <div className="min-h-10 py-1 px-4 flex flex-wrap items-center gap-2 border-b border-slate-200 shrink-0">
         <button onClick={() => setRangeStart(addDaysIso(rangeStart, -navStep))} className="p-1 rounded hover:bg-slate-100 text-slate-600 shrink-0" title={`${navStep}日前へ`}><ChevronLeft size={16} /></button>
         <button onClick={() => setRangeStart(addDaysIso(isoToday(), -PRESET_LOOKBACK_DAYS))} className="px-2 py-0.5 rounded text-xs text-slate-600 hover:bg-slate-100 whitespace-nowrap shrink-0" title="左端を今日付近に">今日へ</button>
         <button onClick={() => setRangeStart(addDaysIso(rangeStart, navStep))} className="p-1 rounded hover:bg-slate-100 text-slate-600 shrink-0" title={`${navStep}日後へ`}><ChevronRight size={16} /></button>
