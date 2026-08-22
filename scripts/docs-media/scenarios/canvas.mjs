@@ -2,8 +2,8 @@
 // Demo tabs (see seed.mjs): 全体構成 / ロケ地候補 / 工程の下書き / 撮影システム / 進行ロードマップ
 
 async function openTab(ctx, name) {
-  await ctx.clickText(name, { selector: 'button, div, span', wait: 500 })
-  await ctx.clickTitle('全体表示', 500)
+  await ctx.clickText(name, { selector: 'button, div, span', wait: 600 })
+  await ctx.clickTitle('全体表示', 900)
 }
 
 async function selectTool(ctx) { await ctx.clickTitle('選択 / 移動', 150) }
@@ -56,8 +56,9 @@ export const scenarios = [
       await openTab(ctx, '全体構成')
       await ctx.gif('add-card', async () => {
         await ctx.moveTo(EMPTY.x, EMPTY.y)
+        await ctx.pause()
         await ctx.page.mouse.click(EMPTY.x, EMPTY.y, { button: 'right' })
-        await ctx.sleep(500)
+        await ctx.pause(800)
         await ctx.clickText('アイデア', { selector: '.fixed.z-50 button span', wait: 900 })
       })
       await ctx.key('Escape')
@@ -70,9 +71,10 @@ export const scenarios = [
       await ctx.nav('/canvas')
       await openTab(ctx, '全体構成')
       await selectTool(ctx)
-      const c = await ctx.rectOf('ドローンで紅葉を俯瞰', { box: true })
       await ctx.gif('move-card', async () => {
-        await ctx.drag(c.x + c.w / 2, c.y + 14, c.x + c.w / 2 + 160, c.y + 14 + 90, { steps: 30 })
+        // Press on the title text itself (the card box includes an outer hit area).
+        const t = await ctx.rectOf('ドローンで紅葉を俯瞰')
+        await ctx.drag(t.cx + 40, t.cy, t.cx + 200, t.cy + 90)
       })
       await ctx.key('z', { ctrl: true })
     },
@@ -87,7 +89,7 @@ export const scenarios = [
         // Measure AFTER the tool is active: its option strip can re-flow the toolbar.
         const a = await ctx.rectOf('札幌市 撮影許可', { box: true })
         const b = await ctx.rectOf('ロケハン', { box: true })
-        await ctx.drag(a.cx, a.cy, b.cx, b.cy, { steps: 30 })
+        await ctx.drag(a.cx, a.cy, b.cx, b.cy)
       })
       await selectTool(ctx)
       await ctx.key('z', { ctrl: true })
@@ -102,7 +104,7 @@ export const scenarios = [
         await ctx.clickTitle('グループエリアを描く', 400)
         const a = await ctx.rectOf('大通公園', { box: true })
         const b = await ctx.rectOf('テレビ塔', { box: true })
-        await ctx.drag(a.x - 24, a.y - 40, b.x + b.w + 24, b.y + b.h + 24, { steps: 30 })
+        await ctx.drag(a.x - 24, a.y - 40, b.x + b.w + 24, b.y + b.h + 24)
       })
       await selectTool(ctx)
       await ctx.key('z', { ctrl: true })
@@ -116,14 +118,16 @@ export const scenarios = [
       await ctx.gif('pen', async () => {
         await ctx.clickTitle('ペン（手書き）', 400)
         const a = await ctx.rectOf('藻岩山', { box: true })
-        await ctx.moveTo(a.x - 10, a.y + a.h / 2)
+        await ctx.moveTo(a.x - 14, a.cy)
+        await ctx.pause()
         await ctx.page.mouse.down()
-        for (let i = 0; i <= 36; i++) {
-          const t = (i / 36) * Math.PI * 2
+        for (let i = 0; i <= 48; i++) {
+          const t = Math.PI + (i / 48) * Math.PI * 2
           await ctx.page.mouse.move(a.cx + (a.w / 2 + 14) * Math.cos(t), a.cy + (a.h / 2 + 14) * Math.sin(t))
-          await ctx.sleep(16)
+          await ctx.sleep(30)
         }
         await ctx.page.mouse.up()
+        await ctx.pause()
       })
       await selectTool(ctx)
       await ctx.key('z', { ctrl: true })
@@ -136,14 +140,12 @@ export const scenarios = [
       await openTab(ctx, '全体構成')
       await ctx.gif('pan-zoom', async () => {
         await ctx.moveTo(EMPTY.x, EMPTY.y - 200)
-        await ctx.page.mouse.wheel({ deltaY: -400 })
-        await ctx.sleep(500)
-        await ctx.page.mouse.wheel({ deltaY: -300 })
-        await ctx.sleep(600)
+        await ctx.pause()
+        for (let i = 0; i < 4; i++) { await ctx.page.mouse.wheel({ deltaY: -120 }); await ctx.sleep(160) }
+        await ctx.pause(900)
         await ctx.page.keyboard.down('Space')
-        await ctx.drag(EMPTY.x, EMPTY.y - 200, EMPTY.x - 260, EMPTY.y - 60, { steps: 30 })
+        await ctx.drag(EMPTY.x, EMPTY.y - 200, EMPTY.x - 260, EMPTY.y - 60, { ms: 1000 })
         await ctx.page.keyboard.up('Space')
-        await ctx.sleep(300)
       })
       await ctx.clickTitle('全体表示', 300)
     },
@@ -176,20 +178,16 @@ export const scenarios = [
       await openTab(ctx, '工程の下書き')
       await ctx.shot('task-draft')
       await selectTool(ctx)
-      const c = await ctx.rectOf('素材バックアップ', { box: true })
       await ctx.gif('task-draft-chain', async () => {
-        // Press the header icon (not the editable title) so the card is selected.
-        await ctx.moveTo(c.x + 12, c.y + 12)
-        await ctx.page.mouse.click(c.x + 12, c.y + 12)
-        await ctx.sleep(300)
+        // Press the header icon left of the title (the title itself is an input).
+        const t = await ctx.rectOf('素材バックアップ')
+        await ctx.moveTo(t.x - 14, t.cy)
+        await ctx.page.mouse.click(t.x - 14, t.cy)
+        await ctx.pause()
         await ctx.key('Enter')
-        await ctx.sleep(200)
-        await ctx.type('機材返却', 60)
-        await ctx.sleep(300)
+        await ctx.type('機材返却')
         await ctx.key('Tab')
-        await ctx.sleep(200)
-        await ctx.type('レンタル伝票の確認', 60)
-        await ctx.sleep(500)
+        await ctx.type('レンタル伝票の確認')
       })
       await ctx.key('Escape')
       await ctx.key('z', { ctrl: true })
@@ -202,8 +200,8 @@ export const scenarios = [
       await ctx.nav('/canvas')
       await openTab(ctx, '全体構成')
       await selectTool(ctx)
-      const c = await ctx.rectOf('企画コンセプト', { box: true })
-      await ctx.page.mouse.click(c.cx, c.y + 12)
+      const t = await ctx.rectOf('企画コンセプト')
+      await ctx.page.mouse.click(t.x - 14, t.cy)
       await ctx.sleep(400)
       await ctx.shot('props-panel', { clip: { x: ctx.VIEW.width - 300, y: 0, w: 300, h: 800 }, pad: 0 })
       await ctx.key('Escape')

@@ -32,6 +32,8 @@ const only = args.find(a => a.startsWith('--only='))?.slice(7)
 const sections = args.filter(a => !a.startsWith('--'))
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+// Breathing room after every discrete action so clips don't feel frantic.
+const PAUSE = 600
 
 // ── app lifecycle ──
 function buildApp() {
@@ -83,7 +85,7 @@ async function installCursor(page) {
     const c = document.createElement('div')
     c.id = '__docs-cursor'
     c.innerHTML = `<svg width="22" height="30" viewBox="0 0 22 30"><path d="M2 2 L2 24 L8 18 L12 28 L16 26 L12 17 L20 17 Z" fill="#111" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>`
-    Object.assign(c.style, { position: 'fixed', left: '-50px', top: '-50px', zIndex: '2147483647', pointerEvents: 'none', transition: 'transform 40ms linear' })
+    Object.assign(c.style, { position: 'fixed', left: '-50px', top: '-50px', zIndex: '2147483647', pointerEvents: 'none' })
     document.body.appendChild(c)
     const ring = document.createElement('div')
     ring.id = '__docs-click'
@@ -154,29 +156,40 @@ function makeCtx(page, outDir) {
         const target = el.closest('button, a, [role="button"], summary, li, div')
         ;(target ?? el).click()
       }, { text, selector: opts.selector ?? '*' })
-      await sleep(opts.wait ?? 300)
+      await sleep(opts.wait ?? PAUSE)
       return r
     },
-    async clickTitle(title, wait = 300) {
+    async clickTitle(title, wait) {
       const r = await ctx.rectOfTitle(title)
       if (!r) throw new Error(`title not found: ${title}`)
       await ctx.moveTo(r.cx, r.cy)
       await page.evaluate(title => document.querySelector(`[title="${title.replace(/"/g, '\\"')}"]`).click(), title)
-      await sleep(wait)
+      await sleep(wait ?? PAUSE)
       return r
     },
-    // Smooth pointer travel (so GIFs show motion), ~steps frames.
-    async moveTo(x, y, steps = 12) {
-      await page.mouse.move(x, y, { steps })
+    // Pointer travel in REAL time (puppeteer's own `steps` fires instantly, so
+    // the cursor and the dragged card would land several frames apart). Eased
+    // so the motion reads naturally at ~10 fps.
+    async moveTo(x, y, ms = 450) {
+      const from = ctx._pos ?? { x, y }
+      const n = Math.max(2, Math.round(ms / 20))
+      for (let i = 1; i <= n; i++) {
+        const t = i / n
+        const e = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+        await page.mouse.move(from.x + (x - from.x) * e, from.y + (y - from.y) * e)
+        await sleep(20)
+      }
+      ctx._pos = { x, y }
     },
-    async drag(x1, y1, x2, y2, { steps = 20, hold = 120 } = {}) {
+    async drag(x1, y1, x2, y2, { ms = 800, hold = 300 } = {}) {
       await ctx.moveTo(x1, y1)
+      await sleep(PAUSE)
       await page.mouse.down()
       await sleep(hold)
-      await page.mouse.move(x2, y2, { steps })
+      await ctx.moveTo(x2, y2, ms)
       await sleep(hold)
       await page.mouse.up()
-      await sleep(200)
+      await sleep(PAUSE)
     },
     async key(k, { ctrl = false, shift = false } = {}) {
       if (ctrl) await page.keyboard.down('Control')
@@ -184,11 +197,13 @@ function makeCtx(page, outDir) {
       await page.keyboard.press(k)
       if (shift) await page.keyboard.up('Shift')
       if (ctrl) await page.keyboard.up('Control')
-      await sleep(200)
+      await sleep(PAUSE)
     },
-    async type(text, delay = 40) {
+    async type(text, delay = 70) {
       await page.keyboard.type(text, { delay })
+      await sleep(PAUSE)
     },
+    pause: (ms = PAUSE) => sleep(ms),
     // Hide the fake cursor for still shots.
     async cursor(visible) {
       await page.evaluate(v => { const c = document.getElementById('__docs-cursor'); if (c) c.style.display = v ? '' : 'none' }, visible)
@@ -212,7 +227,7 @@ function makeCtx(page, outDir) {
       console.log('  📷', `${name}.png`)
     },
     // GIF: frames are grabbed at ~10 fps while `fn` runs, then encoded by ffmpeg.
-    async gif(name, fn, { fps = 10, width = 960, tail = 600 } = {}) {
+    async gif(name, fn, { fps = 10, width = 960, lead = 500, tail = 900 } = {}) {
       if (recording) throw new Error('nested gif()')
       const frames = join(tmpdir(), `constella-docs-frames-${Date.now()}`)
       mkdirSync(frames, { recursive: true })
@@ -228,6 +243,7 @@ function makeCtx(page, outDir) {
         }
       })()
       await ctx.cursor(true)
+      await sleep(lead)
       await fn()
       await sleep(tail)
       stop = true
