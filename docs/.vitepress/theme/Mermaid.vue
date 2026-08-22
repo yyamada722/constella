@@ -14,18 +14,24 @@ let seq = 0
 const STALE_RE = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed/i
 const RELOAD_KEY = 'constella-docs-chunk-reload'
 
-async function render(attempt = 0) {
+// mount と watch(isDark) の render は並行し得る — 古い呼び出しの完了が新しい
+// DOM を上書きしないよう、世代の一致を確認してから反映する。
+let gen = 0
+
+async function render(attempt = 0, myGen = ++gen) {
   if (!el.value) return
   try {
     const mermaid = (await import('mermaid')).default
     mermaid.initialize({ startOnLoad: false, theme: isDark.value ? 'dark' : 'default', securityLevel: 'strict', fontFamily: 'inherit' })
     const { svg } = await mermaid.render(`mmd-${Date.now()}-${seq++}`, decodeURIComponent(props.code))
+    if (myGen !== gen || !el.value) return
     el.value.innerHTML = svg
   } catch (e) {
+    if (myGen !== gen || !el.value) return
     const raw = String((e as Error)?.message ?? e)
     if (STALE_RE.test(raw)) {
       if (attempt === 0) {
-        setTimeout(() => render(1), 1500)
+        setTimeout(() => { if (myGen === gen) render(1, myGen) }, 1500)
         return
       }
       if (!sessionStorage.getItem(RELOAD_KEY)) {
