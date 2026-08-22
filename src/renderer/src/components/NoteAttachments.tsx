@@ -48,7 +48,7 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
   if (!src) {
     body = <div className="h-24 flex items-center justify-center"><MediaFallback status={status} refUrl={file.url} compact /></div>
   } else if (kind === 'pdf') {
-    body = <PdfViewer url={src} fixedHeight={440} />
+    body = <PdfViewer url={src} fixedHeight={440} zoomable />
   } else if (kind === 'image' && !imgError) {
     body = <div className="flex justify-center bg-slate-100 max-h-[440px] overflow-auto"><img src={src} alt={file.name} onError={() => setImgError(true)} className="max-w-full object-contain" /></div>
   } else if (kind === 'video') {

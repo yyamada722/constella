@@ -154,7 +154,7 @@ function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => v
       </div>
     )
   } else if (kind === 'pdf') {
-    body = <PdfViewer url={src} fixedHeight={440} />
+    body = <PdfViewer url={src} fixedHeight={440} zoomable />
   } else if (kind === 'image') {
     body = <div className="flex justify-center bg-slate-100 max-h-[440px] overflow-auto"><img src={src} alt={att.label} className="max-w-full object-contain" /></div>
   } else if (kind === 'video') {
