@@ -12,7 +12,11 @@
     "typecheck": "tsc -b",
     "preview": "electron-vite preview",
     "dist": "electron-vite build && electron-builder",
-    "dist:dir": "electron-vite build && electron-builder --dir"
+    "dist:dir": "electron-vite build && electron-builder --dir",
+    "docs:sync": "node scripts/sync-help-docs.mjs",
+    "docs:dev": "npm run docs:sync && vitepress dev docs",
+    "docs:build": "npm run docs:sync && vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
@@ -56,10 +60,12 @@
     "electron": "^31.4.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^2.3.0",
+    "markdown-it-mark": "^4.0.0",
     "postcss": "^8.4.41",
     "puppeteer-core": "^25.3.0",
     "tailwindcss": "^3.4.10",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitepress": "^1.6.4"
   },
   "build": {
     "appId": "com.constella.app",

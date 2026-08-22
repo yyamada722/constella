@@ -3,6 +3,9 @@ import { HELP_CHAPTERS } from '../help'
 import { renderMarkdown } from './typol/markdown'
 import { renderMermaidIn } from './typol/mermaid'
 
+// Published docs site (GitHub Pages). Chapter ids match docs/guide/<id> there.
+const DOCS_URL = 'https://yyamada722.github.io/constella'
+
 // In-app manual — replaces the old shortcut-only cheat sheet. Opened with "?"
 // (shortcuts chapter) or from the sidebar settings menu (intro chapter).
 export default function HelpModal({ open, chapter, onClose }: {
@@ -79,7 +82,17 @@ export default function HelpModal({ open, chapter, onClose }: {
               </button>
             ))}
           </nav>
-          <div className="px-4 py-2 text-[10px] text-slate-400 border-t border-slate-200">Constella v{__APP_VERSION__}</div>
+          <div className="px-4 py-2 border-t border-slate-200 space-y-1">
+            <a
+              href={`${DOCS_URL}/guide/${active}`}
+              target="_blank"
+              rel="noreferrer"
+              className="block text-[11px] text-indigo-600 hover:underline"
+            >
+              Web で詳しく見る ↗
+            </a>
+            <div className="text-[10px] text-slate-400">Constella v{__APP_VERSION__}</div>
+          </div>
         </div>
         <div className="flex-1 min-w-0 relative">
           <button

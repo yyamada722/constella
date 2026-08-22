@@ -6,6 +6,11 @@ out/
 dist/
 release/
 
+# Docs site (docs/guide is generated from src/renderer/src/help by docs:sync)
+docs/guide/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
 # Env / secrets
 .env
 *.local
