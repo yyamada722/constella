@@ -846,6 +846,10 @@ export default function CanvasPage() {
   const groupClipboardRef = useRef<CanvasGroup[]>([])
   // 矢印: コピー時点の全矢印＋選択矢印ID。貼り付け時にコピー元カードID→新IDで付け替える。
   const arrowClipboardRef = useRef<{ arrows: CanvasArrow[]; selectedIds: string[] }>({ arrows: [], selectedIds: [] })
+  // 自由端だけの選択矢印はカード無しでも単独で貼り付けられる（貼り付け可否判定と共有）。
+  const clipboardFreeArrows = () => arrowClipboardRef.current.arrows.filter(a => arrowClipboardRef.current.selectedIds.includes(a.id) && !a.fromCardId && !a.toCardId)
+  const clipboardHasContent = () =>
+    clipboardRef.current.length > 0 || railClipboardRef.current.stations.length > 0 || labelClipboardRef.current.length > 0 || groupClipboardRef.current.length > 0 || clipboardFreeArrows().length > 0
   // True while the most recent copy was an in-app card copy (no window blur since),
   // so Ctrl+V prefers pasting cards over a stale image left in the OS clipboard.
   const internalCopyFreshRef = useRef(false)
@@ -2300,13 +2304,12 @@ export default function CanvasPage() {
     const labelClip = labelClipboardRef.current
     const groupClip = groupClipboardRef.current
     const arrowClip = arrowClipboardRef.current
-    // 自由端だけの矢印（カードに付いていない）も単独で貼り付け対象になる。
-    const freeArrows = arrowClip.arrows.filter(a => arrowClip.selectedIds.includes(a.id) && !a.fromCardId && !a.toCardId)
-    if (clip.length === 0 && railClip.stations.length === 0 && labelClip.length === 0 && groupClip.length === 0 && freeArrows.length === 0) return
+    const freeArrows = clipboardFreeArrows()
+    if (!clipboardHasContent()) return
     let ox = 24, oy = 24
     if (atX != null && atY != null) {
-      const minX = Math.min(...clip.map(c => c.x), ...railClip.stations.map(s => s.x), ...labelClip.map(l => l.x), ...groupClip.map(g => g.x), ...freeArrows.flatMap(a => [a.x1, a.x2]))
-      const minY = Math.min(...clip.map(c => c.y), ...railClip.stations.map(s => s.y), ...labelClip.map(l => l.y), ...groupClip.map(g => g.y), ...freeArrows.flatMap(a => [a.y1, a.y2]))
+      const minX = Math.min(...clip.map(c => c.x), ...railClip.stations.map(s => s.x), ...labelClip.map(l => l.x), ...groupClip.map(g => g.x), ...freeArrows.flatMap(a => [a.x1, a.x2, ...(a.points ?? []).map(p => p.x)]))
+      const minY = Math.min(...clip.map(c => c.y), ...railClip.stations.map(s => s.y), ...labelClip.map(l => l.y), ...groupClip.map(g => g.y), ...freeArrows.flatMap(a => [a.y1, a.y2, ...(a.points ?? []).map(p => p.y)]))
       ox = atX - minX
       oy = atY - minY
     }
@@ -2809,7 +2812,7 @@ export default function CanvasPage() {
       if (canvasLockedRef.current) return
       const items = e.clipboardData?.items
       const imgItem = items && Array.from(items).find(i => i.kind === 'file' && i.type.startsWith('image/'))
-      const hasCards = clipboardRef.current.length > 0 || railClipboardRef.current.stations.length > 0 || labelClipboardRef.current.length > 0 || groupClipboardRef.current.length > 0
+      const hasCards = clipboardHasContent()
       // A fresh in-app card copy wins over a stale OS-clipboard image (keeps card duplication working).
       if (imgItem && !(internalCopyFreshRef.current && hasCards)) {
         const file = imgItem.getAsFile()
@@ -4552,7 +4555,7 @@ export default function CanvasPage() {
             >
               {contextMenu.kind === 'canvas' ? (
                 <>
-                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={clipboardRef.current.length === 0 && railClipboardRef.current.stations.length === 0 && labelClipboardRef.current.length === 0 && groupClipboardRef.current.length === 0} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
+                  <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={!clipboardHasContent()} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
                     <span className="flex items-center gap-2"><ClipboardPaste size={14} /> ここに貼り付け</span><kbd className="text-[10px] text-slate-400">Ctrl+V</kbd>
                   </button>
                   <div className="h-px bg-slate-200 my-1" />

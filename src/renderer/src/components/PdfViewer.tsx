@@ -64,9 +64,11 @@ const PdfPage = memo(function PdfPage({ doc, pageNum, maxW, maxH, zoom = 1 }: {
         // Supersample: render at 2–3× the display resolution for crisp text,
         // then let the browser downscale via the CSS size above.
         const dpr = window.devicePixelRatio || 1
-        let renderRatio = Math.min(Math.max(dpr, 1) * 2.5, 3.5)
-        renderRatio = Math.min(renderRatio, Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, cssW * cssH)))
-        renderRatio = Math.max(renderRatio, Math.max(dpr, 1))
+        // The pixel cap wins over DPR: a huge zoom renders slightly soft rather
+        // than allocating a bitmap the GPU may refuse.
+        const preferredRatio = Math.min(Math.max(dpr, 1) * 2.5, 3.5)
+        const maxRatio = Math.sqrt(MAX_RENDER_PIXELS / Math.max(1, cssW * cssH))
+        const renderRatio = Math.min(preferredRatio, maxRatio)
         const renderVp = pg.getViewport({ scale: scale * renderRatio })
         // Render off-screen and blit on completion, so a render cancelled by the
         // next zoom tick never leaves the visible canvas blank / half-painted.

@@ -314,9 +314,14 @@ export default function NotesPage() {
     const p = pendingScrollRef.current
     if (!p) return
     pendingScrollRef.current = null
+    // Every timer is tracked so a quick second switch cancels the stale restore
+    // instead of letting it overwrite the new pane with the old ratio.
+    let dead = false
+    const timers: ReturnType<typeof setTimeout>[] = []
+    const later = (fn: () => void, ms: number) => { timers.push(setTimeout(() => { if (!dead) fn() }, ms)) }
     const apply = (attempt: number) => {
       const el = primaryScroller(viewMode)
-      if (!el) { if (attempt < 6) setTimeout(() => apply(attempt + 1), 40); return }
+      if (!el) { if (attempt < 6) later(() => apply(attempt + 1), 40); return }
       if (p.focus && el instanceof HTMLTextAreaElement) {
         // Put the caret on the first line of the visible region BEFORE scrolling —
         // focusing scrolls to the caret, which would otherwise undo the restore.
@@ -330,9 +335,10 @@ export default function NotesPage() {
       el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight)
       // The preview's images / mermaid blocks settle a moment later and grow the
       // content; re-apply once so the ratio refers to the final height.
-      if (viewMode === 'preview') setTimeout(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
+      if (viewMode === 'preview') later(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
     }
-    setTimeout(() => apply(0), 0)
+    later(() => apply(0), 0)
+    return () => { dead = true; timers.forEach(clearTimeout) }
   }, [viewMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Split view: keep editor and preview scrolled to the same relative position ──
