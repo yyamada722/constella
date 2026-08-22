@@ -19,6 +19,8 @@ on:
       - 'scripts/capture-docs.mjs'
       - 'scripts/docs-media/**'
       - '.github/workflows/capture-media.yml'
+      - 'package.json'
+      - 'package-lock.json'
   workflow_dispatch:
 
 permissions:
@@ -38,6 +40,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The publish step authenticates explicitly — don't leave the write-scoped
+          # token in .git/config for npm ci / the captured app to read.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22

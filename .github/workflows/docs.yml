@@ -40,7 +40,9 @@ jobs:
           if git ls-remote --exit-code origin docs-media > /dev/null 2>&1; then
             npm run docs:media
           else
-            echo "docs-media branch not found — building without media"
+            # Deploying without media would replace the site with 404ing images.
+            echo "docs-media branch not found — refusing to deploy" >&2
+            exit 1
           fi
       - run: npm run docs:build
       - uses: actions/upload-pages-artifact@v3
