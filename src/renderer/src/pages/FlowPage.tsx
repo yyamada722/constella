@@ -621,16 +621,14 @@ export default function FlowPage() {
     const onKey = (e: KeyboardEvent) => {
       const ae = document.activeElement as HTMLElement | null
       if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.tagName === 'BUTTON' || ae.isContentEditable)) {
-        if (e.key === 'Escape') ae.blur()
-        // Ctrl+Z while the (still-empty) Tab/Enter-spawned node title has focus:
-        // the user means "undo the spawn", not in-field text undo. Left to the
+        if (e.key === 'Escape') { ae.blur(); return }
+        // Ctrl+Z/Y while an EMPTY spawn-focused editor (node title / memo body)
+        // has focus: the user means "undo the spawn", not in-field text undo —
+        // blur and fall THROUGH to the undo/redo shortcuts below. Left to the
         // browser, Chromium's document-global native undo would instead revert
         // the text typed in the PREVIOUS node's input — the spawn looks skipped.
-        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && ae.dataset.flowTitle && (ae as HTMLInputElement).value === '') {
-          e.preventDefault(); ae.blur()
-          if (e.shiftKey) redo(); else undo()
-        }
-        return
+        if ((e.ctrlKey || e.metaKey) && ['z', 'y'].includes(e.key.toLowerCase()) && (ae.dataset.flowTitle || ae.dataset.flowMemo) && (ae as HTMLInputElement | HTMLTextAreaElement).value === '') ae.blur()
+        else return
       }
       if (e.code === 'Space') { spaceRef.current = true; return }
       if (convertOpen) { if (e.key === 'Escape') setConvertOpen(false); return }
@@ -941,6 +939,7 @@ export default function FlowPage() {
                           ) : (
                             <textarea
                               value={node.body ?? ''}
+                              data-flow-memo="1"
                               onChange={e => patchNode(node.id, { body: e.target.value })}
                               onMouseDown={e => e.stopPropagation()}
                               onFocus={() => { setSelectedNodeIds([node.id]); setSelEdgeId(null); setSelGroupId(null); if (freshNodeRef.current === node.id) freshNodeRef.current = null }}
