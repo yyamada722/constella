@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
 import { applyCodeTheme, applyThemeMode, type ThemeMode } from './applyTheme'
-import type { CodeThemeId } from './hljsThemes'
+import { CODE_THEMES_BY_ID, type CodeThemeId } from './hljsThemes'
 
 const THEME_KEY = 'constella.theme'
 const CODE_KEY = 'constella.codeTheme'
@@ -29,7 +29,10 @@ function readMode(): ThemeMode {
 function readCode(): CodeThemeId {
   try {
     const v = localStorage.getItem(CODE_KEY)
-    if (v) return v as CodeThemeId
+    // Validate against the catalogue — a stale/renamed id would make
+    // applyCodeTheme silently no-op (no stylesheet, no --hljs-bg, mismatched
+    // settings <select>). Fall back to the default instead.
+    if (v && v in CODE_THEMES_BY_ID) return v as CodeThemeId
   } catch { /* ignore */ }
   return 'github'
 }

@@ -109,6 +109,13 @@
   margin: 0.8em 0;
   line-height: 1.55;
 }
+/* Highlighted blocks: the hljs theme dictates the text color, so the block
+   background must come from the same theme (--hljs-bg) — a dark code theme on
+   the light app theme (or the reverse) is unreadable on --tp-code-bg. */
+.typol-root.typol-preview pre:has(> code.hljs) {
+  background: var(--hljs-bg, var(--tp-code-bg));
+  border-color: color-mix(in oklab, var(--hljs-bg, var(--tp-code-bg)) 82%, var(--tp-text));
+}
 .typol-root.typol-preview pre code {
   background: transparent;
   border: none;

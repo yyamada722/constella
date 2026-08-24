@@ -32,4 +32,5 @@ export function applyCodeTheme(id: CodeThemeId) {
   // a flash of unstyled code on every re-render.
   const abs = new URL(t.url, location.href).href
   if (link.href !== abs) link.href = abs
+  document.documentElement.style.setProperty('--hljs-bg', t.bg)
 }

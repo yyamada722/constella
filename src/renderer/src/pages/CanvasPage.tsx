@@ -2559,7 +2559,13 @@ export default function CanvasPage() {
         // Flow-page style keyboard chaining without mouse round-trips. The
         // keyCode 229 check mirrors the input's own IME guard (line ~221).
         const composing = e.isComposing || e.keyCode === 229
-        if ((e.key === 'Tab' || (e.key === 'Enter' && !composing)) && ae.dataset.draftTitle) ae.blur()
+        if ((e.key === 'Tab' || e.key === 'Enter') && !composing && ae.dataset.draftTitle) ae.blur()
+        // Ctrl+Z/Y while an EMPTY spawn-focused editor (下書きタイトル / ラベル)
+        // has focus: the user means "undo the spawn", not in-field text undo —
+        // blur and fall THROUGH to the generic undo/redo shortcuts below. Left
+        // to the browser, Chromium's document-global native undo would instead
+        // revert the text typed in the PREVIOUS card's input.
+        else if ((e.ctrlKey || e.metaKey) && ['z', 'y'].includes(e.key.toLowerCase()) && (ae.dataset.draftTitle || ae.dataset.labelInput) && (ae as HTMLInputElement).value === '') ae.blur()
         else return
       }
       const mod = e.ctrlKey || e.metaKey
@@ -2657,8 +2663,8 @@ export default function CanvasPage() {
           ...(extendDraft ? { color: TASK_LINK_COLOR, width: TASK_LINK_WIDTH } : {}),
           createdAt: new Date().toISOString(),
         }
-        dispatch({ type: 'ADD_CANVAS_CARD', payload: newCard })
-        dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
+        // カード+矢印で1 undoステップ — Ctrl+Z一発でTab連鎖ごと取り消せるように。
+        dispatch({ type: 'BATCH', payload: [{ type: 'ADD_CANVAS_CARD', payload: newCard }, { type: 'ADD_CANVAS_ARROW', payload: arrow }] })
         setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
         return
       }
@@ -2676,7 +2682,7 @@ export default function CanvasPage() {
           x: src.x, y: src.y + src.height + GAP,
           width: src.width, height: src.height, createdAt: new Date().toISOString(),
         }
-        dispatch({ type: 'ADD_CANVAS_CARD', payload: newCard })
+        const actions: Action[] = [{ type: 'ADD_CANVAS_CARD', payload: newCard }]
         const pArrow = tabArrowsRef.current.find(a => a.toCardId === src.id && a.fromCardId)
         const parent = pArrow ? tabCardsRef.current.find(c => c.id === pArrow.fromCardId) : undefined
         if (parent && (parent.type === 'taskDraft' || parent.refTaskId)) {
@@ -2688,8 +2694,10 @@ export default function CanvasPage() {
             color: TASK_LINK_COLOR, width: TASK_LINK_WIDTH,
             createdAt: new Date().toISOString(),
           }
-          dispatch({ type: 'ADD_CANVAS_ARROW', payload: arrow })
+          actions.push({ type: 'ADD_CANVAS_ARROW', payload: arrow })
         }
+        // カード+親矢印で1 undoステップ — Ctrl+Z一発でEnter連鎖ごと取り消せるように。
+        dispatch({ type: 'BATCH', payload: actions })
         setSelectedIds([newCard.id]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedLabelIds([])
       }
     }
@@ -5430,6 +5438,7 @@ const LabelItem = memo(function LabelItem({ label, selected, editing, viewLocked
         autoFocus
         type="text"
         value={label.text}
+        data-label-input="1"
         onChange={e => onUpdate({ text: e.target.value })}
         onMouseDown={e => e.stopPropagation()}
         onBlur={onEndEdit}

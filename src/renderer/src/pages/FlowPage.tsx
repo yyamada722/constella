@@ -621,8 +621,14 @@ export default function FlowPage() {
     const onKey = (e: KeyboardEvent) => {
       const ae = document.activeElement as HTMLElement | null
       if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT' || ae.tagName === 'BUTTON' || ae.isContentEditable)) {
-        if (e.key === 'Escape') ae.blur()
-        return
+        if (e.key === 'Escape') { ae.blur(); return }
+        // Ctrl+Z/Y while an EMPTY spawn-focused editor (node title / memo body)
+        // has focus: the user means "undo the spawn", not in-field text undo —
+        // blur and fall THROUGH to the undo/redo shortcuts below. Left to the
+        // browser, Chromium's document-global native undo would instead revert
+        // the text typed in the PREVIOUS node's input — the spawn looks skipped.
+        if ((e.ctrlKey || e.metaKey) && ['z', 'y'].includes(e.key.toLowerCase()) && (ae.dataset.flowTitle || ae.dataset.flowMemo) && (ae as HTMLInputElement | HTMLTextAreaElement).value === '') ae.blur()
+        else return
       }
       if (e.code === 'Space') { spaceRef.current = true; return }
       if (convertOpen) { if (e.key === 'Escape') setConvertOpen(false); return }
@@ -933,6 +939,7 @@ export default function FlowPage() {
                           ) : (
                             <textarea
                               value={node.body ?? ''}
+                              data-flow-memo="1"
                               onChange={e => patchNode(node.id, { body: e.target.value })}
                               onMouseDown={e => e.stopPropagation()}
                               onFocus={() => { setSelectedNodeIds([node.id]); setSelEdgeId(null); setSelGroupId(null); if (freshNodeRef.current === node.id) freshNodeRef.current = null }}
@@ -985,8 +992,13 @@ export default function FlowPage() {
                           onFocus={() => { setSelectedNodeIds([node.id]); setSelEdgeId(null); setSelGroupId(null); if (freshNodeRef.current === node.id) freshNodeRef.current = null }}
                           onKeyDown={e => {
                             if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return
-                            if (e.key === 'Tab') { e.preventDefault(); (e.currentTarget as HTMLInputElement).blur(); spawnChild(node.id) }
-                            else if (e.key === 'Enter') { e.preventDefault(); (e.currentTarget as HTMLInputElement).blur(); spawnSibling(node.id) }
+                            // stopPropagation: blur() empties activeElement BEFORE the window
+                            // keydown handler runs, so without it the same Tab/Enter passes the
+                            // window handler's input guard and spawns a SECOND node — built from
+                            // a stale flowRef, silently replacing this one (undo then needs an
+                            // extra, visually no-op step).
+                            if (e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLInputElement).blur(); spawnChild(node.id) }
+                            else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLInputElement).blur(); spawnSibling(node.id) }
                             else if (e.key === 'Escape') (e.currentTarget as HTMLInputElement).blur()
                           }}
                           placeholder="やること…"
