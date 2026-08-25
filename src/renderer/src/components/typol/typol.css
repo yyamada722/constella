@@ -20,6 +20,8 @@
   --tp-font-prose: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif;
   --tp-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Hiragino Kaku Gothic ProN", monospace;
   --tp-font-heading: var(--tp-font-prose);
+  /* Writing themes can tint headings (e.g. vivid) without touching body text. */
+  --tp-heading-color: var(--tp-text);
 }
 
 /* ===== Editor (textarea) ===== */
@@ -30,7 +32,9 @@
   resize: none;
   background: transparent;
   color: var(--tp-text);
-  font-family: var(--tp-font-mono);
+  /* Editing font is separate from the code font so writing themes can switch the
+     textarea to serif/prose without changing code blocks in the preview. */
+  font-family: var(--tp-font-edit, var(--tp-font-mono));
   /* Caller can override via --tp-edit-size (e.g. for NotesPage font-size adjuster). */
   font-size: var(--tp-edit-size, 14px);
   line-height: 1.7;
@@ -38,6 +42,9 @@
   caret-color: var(--tp-accent);
 }
 .typol-root.typol-editor::placeholder { color: var(--tp-text-soft); }
+/* ハイブリッドのブロックエディタ: 内容の高さに自動追従（幅変化にも自動再計算）。
+   未対応環境向けの JS フォールバックは TypolMarkdown の autoGrow effect 側。 */
+.typol-root.typol-editor.typol-autogrow { field-sizing: content; }
 
 /* ===== Preview (rendered HTML) ===== */
 .typol-root.typol-preview {
@@ -59,6 +66,7 @@
   font-weight: 700;
   letter-spacing: -0.01em;
   font-family: var(--tp-font-heading);
+  color: var(--tp-heading-color);
 }
 .typol-root.typol-preview h1 { font-size: 1.8em; border-bottom: 1px solid var(--tp-border); padding-bottom: 0.25em; margin-top: 0.3em; }
 .typol-root.typol-preview h2 { font-size: 1.4em; border-bottom: 1px solid var(--tp-border-soft); padding-bottom: 0.2em; }
@@ -181,7 +189,34 @@
   cursor: pointer;
 }
 
-/* ===== Dark mode overrides — activated when <html class="dark"> ===== */
+/* ===== Hybrid mode (Typora-like live blocks) =====
+   編集中のブロックだけソース、それ以外はプレビュー表示。ブロックの余白と
+   アクティブ表示だけここで持ち、中身は通常の typol-editor / typol-preview。 */
+.typol-hybrid-block {
+  border-radius: 6px;
+  cursor: text;
+  padding: 0.1rem 0.6rem;
+  margin: 0.1rem -0.6rem;
+  border-left: 2px solid transparent;
+  transition: background-color 0.12s;
+}
+.typol-hybrid-block:hover {
+  background: color-mix(in oklab, var(--tp-bg-soft) 65%, transparent);
+}
+.typol-hybrid-block.typol-hybrid-active {
+  border-left-color: var(--tp-accent);
+  background: color-mix(in oklab, var(--tp-bg-soft) 45%, transparent);
+  cursor: auto;
+}
+/* ブロック内プレビューは単体ページと違い先頭見出しの上マージンを詰める */
+.typol-hybrid-block .typol-preview > :first-child { margin-top: 0.15em; }
+.typol-hybrid-block .typol-preview > :last-child { margin-bottom: 0.15em; }
+
+/* ===== Dark mode overrides — activated when <html class="dark"> =====
+   注意: 固定紙色の執筆テーマ (writing-themes.css の .wtc-*) は
+   `.wtc-x .typol-root.typol-root` (0,3,0) がこのブロック (0,2,1) に勝つ前提。
+   ここに `html.dark .typol-root.typol-preview { ... }` のような (0,3,1) の
+   ルールを足すと執筆テーマの固定紙が破れるので、詳細度を上げないこと。 */
 html.dark .typol-root {
   --tp-text: rgb(226 232 240);
   --tp-text-mute: rgb(148 163 184);

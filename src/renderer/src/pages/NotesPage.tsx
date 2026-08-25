@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote, Paperclip } from 'lucide-react'
+import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote, Paperclip, PanelLeftClose, PanelLeftOpen, FileUp, Palette, Check, PenLine } from 'lucide-react'
 import { useApp } from '../store'
 import { Note, NoteFolder, CanvasCard } from '../types'
 import { NoteAttachments } from '../components/NoteAttachments'
 import { generateId } from '../utils'
 import { TypolMarkdown as MarkdownText } from '../components/typol/TypolMarkdown'
+import { HybridMarkdown } from '../components/typol/HybridMarkdown'
 import { NoteMinimap } from '../components/NoteMinimap'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
@@ -15,6 +16,51 @@ import { SlideShow } from '../components/SlideShow'
 import { exportNotePdf, exportNoteSlidesPdf, splitSlides } from '../utils/notePdf'
 import { updateFence, type FenceState } from '../utils/mdTask'
 import { pdfApi } from '../utils/planPdf'
+import { usePopoverDismiss } from '../components/usePopoverDismiss'
+
+// ── 執筆テーマ (Typora のテーマ風) ──
+// 執筆面（エディタ+プレビュー）の見た目を、カラー（紙色と配色）とフォントの
+// 独立した2軸で切り替える。実体は writing-themes.css の .wtc-* / .wtf-* クラス
+// （typol.css の --tp-* を上書き）。paper / ink / font はスウォッチ表示用。
+type PaperTheme = 'default' | 'ladder' | 'sepia' | 'kinari' | 'vivid' | 'night'
+type FontTheme = 'default' | 'mincho' | 'klee' | 'mono'
+const PAPER_THEMES: { id: PaperTheme; name: string; desc: string; paper: string; ink: string }[] = [
+  { id: 'default', name: '標準', desc: 'アプリのテーマに従う', paper: '#ffffff', ink: '#1e293b' },
+  { id: 'ladder', name: 'クリーン', desc: 'Ladder風 — 白×スレート・空色・極太見出し', paper: '#ffffff', ink: '#62bbf3' },
+  { id: 'sepia', name: 'セピア', desc: 'クリーム色の紙', paper: '#f7f1e1', ink: '#443c2e' },
+  { id: 'kinari', name: '生成り', desc: 'あたたかいオフホワイト', paper: '#f7f6f3', ink: '#37352f' },
+  { id: 'vivid', name: 'ポップ', desc: 'Sneh風 — ピンク見出し×カラフル', paper: '#fafaff', ink: '#ff3399' },
+  { id: 'night', name: 'ナイト', desc: 'Ladder風ダーク — スレート×空色', paper: '#1e293b', ink: '#e2e8f0' },
+]
+const FONT_THEMES: { id: FontTheme; name: string; desc: string; font: string }[] = [
+  { id: 'default', name: 'ゴシック', desc: '標準のサンセリフ', font: 'ui-sans-serif, "Hiragino Sans", "Yu Gothic UI", sans-serif' },
+  { id: 'mincho', name: '明朝', desc: '游明朝 / ヒラギノ明朝', font: '"Yu Mincho", YuMincho, "Hiragino Mincho ProN", Georgia, serif' },
+  { id: 'klee', name: '手書き', desc: 'Klee One（教科書体）', font: '"Klee One", Klee, sans-serif' },
+  { id: 'mono', name: '等幅', desc: 'コードと同じモノスペース', font: 'ui-monospace, Consolas, monospace' },
+]
+// ノートの表示モード。hybrid = Typora のライブプレビュー風（編集中のブロック
+// だけソース、他は整形表示。センタービュー幅）。
+type NoteViewMode = 'preview' | 'edit' | 'split' | 'hybrid'
+
+// 旧・単一軸テーマ (constella.notes.writingTheme) からの引き継ぎ
+function loadWritingPrefs(): { paper: PaperTheme; font: FontTheme } {
+  try {
+    const p = localStorage.getItem('constella.notes.paperTheme')
+    const f = localStorage.getItem('constella.notes.fontTheme')
+    if (p !== null || f !== null) {
+      return {
+        paper: PAPER_THEMES.some(t => t.id === p) ? (p as PaperTheme) : 'default',
+        font: FONT_THEMES.some(t => t.id === f) ? (f as FontTheme) : 'default',
+      }
+    }
+    const old = localStorage.getItem('constella.notes.writingTheme')
+    if (old === 'mincho') return { paper: 'default', font: 'mincho' }
+    if (old === 'sepia') return { paper: 'sepia', font: 'mincho' }
+    if (old === 'typewriter') return { paper: 'kinari', font: 'mono' }
+    if (old === 'night') return { paper: 'night', font: 'default' }
+    return { paper: 'default', font: 'default' }
+  } catch { return { paper: 'default', font: 'default' } }
+}
 
 export default function NotesPage() {
   const { state, dispatch } = useApp()
@@ -42,6 +88,40 @@ export default function NotesPage() {
     '--tp-edit-size': `${Math.round(14 * fontScale)}px`,
     '--tp-preview-size': `${Math.round(15 * fontScale)}px`,
   }) as React.CSSProperties, [fontScale])
+
+  // 執筆テーマ — グローバルに記憶（ノートごとではなくユーザーの好み）。
+  // localStorage 読み + 旧設定移行は1回だけ実行し、両stateで共有する。
+  const initialPrefs = useRef<ReturnType<typeof loadWritingPrefs> | null>(null)
+  if (initialPrefs.current === null) initialPrefs.current = loadWritingPrefs()
+  const [paperTheme, setPaperTheme] = useState<PaperTheme>(initialPrefs.current.paper)
+  const [fontTheme, setFontTheme] = useState<FontTheme>(initialPrefs.current.font)
+  useEffect(() => { try { localStorage.setItem('constella.notes.paperTheme', paperTheme) } catch { /* ignore */ } }, [paperTheme])
+  useEffect(() => { try { localStorage.setItem('constella.notes.fontTheme', fontTheme) } catch { /* ignore */ } }, [fontTheme])
+  const themeActive = paperTheme !== 'default' || fontTheme !== 'default'
+  const themeClass = `${paperTheme !== 'default' ? `wtc-${paperTheme}` : ''} ${fontTheme !== 'default' ? `wtf-${fontTheme}` : ''}`.trim()
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false)
+  const themeMenuRef = usePopoverDismiss<HTMLDivElement>(themeMenuOpen, () => setThemeMenuOpen(false))
+
+  // ノートリスト（左パネル）の折りたたみ — ボードパネルと同じ流儀（永続化＋ホバーで一時展開）
+  const [listCollapsed, setListCollapsed] = useState(() => {
+    try { return localStorage.getItem('constella.notes.listCollapsed') === '1' } catch { return false }
+  })
+  const [listHover, setListHover] = useState(false)
+  const listHoverTimer = useRef<number | null>(null)
+  useEffect(() => {
+    try { localStorage.setItem('constella.notes.listCollapsed', listCollapsed ? '1' : '0') } catch { /* ignore */ }
+  }, [listCollapsed])
+  const onListEnter = () => {
+    if (listHoverTimer.current) { clearTimeout(listHoverTimer.current); listHoverTimer.current = null }
+    if (!listCollapsed) return
+    listHoverTimer.current = window.setTimeout(() => setListHover(true), 280)
+  }
+  const onListLeave = () => {
+    if (listHoverTimer.current) { clearTimeout(listHoverTimer.current); listHoverTimer.current = null }
+    if (!listCollapsed) return
+    listHoverTimer.current = window.setTimeout(() => setListHover(false), 180)
+  }
+  const listExpanded = !listCollapsed || listHover
 
   // 付随資料パネルの開閉（グローバルに記憶 — ノート切替では閉じない）
   const [attachOpen, setAttachOpen] = useState<boolean>(() => {
@@ -132,9 +212,9 @@ export default function NotesPage() {
   const [dragOverRoot, setDragOverRoot] = useState(false)
   const draggingRef = useRef<{ kind: 'note' | 'folder'; id: string } | null>(null)
   // View mode: edit is the default so the page feels like a plain text editor;
-  // preview / split are available on demand. Persisted across selections — switching
-  // notes does NOT force back to preview.
-  const [viewMode, setViewMode] = useState<'preview' | 'edit' | 'split'>('edit')
+  // live (hybrid) / preview / split are available on demand. Persisted across
+  // selections — switching notes does NOT force back to preview.
+  const [viewMode, setViewMode] = useState<NoteViewMode>('edit')
   const viewModeRef = useRef(viewMode)
   viewModeRef.current = viewMode
   // Scroll position (0–1 of the scrollable range) captured just before a mode
@@ -197,7 +277,8 @@ export default function NotesPage() {
     // feels like switching tabs in a text editor.
   }
 
-  function createNote() {
+  // folderId を渡すとそのフォルダ直下に作成（フォルダ行の＋ボタンから）。
+  function createNote(folderId?: string) {
     const note: Note = {
       id: generateId(),
       masterProjectId: active,
@@ -205,11 +286,73 @@ export default function NotesPage() {
       content: '',
       tags: [],
       createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      ...(folderId ? { folderId } : {}),
     }
     dispatch({ type: 'ADD_NOTE', payload: note })
+    if (folderId) setOpenFolders(prev => { const n = new Set(prev); n.add(folderId); return n })
     setSelectedId(note.id)
     setViewMode('edit')
+  }
+
+  // ── 外部テキストの読み込み (.md / .txt → ノート化) ──
+  // 自前の Markdown 書き出し（frontmatter + 先頭見出し）はラウンドトリップで復元する。
+  const importInputRef = useRef<HTMLInputElement>(null)
+  function parseImportedText(raw: string, fileName: string): { title: string; content: string; tags: string[] } {
+    let text = raw.replace(/^﻿/, '').replace(/\r\n?/g, '\n')
+    let title = ''
+    let tags: string[] = []
+    if (text.startsWith('---\n')) {
+      const end = text.indexOf('\n---\n', 4)
+      const fm = end !== -1 ? text.slice(4, end) : ''
+      // frontmatter とみなすのは「key: value」行を含むときだけ。単なる水平線や
+      // スライド区切り (---) で始まる文書を誤検出して本文を削らないこと。
+      if (end !== -1 && /^[\w-]+\s*:/m.test(fm)) {
+        const tm = /^title:\s*(.+)$/m.exec(fm)
+        if (tm) title = tm[1].trim()
+        const gm = /^tags:\s*(\[.*\])\s*$/m.exec(fm)
+        if (gm) {
+          try {
+            const arr = JSON.parse(gm[1])
+            if (Array.isArray(arr)) tags = arr.filter((x): x is string => typeof x === 'string')
+          } catch { /* frontmatter のタグが読めなくても本文は取り込む */ }
+        }
+        text = text.slice(end + 5)
+      }
+    }
+    text = text.replace(/^\n+/, '')
+    // 先頭の "# 見出し" はタイトルに昇格（frontmatter と同名なら本文からは除去）
+    const hm = /^#\s+(.+)\n?/.exec(text)
+    if (hm) {
+      if (!title) title = hm[1].trim()
+      if (hm[1].trim() === title) text = text.slice(hm[0].length).replace(/^\n+/, '')
+    }
+    return { title: title || fileName.replace(/\.[^.]+$/, ''), content: text, tags }
+  }
+  async function importTextFiles(files: File[]) {
+    if (!active || files.length === 0) return
+    const failed: string[] = []
+    const notes: Note[] = []
+    for (const file of files) {
+      let raw: string
+      try { raw = await file.text() } catch { failed.push(file.name); continue }
+      const parsed = parseImportedText(raw, file.name)
+      notes.push({
+        id: generateId(),
+        masterProjectId: active,
+        title: parsed.title,
+        content: parsed.content,
+        tags: parsed.tags,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+    }
+    // 複数ファイルでも 1 undo ステップ（複数削除/複製/貼り付けと同じ BATCH 慣例）
+    if (notes.length > 0) {
+      dispatch({ type: 'BATCH', payload: notes.map(n => ({ type: 'ADD_NOTE' as const, payload: n })) })
+      setSelectedId(notes[notes.length - 1].id)
+    }
+    if (failed.length > 0) await alertDialog(`読み込めなかったファイル: ${failed.join(', ')}`)
   }
 
   function updateNote(updates: Partial<Note>) {
@@ -249,7 +392,8 @@ export default function NotesPage() {
     if (findMatches.length === 0) return
     const idx = ((k % findMatches.length) + findMatches.length) % findMatches.length
     setFindIdx(idx)
-    if (viewMode === 'preview') setViewMode('edit')
+    // マッチ位置の選択表示は全文 textarea でしかできないので編集モードへ
+    if (viewMode === 'preview' || viewMode === 'hybrid') setViewMode('edit')
     // プレビュー→編集切替直後はエディタ未マウントのことがあるので少しリトライ
     const apply = (attempt: number) => {
       const ta = editorTa()
@@ -300,10 +444,11 @@ export default function NotesPage() {
   // The editor textarea and the preview div are different elements (the preview
   // is even re-created on switch), so without this every toggle lands at the top.
   const previewEl = () => document.querySelector<HTMLElement>('.typol-preview')
-  const primaryScroller = (mode: 'preview' | 'edit' | 'split'): HTMLElement | null =>
-    mode === 'preview' ? previewEl() : editorTa()
+  const hybridEl = () => document.querySelector<HTMLElement>('.typol-hybrid-scroll')
+  const primaryScroller = (mode: NoteViewMode): HTMLElement | null =>
+    mode === 'preview' ? previewEl() : mode === 'hybrid' ? hybridEl() : editorTa()
   const scrollRatio = (el: HTMLElement) => el.scrollTop / Math.max(1, el.scrollHeight - el.clientHeight)
-  const switchMode = (next: 'preview' | 'edit' | 'split') => {
+  const switchMode = (next: NoteViewMode) => {
     const cur = viewModeRef.current
     if (next === cur) return
     const el = primaryScroller(cur)
@@ -343,7 +488,8 @@ export default function NotesPage() {
       }
       // The preview's images / mermaid blocks settle a moment later and grow the
       // content; re-apply once so the ratio refers to the final height.
-      if (viewMode === 'preview') later(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
+      // hybrid renders the same async content per block, so it needs this too.
+      if (viewMode === 'preview' || viewMode === 'hybrid') later(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
     }
     later(() => apply(0), 0)
     return () => { dead = true; timers.forEach(clearTimeout) }
@@ -450,7 +596,8 @@ export default function NotesPage() {
   }, [outlineOpen, selectedNote])
 
   const jumpToHeading = (h: { text: string; line: number }, idx: number) => {
-    const prev = document.querySelector('.typol-preview')
+    // hybrid はブロックごとに .typol-preview が分かれるのでスクローラ全域から探す
+    const prev = viewMode === 'hybrid' ? hybridEl() : document.querySelector('.typol-preview')
     if (prev) {
       const els = [...prev.querySelectorAll('h1,h2,h3,h4,h5,h6')]
       // 同名見出しが複数ある場合に備え、n番目の同名を選ぶ（テキスト一致優先、崩れたら index）
@@ -459,6 +606,8 @@ export default function NotesPage() {
       const el = sameText[nth] ?? sameText[0] ?? els[idx]
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
+    // hybrid ではアクティブブロックの textarea は全文オフセットと一致しない
+    if (viewMode === 'hybrid') return
     const ta = editorTa()
     const content = selectedNoteRef.current?.content
     if (ta && content != null) {
@@ -726,6 +875,11 @@ export default function NotesPage() {
             className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
           />
           <button
+            onClick={e => { e.stopPropagation(); createNote(folder.id) }}
+            title="このフォルダにノートを追加"
+            className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-amber-600 transition-all shrink-0"
+          ><Plus size={11} /></button>
+          <button
             onClick={e => { e.stopPropagation(); addFolder(folder.id) }}
             title="サブフォルダを追加"
             className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-400 hover:text-amber-600 transition-all shrink-0"
@@ -761,13 +915,20 @@ export default function NotesPage() {
 
   return (
     <div className="flex h-full">
-      {/* Note list */}
-      <div className="w-72 border-r border-slate-200 flex flex-col">
-        <div className="h-14 flex items-center justify-between px-4 border-b border-slate-200">
-          <h2 className="text-sm font-semibold text-slate-700">ノート {showArchived && <span className="text-[10px] text-slate-400 ml-1">(アーカイブ)</span>}</h2>
+      {/* Note list — collapsible (persisted + hover-to-expand, same idiom as the board panel). */}
+      <div className="relative h-full shrink-0 transition-[width] duration-200" style={{ width: listCollapsed ? 40 : 288 }}>
+        <div
+          onMouseEnter={onListEnter}
+          onMouseLeave={onListLeave}
+          className={`absolute inset-y-0 left-0 bg-white border-r border-slate-200 flex flex-col transition-[width] duration-200 ${listCollapsed && listHover ? 'shadow-2xl z-30' : ''}`}
+          style={{ width: listExpanded ? 288 : 40 }}
+        >
+        <div className={`h-14 flex items-center border-b border-slate-200 ${listExpanded ? 'justify-between px-4' : 'justify-center px-1'}`}>
+          {listExpanded && <h2 className="text-sm font-semibold text-slate-700 whitespace-nowrap">ノート {showArchived && <span className="text-[10px] text-slate-400 ml-1">(アーカイブ)</span>}</h2>}
           <div className="flex items-center gap-1">
+            {listExpanded && (<>
             <button
-              onClick={createNote}
+              onClick={() => createNote()}
               title="ノートを追加"
               className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-amber-600 transition-colors"
             >
@@ -780,6 +941,25 @@ export default function NotesPage() {
             >
               <FolderPlus size={16} />
             </button>
+            <button
+              onClick={() => importInputRef.current?.click()}
+              title="テキストファイルを読み込み (.md / .txt) — 複数選択可"
+              className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-emerald-600 transition-colors"
+            >
+              <FileUp size={16} />
+            </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".md,.markdown,.txt,.text"
+              multiple
+              className="hidden"
+              onChange={e => {
+                const files = e.currentTarget.files ? Array.from(e.currentTarget.files) : []
+                e.currentTarget.value = ''
+                void importTextFiles(files)
+              }}
+            />
             <details className="relative">
               <summary className="list-none cursor-pointer p-1.5 rounded-md hover:bg-slate-100 text-slate-500 hover:text-indigo-600 transition-colors" title="他プロジェクトの共有ノートを参照に追加">
                 <Share2 size={16} />
@@ -805,8 +985,17 @@ export default function NotesPage() {
                 )}
               </div>
             </details>
+            </>)}
+            <button
+              onClick={() => { setListCollapsed(c => !c); setListHover(false) }}
+              title={listCollapsed ? 'ノートリストを開く' : 'ノートリストを畳む'}
+              className="p-1.5 rounded-md hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors"
+            >
+              {listCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+            </button>
           </div>
         </div>
+        {listExpanded && (<>
         {/* Search + sort + archive toggle row */}
         <div className="px-3 py-2 border-b border-slate-200 space-y-1.5">
           <SearchInput
@@ -882,6 +1071,8 @@ export default function NotesPage() {
             </div>
           )}
         </div>
+        </>)}
+        </div>
       </div>
 
       {/* Note editor */}
@@ -904,11 +1095,11 @@ export default function NotesPage() {
                 </span>
               )}
               <div className="flex items-center rounded-md border border-slate-200 overflow-hidden text-sm shrink-0">
-                {([['edit', '編集', Pencil], ['split', '分割', Columns2], ['preview', 'プレビュー', Eye]] as const).map(([mode, label, Icon]) => (
+                {([['edit', '編集', Pencil], ['hybrid', 'ライブ', PenLine], ['split', '分割', Columns2], ['preview', 'プレビュー', Eye]] as const).map(([mode, label, Icon]) => (
                   <button
                     key={mode}
                     onClick={() => switchMode(mode)}
-                    title={mode === 'split' ? label : `${label} (Ctrl+Shift+E で切替)`}
+                    title={mode === 'hybrid' ? 'ライブ — 編集中のブロックだけソース、他は整形表示（Typora風）' : mode === 'split' ? label : `${label} (Ctrl+Shift+E で切替)`}
                     className={`flex items-center gap-1 px-2.5 py-1 transition-colors whitespace-nowrap ${viewMode === mode ? 'bg-amber-500/15 text-amber-600' : 'text-slate-500 hover:bg-slate-100 hover:text-slate-800'}`}
                   >
                     <Icon size={15} /> {label}
@@ -934,6 +1125,52 @@ export default function NotesPage() {
                   title="文字を大きく"
                   className="p-1 text-slate-500 hover:bg-slate-100"
                 ><Plus size={13} /></button>
+              </div>
+              {/* 執筆テーマ — カラー（紙色）とフォントを独立に切替 */}
+              <div className="relative shrink-0" ref={themeMenuRef}>
+                <button
+                  onClick={() => setThemeMenuOpen(v => !v)}
+                  title="執筆テーマ（カラーとフォント）"
+                  className={`ml-1 p-1.5 rounded-md hover:bg-slate-100 transition-colors ${themeActive ? 'text-indigo-600' : 'text-slate-500 hover:text-indigo-600'}`}
+                >
+                  <Palette size={16} />
+                </button>
+                {themeMenuOpen && (
+                  <div className="absolute right-0 top-9 z-30 w-60 bg-white border border-slate-200 rounded-lg shadow-xl p-2">
+                    <p className="text-[10px] font-medium text-slate-400 px-1 pb-1">カラー</p>
+                    <div className="grid grid-cols-3 gap-1 px-1 pb-2">
+                      {PAPER_THEMES.map(t => (
+                        <button
+                          key={t.id}
+                          onClick={() => setPaperTheme(t.id)}
+                          title={`${t.name} — ${t.desc}`}
+                          className={`flex flex-col items-center gap-0.5 rounded-md p-1 transition-colors ${paperTheme === t.id ? 'bg-amber-500/10' : 'hover:bg-slate-100'}`}
+                        >
+                          <span
+                            className={`w-7 h-7 rounded-md border flex items-center justify-center text-[13px] font-semibold ${paperTheme === t.id ? 'border-amber-500 ring-1 ring-amber-500' : 'border-slate-300'}`}
+                            style={{ background: t.paper, color: t.ink }}
+                          >あ</span>
+                          <span className={`text-[9px] leading-none ${paperTheme === t.id ? 'text-amber-700' : 'text-slate-500'}`}>{t.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] font-medium text-slate-400 px-1 pb-1 border-t border-slate-100 pt-2">フォント</p>
+                    {FONT_THEMES.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => setFontTheme(t.id)}
+                        className={`w-full flex items-center gap-2 px-1.5 py-1 rounded text-left text-xs transition-colors ${fontTheme === t.id ? 'bg-amber-500/10 text-amber-700' : 'text-slate-600 hover:bg-slate-100'}`}
+                      >
+                        <span className="w-12 shrink-0 text-[13px] text-slate-700" style={{ fontFamily: t.font }}>あア文</span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block leading-tight">{t.name}</span>
+                          <span className="block text-[9px] text-slate-400 leading-tight">{t.desc}</span>
+                        </span>
+                        {fontTheme === t.id && <Check size={13} className="text-amber-600 shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               {/* 付随資料パネルの開閉 — 添付があるときは件数バッジを出す */}
               <button
@@ -1190,8 +1427,20 @@ export default function NotesPage() {
                   ))}
                 </aside>
               )}
-              <div className="flex-1 flex flex-col min-h-0 min-w-0">
-                {viewMode === 'split' ? (
+              <div className={`flex-1 flex flex-col min-h-0 min-w-0 ${themeClass}`}>
+                {viewMode === 'hybrid' ? (
+                  /* ライブ (Typora 風) — センタービュー幅のスクローラにブロック列 */
+                  <div className="flex-1 min-h-0 overflow-y-auto typol-hybrid-scroll" style={fontVars}>
+                    <div className="max-w-[46rem] mx-auto w-full px-8 py-6 min-h-full flex flex-col">
+                      <HybridMarkdown
+                        key={selectedNote.id + '-hybrid'}
+                        value={selectedNote.content}
+                        onChange={v => updateNote({ content: v })}
+                        placeholder="ここにメモを書く…（マークダウン対応）"
+                      />
+                    </div>
+                  </div>
+                ) : viewMode === 'split' ? (
                   <div className="flex-1 flex min-h-0 overflow-hidden" style={fontVars}>
                     <MarkdownText
                       key={selectedNote.id + '-edit'}
@@ -1217,17 +1466,19 @@ export default function NotesPage() {
                       value={selectedNote.content}
                       onChange={v => updateNote({ content: v })}
                       editing={viewMode === 'edit'}
-                      extraClass="flex-1 min-h-0 px-6 py-4"
+                      // プレビューはライブと同じセンタービュー幅。.typol-preview 自体が
+                      // スクローラなので、要素ごと中央寄せする（scroll復元/ミニマップ互換）。
+                      extraClass={viewMode === 'edit' ? 'flex-1 min-h-0 px-6 py-4' : 'flex-1 min-h-0 px-8 py-6 w-full max-w-[46rem] mx-auto'}
                       placeholder="ここにメモを書く…（マークダウン対応）"
                     />
                   </div>
                 )}
               </div>
-              {/* Minimap follows the editor (edit/split) or the preview (preview mode). */}
+              {/* Minimap follows the editor (edit/split), the preview, or the hybrid scroller. */}
               <NoteMinimap
                 content={selectedNote.content}
                 scrollerKey={`${selectedNote.id}:${viewMode}`}
-                getScroller={viewMode === 'preview' ? previewEl : editorTa}
+                getScroller={viewMode === 'preview' ? previewEl : viewMode === 'hybrid' ? hybridEl : editorTa}
               />
             </div>
           </>

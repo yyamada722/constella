@@ -1,0 +1,170 @@
+/* 執筆テーマ — Typora のテーマのように、ノートの執筆面（エディタ + プレビュー）
+   だけの見た目を切り替える。typol.css の --tp-* トークンを上書きするだけなので、
+   記法まわりのスタイルは全テーマで共通。
+
+   カラー (.wtc-*) とフォント (.wtf-*) は独立した2軸で、自由に組み合わせられる。
+   例: Typora の Ladder ≈ 標準カラー + 手書きフォント、Sneh ≈ ビビッドカラー。
+
+   固定紙色のカラーテーマ（sepia / kinari / vivid / night）はアプリのライト/ダーク
+   にかかわらず同じ見た目を保つ。html.dark .typol-root (0,2,1) より強い
+   .wtc-* .typol-root.typol-root (0,3,0) で上書きする。 */
+
+/* ════ カラー ════ */
+
+/* ── クリーン (Ladder) — Ladder テーマの実パレット。白×Tailwind スレートに
+   空色アクセント。タイトな極太見出し・イタリック引用・ダークなコードブロック ── */
+.wtc-ladder { background: #ffffff; }
+.wtc-ladder .typol-root.typol-root {
+  --tp-text: #334155;
+  --tp-text-mute: #475569;
+  --tp-text-soft: #94a3b8;
+  --tp-bg-soft: #f8fafc;
+  --tp-border: #e2e8f0;
+  --tp-border-soft: #f1f5f9;
+  --tp-accent: #62bbf3;
+  --tp-link: #3ba4ea;
+  --tp-code-bg: #f1f5f9;
+  --tp-code-border: #e2e8f0;
+  --tp-heading-color: #0f172a;
+  /* Ladder 署名スタイル用（ライト/ダーク共通ルールが参照する色） */
+  --wt-quote-ink: #0f172a;
+  --wt-pre-bg: #1e293b;
+  --wt-pre-ink: #f1f5f9;
+}
+
+/* ── セピア — クリーム色の紙。長文をあたたかく ── */
+.wtc-sepia { background: #f7f1e1; }
+.wtc-sepia .typol-root.typol-root {
+  --tp-text: #443c2e;
+  --tp-text-mute: #7a6f5a;
+  --tp-text-soft: #a89a7e;
+  --tp-bg-soft: #efe6cf;
+  --tp-border: #e0d5b8;
+  --tp-border-soft: #ece2c8;
+  --tp-accent: #b58900;
+  --tp-link: #2aa198;
+  --tp-code-bg: #efe6cf;
+  --tp-code-border: #e0d5b8;
+}
+
+/* ── 生成り — わずかに温かいオフホワイトの紙 ── */
+.wtc-kinari { background: #f7f6f3; }
+.wtc-kinari .typol-root.typol-root {
+  --tp-text: #37352f;
+  --tp-text-mute: #6f6b64;
+  --tp-text-soft: #a5a097;
+  --tp-bg-soft: #efede8;
+  --tp-border: #e0ded8;
+  --tp-border-soft: #eae8e2;
+  --tp-accent: #d97706;
+  --tp-link: #2563eb;
+  --tp-code-bg: #efede8;
+  --tp-code-border: #e0ded8;
+}
+
+/* ── ポップ (Sneh) — Sneh テーマの実パレット。ラベンダーがかった白い紙に
+   ホットピンクの見出し + 黄色い # マーカー + マゼンタの太字 + 空色リンク ── */
+.wtc-vivid { background: #fafaff; }
+.wtc-vivid .typol-root.typol-root {
+  --tp-text: #44425e;
+  --tp-text-mute: #6f6d8a;
+  --tp-text-soft: #a2a0bd;
+  --tp-bg-soft: #f5f5ff;
+  --tp-border: #e4e4f5;
+  --tp-border-soft: #ededf9;
+  --tp-accent: #ff3399;
+  --tp-link: #01a9e1;
+  --tp-code-bg: #f2f2f7;
+  --tp-code-border: #e4e4f5;
+  --tp-heading-color: #ff3399;
+}
+/* Sneh の署名: 見出しの前に黄色い # マーカー（レベル分の個数） */
+.wtc-vivid .typol-root.typol-root.typol-preview h1::before { content: '# '; color: #ffaa00; }
+.wtc-vivid .typol-root.typol-root.typol-preview h2::before { content: '## '; color: #ffaa00; }
+.wtc-vivid .typol-root.typol-root.typol-preview h3::before { content: '### '; color: #ffaa00; }
+/* 見出しの下線は消してマーカー主役に */
+.wtc-vivid .typol-root.typol-root.typol-preview h1,
+.wtc-vivid .typol-root.typol-root.typol-preview h2 { border-bottom: none; padding-bottom: 0; }
+/* 太字はマゼンタ、リンクホバーはシアン、ハイライトはピンクの丸ピル */
+.wtc-vivid .typol-root.typol-root.typol-preview strong { color: #cc66ff; }
+.wtc-vivid .typol-root.typol-root.typol-preview a:hover { color: #00ced1; border-bottom-color: #00ced1; }
+.wtc-vivid .typol-root.typol-root.typol-preview mark {
+  background: #ffd6ea;
+  color: #d1006f;
+  border-radius: 5px;
+  padding: 1px 4px;
+}
+/* 引用は Sneh と同じ「角丸の面」スタイル（左バーではなく） */
+.wtc-vivid .typol-root.typol-root.typol-preview blockquote {
+  border-left: none;
+  border-radius: 8px;
+  background: #f2f2f7;
+}
+
+/* ── ナイト (Ladder dark) — Ladder ダーク版の実パレット。スレート800の紙に
+   白い極太見出し・空色アクセント。アプリがライトでも執筆面だけ暗く ── */
+.wtc-night { background: #1e293b; }
+.wtc-night .typol-root.typol-root {
+  --tp-text: #cbd5e1;
+  --tp-text-mute: #94a3b8;
+  --tp-text-soft: #64748b;
+  --tp-bg-soft: #16212f;
+  --tp-border: #334155;
+  --tp-border-soft: #2b3a4f;
+  --tp-accent: #62bbf3;
+  --tp-link: #62bbf3;
+  --tp-code-bg: #0f172a;
+  --tp-code-border: #0f172a;
+  --tp-heading-color: #ffffff;
+  /* Ladder 署名スタイル用（ライト/ダーク共通ルールが参照する色） */
+  --wt-quote-ink: #f1f5f9;
+  --wt-pre-bg: #0f172a;
+  --wt-pre-ink: #e2e8f0;
+}
+
+/* ── Ladder の署名スタイル — クリーン (ライト) / ナイト (ダーク) 共通 ──
+   1: タイトな字間の極太見出し（下線なし） */
+.wtc-ladder .typol-root.typol-root.typol-preview h1,
+.wtc-night .typol-root.typol-root.typol-preview h1 { font-weight: 800; letter-spacing: -0.025em; border-bottom: none; padding-bottom: 0; }
+.wtc-ladder .typol-root.typol-root.typol-preview h2,
+.wtc-night .typol-root.typol-root.typol-preview h2 { font-weight: 800; letter-spacing: -0.015em; border-bottom: none; padding-bottom: 0; }
+/* 2: 引用は面なし・細い左バー・イタリックの編集者風 */
+.wtc-ladder .typol-root.typol-root.typol-preview blockquote,
+.wtc-night .typol-root.typol-root.typol-preview blockquote {
+  background: transparent;
+  border-left: 3px solid var(--tp-border);
+  color: var(--wt-quote-ink);
+  font-style: italic;
+  font-weight: 500;
+}
+/* 3: コードブロックは一段ダークな面。ハイライト付き (code.hljs) は
+   ユーザーのコードテーマ (--hljs-bg) を尊重する */
+.wtc-ladder .typol-root.typol-root.typol-preview pre:not(:has(> code.hljs)),
+.wtc-night .typol-root.typol-root.typol-preview pre:not(:has(> code.hljs)) {
+  background: var(--wt-pre-bg);
+  border-color: var(--wt-pre-bg);
+  color: var(--wt-pre-ink);
+}
+
+/* ════ フォント ════ */
+
+/* ── 明朝 — 游明朝 / ヒラギノ明朝 ── */
+.wtf-mincho .typol-root {
+  --tp-font-prose: "Yu Mincho", YuMincho, "Hiragino Mincho ProN", "Noto Serif JP", "Noto Serif CJK JP", Georgia, "Times New Roman", serif;
+  --tp-font-heading: var(--tp-font-prose);
+  --tp-font-edit: var(--tp-font-prose);
+}
+
+/* ── 手書き (Ladder 風) — Klee One（教科書体系、LXGW WenKai の元フォント）を同梱 ── */
+.wtf-klee .typol-root {
+  --tp-font-prose: "Klee One", Klee, "LXGW WenKai", "Hiragino Maru Gothic ProN", "Yu Gothic UI", sans-serif;
+  --tp-font-heading: var(--tp-font-prose);
+  --tp-font-edit: var(--tp-font-prose);
+}
+
+/* ── 等幅 — 見出し・本文までモノスペース ── */
+.wtf-mono .typol-root {
+  --tp-font-prose: var(--tp-font-mono);
+  --tp-font-heading: var(--tp-font-mono);
+  --tp-font-edit: var(--tp-font-mono);
+}
