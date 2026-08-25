@@ -22,7 +22,7 @@ const features = [
     items: [
       { text: '全体像', link: '/features/notes/' },
       { text: 'エディタの使い方', link: '/features/notes/editor' },
-      { text: '書き出し・スライド・共有', link: '/features/notes/output' },
+      { text: '読み込み・書き出し・スライド・共有', link: '/features/notes/output' },
     ],
   },
   {
