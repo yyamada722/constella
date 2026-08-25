@@ -26,24 +26,10 @@
   --tp-code-bg: #f1f5f9;
   --tp-code-border: #e2e8f0;
   --tp-heading-color: #0f172a;
-}
-/* Ladder の署名 1: タイトな字間の極太見出し（下線なし） */
-.wtc-ladder .typol-root.typol-root.typol-preview h1 { font-weight: 800; letter-spacing: -0.025em; border-bottom: none; padding-bottom: 0; }
-.wtc-ladder .typol-root.typol-root.typol-preview h2 { font-weight: 800; letter-spacing: -0.015em; border-bottom: none; padding-bottom: 0; }
-/* Ladder の署名 2: 引用は面なし・スレートの左バー・イタリックの編集者風 */
-.wtc-ladder .typol-root.typol-root.typol-preview blockquote {
-  background: transparent;
-  border-left: 3px solid #e2e8f0;
-  color: #0f172a;
-  font-style: italic;
-  font-weight: 500;
-}
-/* Ladder の署名 3: ライトテーマでもコードブロックはダーク。
-   ハイライト付き (code.hljs) はユーザーのコードテーマ (--hljs-bg) を尊重する */
-.wtc-ladder .typol-root.typol-root.typol-preview pre:not(:has(> code.hljs)) {
-  background: #1e293b;
-  border-color: #1e293b;
-  color: #f1f5f9;
+  /* Ladder 署名スタイル用（ライト/ダーク共通ルールが参照する色） */
+  --wt-quote-ink: #0f172a;
+  --wt-pre-bg: #1e293b;
+  --wt-pre-ink: #f1f5f9;
 }
 
 /* ── セピア — クリーム色の紙。長文をあたたかく ── */
@@ -130,21 +116,34 @@
   --tp-code-bg: #0f172a;
   --tp-code-border: #0f172a;
   --tp-heading-color: #ffffff;
+  /* Ladder 署名スタイル用（ライト/ダーク共通ルールが参照する色） */
+  --wt-quote-ink: #f1f5f9;
+  --wt-pre-bg: #0f172a;
+  --wt-pre-ink: #e2e8f0;
 }
-/* ライト版 (.wtc-ladder) と同じ Ladder の署名スタイル */
+
+/* ── Ladder の署名スタイル — クリーン (ライト) / ナイト (ダーク) 共通 ──
+   1: タイトな字間の極太見出し（下線なし） */
+.wtc-ladder .typol-root.typol-root.typol-preview h1,
 .wtc-night .typol-root.typol-root.typol-preview h1 { font-weight: 800; letter-spacing: -0.025em; border-bottom: none; padding-bottom: 0; }
+.wtc-ladder .typol-root.typol-root.typol-preview h2,
 .wtc-night .typol-root.typol-root.typol-preview h2 { font-weight: 800; letter-spacing: -0.015em; border-bottom: none; padding-bottom: 0; }
+/* 2: 引用は面なし・細い左バー・イタリックの編集者風 */
+.wtc-ladder .typol-root.typol-root.typol-preview blockquote,
 .wtc-night .typol-root.typol-root.typol-preview blockquote {
   background: transparent;
-  border-left: 3px solid #334155;
-  color: #f1f5f9;
+  border-left: 3px solid var(--tp-border);
+  color: var(--wt-quote-ink);
   font-style: italic;
   font-weight: 500;
 }
+/* 3: コードブロックは一段ダークな面。ハイライト付き (code.hljs) は
+   ユーザーのコードテーマ (--hljs-bg) を尊重する */
+.wtc-ladder .typol-root.typol-root.typol-preview pre:not(:has(> code.hljs)),
 .wtc-night .typol-root.typol-root.typol-preview pre:not(:has(> code.hljs)) {
-  background: #0f172a;
-  border-color: #0f172a;
-  color: #e2e8f0;
+  background: var(--wt-pre-bg);
+  border-color: var(--wt-pre-bg);
+  color: var(--wt-pre-ink);
 }
 
 /* ════ フォント ════ */

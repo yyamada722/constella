@@ -42,6 +42,9 @@
   caret-color: var(--tp-accent);
 }
 .typol-root.typol-editor::placeholder { color: var(--tp-text-soft); }
+/* ハイブリッドのブロックエディタ: 内容の高さに自動追従（幅変化にも自動再計算）。
+   未対応環境向けの JS フォールバックは TypolMarkdown の autoGrow effect 側。 */
+.typol-root.typol-editor.typol-autogrow { field-sizing: content; }
 
 /* ===== Preview (rendered HTML) ===== */
 .typol-root.typol-preview {
@@ -209,7 +212,11 @@
 .typol-hybrid-block .typol-preview > :first-child { margin-top: 0.15em; }
 .typol-hybrid-block .typol-preview > :last-child { margin-bottom: 0.15em; }
 
-/* ===== Dark mode overrides — activated when <html class="dark"> ===== */
+/* ===== Dark mode overrides — activated when <html class="dark"> =====
+   注意: 固定紙色の執筆テーマ (writing-themes.css の .wtc-*) は
+   `.wtc-x .typol-root.typol-root` (0,3,0) がこのブロック (0,2,1) に勝つ前提。
+   ここに `html.dark .typol-root.typol-preview { ... }` のような (0,3,1) の
+   ルールを足すと執筆テーマの固定紙が破れるので、詳細度を上げないこと。 */
 html.dark .typol-root {
   --tp-text: rgb(226 232 240);
   --tp-text-mute: rgb(148 163 184);

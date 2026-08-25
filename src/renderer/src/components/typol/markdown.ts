@@ -3,9 +3,7 @@ import hljs from "highlight.js";
 import katex from "katex";
 import DOMPurify from "dompurify";
 import { normalizeTasks } from "../../utils/mdTask";
-
-const escapeHtml = (s: string) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+import { escapeHtml } from "./mermaid";
 
 marked.use({
   renderer: {
@@ -20,6 +18,8 @@ marked.use({
       // 言語指定なしは既定レンダラーへ（code.hljs を付けないことで
       // --hljs-bg ではなく --tp-code-bg の面になる — 執筆テーマ側の前提）。
       if (!lang) return false;
+      // クラスには著者の書いた言語名を残す（hljs 未登録言語でも
+      // language-vue 等が消えないように）。ハイライト自体は plaintext に落とす。
       const language = hljs.getLanguage(lang) ? lang : "plaintext";
       let body: string;
       try {
@@ -27,7 +27,7 @@ marked.use({
       } catch {
         body = escapeHtml(token.text);
       }
-      return `<pre><code class="hljs language-${language}">${body}\n</code></pre>`;
+      return `<pre><code class="hljs language-${escapeHtml(lang)}">${body}\n</code></pre>`;
     },
     // GitHub 風コールアウト: 引用の先頭が [!NOTE] 等なら色付きボックスにする。
     // クラス名は remark 側 (utils/mdSyntax.ts) と共通 — index.css の .md-callout が両方に効く。
@@ -103,10 +103,15 @@ marked.use({
         return m ? m.index + m[1].length : undefined;
       },
       tokenizer(src: string) {
-        // 1行目 + 「空行でも新しい定義でもない行」を継続行として取り込む
-        const m = /^\[\^([^\]\s]+)\]:[ \t]?(.*(?:\n(?![ \t]*$)(?!\[\^).*)*)/.exec(src);
+        // 1行目 + インデントされた非空行だけを継続行として取り込む（GFM 準拠。
+        // 直後の見出し・リスト等の通常ブロックを飲み込まないこと）
+        const m = /^\[\^([^\]\s]+)\]:[ \t]?(.*(?:\n[ \t]+(?!\[\^)\S.*)*)/.exec(src);
         if (!m) return undefined;
         const text = m[2].replace(/\n[ \t]*/g, " ").trim();
+        // 定義 id はレンダー前（lexer 段階）にここで登録される。renderer が
+        // 「未定義参照はリテラル表示」を判定できるのはこのため（ネストした
+        // blockquote / リスト内の定義もトークナイザは必ず通る）。
+        fnState.known.add(m[1]);
         return {
           type: "footnoteDef",
           raw: m[0],
@@ -137,11 +142,15 @@ marked.use({
         // 定義が存在しない参照は GFM と同じくリテラルのまま表示する
         if (!fnState.known.has(token.id)) return escapeHtml(token.raw);
         let n = fnState.nums.get(token.id);
-        if (!n) {
+        const first = n === undefined;
+        if (n === undefined) {
           n = fnState.nums.size + 1;
           fnState.nums.set(token.id, n);
         }
-        return `<sup class="footnote-ref"><a href="#fn-${n}" id="fnref-${n}">[${n}]</a></sup>`;
+        // id は最初の参照だけに付ける（2回目以降にも付けると DOM id が重複し、
+        // 脚注側の ↩ が常に最初の引用へ戻ってしまう）
+        const idAttr = first ? ` id="fnref-${n}"` : "";
+        return `<sup class="footnote-ref"><a href="#fn-${n}"${idAttr}>[${n}]</a></sup>`;
       },
     },
   ],
@@ -228,16 +237,9 @@ export function renderMarkdown(md: string): RenderResult {
   fnState.known.clear();
   // normalizeTasks: bare "[ ] foo" lines render as checkboxes too. Both
   // preprocessors preserve line count, so blockLines stays accurate.
+  // 定義 id (fnState.known) は footnoteDef トークナイザがこの lexer 呼び出しの
+  // 中で登録する — リスト項目や blockquote にネストした定義も漏れない。
   const tokens = marked.lexer(preprocessWikiLinks(normalizeTasks(md)));
-  // 参照レンダー前に定義 id を集めておく（未定義参照のリテラル表示判定用）。
-  // 定義は blockquote 内などにも置けるので一段だけでなく再帰で拾う。
-  const collectDefs = (list: { type?: string; id?: string; tokens?: unknown }[]) => {
-    for (const t of list) {
-      if (t.type === "footnoteDef" && t.id) fnState.known.add(t.id);
-      if (Array.isArray(t.tokens)) collectDefs(t.tokens as { type?: string }[]);
-    }
-  };
-  collectDefs(tokens as unknown as { type?: string }[]);
   const blockLines: number[] = [];
   let line = 1;
   for (const t of tokens) {

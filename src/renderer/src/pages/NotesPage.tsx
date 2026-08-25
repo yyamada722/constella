@@ -89,9 +89,12 @@ export default function NotesPage() {
     '--tp-preview-size': `${Math.round(15 * fontScale)}px`,
   }) as React.CSSProperties, [fontScale])
 
-  // 執筆テーマ — グローバルに記憶（ノートごとではなくユーザーの好み）
-  const [paperTheme, setPaperTheme] = useState<PaperTheme>(() => loadWritingPrefs().paper)
-  const [fontTheme, setFontTheme] = useState<FontTheme>(() => loadWritingPrefs().font)
+  // 執筆テーマ — グローバルに記憶（ノートごとではなくユーザーの好み）。
+  // localStorage 読み + 旧設定移行は1回だけ実行し、両stateで共有する。
+  const initialPrefs = useRef<ReturnType<typeof loadWritingPrefs> | null>(null)
+  if (initialPrefs.current === null) initialPrefs.current = loadWritingPrefs()
+  const [paperTheme, setPaperTheme] = useState<PaperTheme>(initialPrefs.current.paper)
+  const [fontTheme, setFontTheme] = useState<FontTheme>(initialPrefs.current.font)
   useEffect(() => { try { localStorage.setItem('constella.notes.paperTheme', paperTheme) } catch { /* ignore */ } }, [paperTheme])
   useEffect(() => { try { localStorage.setItem('constella.notes.fontTheme', fontTheme) } catch { /* ignore */ } }, [fontTheme])
   const themeActive = paperTheme !== 'default' || fontTheme !== 'default'
@@ -301,8 +304,10 @@ export default function NotesPage() {
     let tags: string[] = []
     if (text.startsWith('---\n')) {
       const end = text.indexOf('\n---\n', 4)
-      if (end !== -1) {
-        const fm = text.slice(4, end)
+      const fm = end !== -1 ? text.slice(4, end) : ''
+      // frontmatter とみなすのは「key: value」行を含むときだけ。単なる水平線や
+      // スライド区切り (---) で始まる文書を誤検出して本文を削らないこと。
+      if (end !== -1 && /^[\w-]+\s*:/m.test(fm)) {
         const tm = /^title:\s*(.+)$/m.exec(fm)
         if (tm) title = tm[1].trim()
         const gm = /^tags:\s*(\[.*\])\s*$/m.exec(fm)
@@ -326,13 +331,13 @@ export default function NotesPage() {
   }
   async function importTextFiles(files: File[]) {
     if (!active || files.length === 0) return
-    let lastId: string | null = null
     const failed: string[] = []
+    const notes: Note[] = []
     for (const file of files) {
       let raw: string
       try { raw = await file.text() } catch { failed.push(file.name); continue }
       const parsed = parseImportedText(raw, file.name)
-      const note: Note = {
+      notes.push({
         id: generateId(),
         masterProjectId: active,
         title: parsed.title,
@@ -340,11 +345,13 @@ export default function NotesPage() {
         tags: parsed.tags,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      }
-      dispatch({ type: 'ADD_NOTE', payload: note })
-      lastId = note.id
+      })
     }
-    if (lastId) setSelectedId(lastId)
+    // 複数ファイルでも 1 undo ステップ（複数削除/複製/貼り付けと同じ BATCH 慣例）
+    if (notes.length > 0) {
+      dispatch({ type: 'BATCH', payload: notes.map(n => ({ type: 'ADD_NOTE' as const, payload: n })) })
+      setSelectedId(notes[notes.length - 1].id)
+    }
     if (failed.length > 0) await alertDialog(`読み込めなかったファイル: ${failed.join(', ')}`)
   }
 
@@ -481,7 +488,8 @@ export default function NotesPage() {
       }
       // The preview's images / mermaid blocks settle a moment later and grow the
       // content; re-apply once so the ratio refers to the final height.
-      if (viewMode === 'preview') later(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
+      // hybrid renders the same async content per block, so it needs this too.
+      if (viewMode === 'preview' || viewMode === 'hybrid') later(() => { el.scrollTop = p.ratio * (el.scrollHeight - el.clientHeight) }, 120)
     }
     later(() => apply(0), 0)
     return () => { dead = true; timers.forEach(clearTimeout) }

@@ -50,6 +50,9 @@ export interface TypolMarkdownProps {
 
 const isHttpUrl = (s: string) => /^https?:\/\/\S+$/i.test(s)
 
+// autoGrow 用: field-sizing: content が使えるか（Electron 31 / Chromium 126 は対応）
+const FIELD_SIZING = typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content')
+
 // ── Markdown snippet transforms (mirrors the original MarkdownText menu) ──
 type MdTransform = (v: string, s: number, e: number) => { value: string; selStart: number; selEnd: number }
 
@@ -401,9 +404,11 @@ export function TypolMarkdown({
     editorRef.current?.exec(cmd)
   }
 
-  // autoGrow: textarea を内容の高さに追従させる（value 変化ごとに再計測）。
+  // autoGrow: 基本は CSS の field-sizing: content（.typol-autogrow）に任せる —
+  // 幅変化（パネル開閉・リサイズ）での再折返しにも自動追従し、タイピング毎の
+  // 強制リフローも発生しない。未対応環境だけ JS 計測にフォールバックする。
   useEffect(() => {
-    if (!autoGrow || !effectiveEditing) return
+    if (!autoGrow || !effectiveEditing || FIELD_SIZING) return
     const ta = taRef.current
     if (!ta) return
     ta.style.height = 'auto'
@@ -526,7 +531,7 @@ export function TypolMarkdown({
             }
           }}
           rows={autoGrow ? 1 : undefined}
-          className={`typol-root typol-editor ${autoGrow ? 'overflow-hidden' : 'flex-1 min-h-0'} ${textSize}`}
+          className={`typol-root typol-editor ${autoGrow ? 'typol-autogrow overflow-hidden' : 'flex-1 min-h-0'} ${textSize}`}
         />
         <input
           ref={imgInputRef}
