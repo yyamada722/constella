@@ -146,6 +146,43 @@
   color: var(--wt-pre-ink);
 }
 
+/* ── GitHub — GitHub ダークテーマ (Primer) の実パレット。ほぼ黒の紙に
+   青リンク・#30363d 罫線・#161b22 のコード面。GitHub の Markdown 描画に寄せた
+   600 ウェイト見出し + 左バー引用 ── */
+.wtc-github { background: #0d1117; }
+.wtc-github .typol-root.typol-root {
+  --tp-text: #c9d1d9;
+  --tp-text-mute: #8b949e;
+  --tp-text-soft: #6e7681;
+  --tp-bg-soft: #161b22;
+  --tp-border: #30363d;
+  --tp-border-soft: #21262d;
+  --tp-accent: #58a6ff;
+  --tp-link: #58a6ff;
+  --tp-code-bg: #161b22;
+  --tp-code-border: #30363d;
+  --tp-heading-color: #e6edf3;
+}
+/* GitHub の署名: 見出しは 600 ウェイト（極太にしない）で下線は既定のまま */
+.wtc-github .typol-root.typol-root.typol-preview h1,
+.wtc-github .typol-root.typol-root.typol-preview h2,
+.wtc-github .typol-root.typol-root.typol-preview h3,
+.wtc-github .typol-root.typol-root.typol-preview h4 { font-weight: 600; letter-spacing: normal; }
+/* 引用は面なし・0.25em の左バー・ミュート文字（GitHub の blockquote） */
+.wtc-github .typol-root.typol-root.typol-preview blockquote {
+  background: transparent;
+  border-left: 4px solid #3b434b;
+  border-radius: 0;
+  color: #8b949e;
+}
+/* ==ハイライト== は attention 系の控えめな黄 */
+.wtc-github .typol-root.typol-root.typol-preview mark {
+  background: rgba(187, 128, 9, 0.4);
+  color: #e6edf3;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
 /* ════ フォント ════ */
 
 /* ── 明朝 — 游明朝 / ヒラギノ明朝 ── */
