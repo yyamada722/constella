@@ -13,6 +13,10 @@ import '@fontsource/ibm-plex-sans-jp/700.css'
 import '@fontsource/noto-sans-jp/400.css'
 import '@fontsource/noto-sans-jp/500.css'
 import '@fontsource/noto-sans-jp/700.css'
+// Klee One (教科書体系) — 執筆テーマの「手書き」フォント用。unicode-range 分割
+// なので実際に使うまでグリフはロードされない。
+import '@fontsource/klee-one/400.css'
+import '@fontsource/klee-one/600.css'
 import './index.css'
 // Auto-generated dark-theme remaps (scripts/gen-dark-css.mjs). MUST come after
 // index.css so the :where(.dark) overrides win by source order.
@@ -21,6 +25,8 @@ import './dark-overrides.css'
 // via theme/applyTheme.ts so the user-selected code colorscheme can swap at runtime.
 import 'katex/dist/katex.min.css'
 import './components/typol/typol.css'
+// 執筆テーマ (.wt-*) — typol.css の後に読み込んでトークンを上書きする。
+import './components/typol/writing-themes.css'
 
 // Desktop only: when LAN access serves media to a remote device (iPad), the main
 // process asks this renderer for the bytes (media lives in our IndexedDB). Answer.

@@ -41,6 +41,11 @@ export interface TypolMarkdownProps {
   /** Controlled edit mode. When undefined, the component never auto-toggles
    *  (NotesPage always sets this explicitly). */
   editing?: boolean
+  /** ハイブリッド表示のブロックエディタ用: ツールバー行を出さない。 */
+  hideToolbar?: boolean
+  /** ハイブリッド表示のブロックエディタ用: textarea を内容の高さに自動追従させ、
+   *  内部スクロールさせない（ブロックはページ側がスクロールする）。 */
+  autoGrow?: boolean
 }
 
 const isHttpUrl = (s: string) => /^https?:\/\/\S+$/i.test(s)
@@ -146,6 +151,8 @@ export function TypolMarkdown({
   textSize = 'text-sm',
   extraClass = '',
   editing,
+  hideToolbar,
+  autoGrow,
 }: TypolMarkdownProps) {
   const taRef = useRef<HTMLTextAreaElement | null>(null)
   const plainPasteRef = useRef(false) // Ctrl+Shift+V 直後はリッチ変換をスキップ
@@ -300,6 +307,16 @@ export function TypolMarkdown({
       const a = t?.closest?.('a') as HTMLAnchorElement | null
       if (!a) return
       const href = a.getAttribute('href') ?? ''
+      // ページ内アンカー（脚注 #fn-N / #fnref-N など）: 素通しすると
+      // HashRouter の URL ハッシュを書き換えてルーティングが壊れるので、
+      // プレビュー内の該当要素へのスクロールに変換する。
+      if (href.startsWith('#')) {
+        e.preventDefault()
+        e.stopPropagation()
+        const el = host.querySelector(`[id="${CSS.escape(href.slice(1))}"]`)
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        return
+      }
       if (href.startsWith('wiki:')) {
         e.preventDefault()
         e.stopPropagation()
@@ -384,12 +401,22 @@ export function TypolMarkdown({
     editorRef.current?.exec(cmd)
   }
 
+  // autoGrow: textarea を内容の高さに追従させる（value 変化ごとに再計測）。
+  useEffect(() => {
+    if (!autoGrow || !effectiveEditing) return
+    const ta = taRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    ta.style.height = `${ta.scrollHeight}px`
+  }, [autoGrow, effectiveEditing, value])
+
   // ── Edit mode ──
   // Distinct keys: the preview root carries innerHTML React doesn't own, so it
   // must be unmounted (not reused) when switching to the editor and back.
   if (effectiveEditing) {
     return (
       <div key="edit" className={`flex flex-col min-h-0 ${extraClass}`}>
+        {!hideToolbar && (
         <div
           className="flex items-center gap-0.5 pb-1.5 mb-2 border-b border-slate-200 shrink-0 flex-wrap"
           onMouseDown={e => e.preventDefault()}
@@ -414,6 +441,7 @@ export function TypolMarkdown({
           <TbBtn icon={FileCode2}     onClick={() => exec('codeblock')} title="コードブロック (```)" />
           <TbBtn icon={Minus}         onClick={() => exec('hr')}     title="水平線 (---)" />
         </div>
+        )}
         <textarea
           ref={taRef}
           defaultValue={value}
@@ -497,7 +525,8 @@ export function TypolMarkdown({
               }
             }
           }}
-          className={`typol-root typol-editor flex-1 min-h-0 ${textSize}`}
+          rows={autoGrow ? 1 : undefined}
+          className={`typol-root typol-editor ${autoGrow ? 'overflow-hidden' : 'flex-1 min-h-0'} ${textSize}`}
         />
         <input
           ref={imgInputRef}
