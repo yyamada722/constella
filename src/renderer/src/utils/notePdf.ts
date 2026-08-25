@@ -81,7 +81,9 @@ export async function inlineForPrint(html: string, widthPx: number): Promise<str
         img.remove() // 読めない画像はページを壊さず落とす
       }
     }))
-    await renderMermaidIn(host)
+    // PDF はライトテーマ固定 (MD_PRINT_CSS) — オフスクリーン DOM の背景検出に
+    // 任せず明示的にライト図で描く
+    await renderMermaidIn(host, 'default')
     host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach(box => {
       const glyph = document.createElement('span')
       glyph.className = 'task-glyph' + (box.checked ? ' done' : '')

@@ -1466,9 +1466,11 @@ export default function NotesPage() {
                   /* ライブ (Typora 風) — センタービュー幅のスクローラにブロック列 */
                   <div className="flex-1 min-h-0 overflow-y-auto typol-hybrid-scroll" style={viewVars}>
                     <div className="max-w-[var(--note-maxw)] mx-auto w-full px-8 py-6 min-h-full flex flex-col">
+                      {/* key に紙テーマを含める: 切替時に再マウントして Mermaid 図を
+                          新しい面の明暗で再レンダーする（プレビュー/単一モードも同様） */}
                       <HybridMarkdown
                         ref={hybridMdRef}
-                        key={selectedNote.id + '-hybrid'}
+                        key={`${selectedNote.id}-hybrid-${paperTheme}`}
                         value={selectedNote.content}
                         onChange={v => updateNote({ content: v })}
                         placeholder="ここにメモを書く…（マークダウン対応）"
@@ -1486,7 +1488,7 @@ export default function NotesPage() {
                       placeholder="ここにメモを書く…（マークダウン対応）"
                     />
                     <MarkdownText
-                      key={selectedNote.id + '-preview'}
+                      key={`${selectedNote.id}-preview-${paperTheme}`}
                       value={selectedNote.content}
                       onChange={v => updateNote({ content: v })}
                       editing={false}
@@ -1497,7 +1499,7 @@ export default function NotesPage() {
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0" style={viewVars}>
                     <MarkdownText
-                      key={selectedNote.id}
+                      key={`${selectedNote.id}-${paperTheme}`}
                       value={selectedNote.content}
                       onChange={v => updateNote({ content: v })}
                       editing={viewMode === 'edit'}
