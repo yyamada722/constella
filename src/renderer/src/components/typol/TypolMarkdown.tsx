@@ -420,10 +420,12 @@ export function TypolMarkdown({
   // must be unmounted (not reused) when switching to the editor and back.
   if (effectiveEditing) {
     return (
-      <div key="edit" className={`flex flex-col min-h-0 ${extraClass}`}>
+      // typol-root はトークン(--tp-*)のスコープ供給のため — ツールバーのアイコン色を
+      // 執筆テーマ（ナイト等の固定紙色）やダークテーマに追従させる。
+      <div key="edit" className={`typol-root flex flex-col min-h-0 ${extraClass}`}>
         {!hideToolbar && (
         <div
-          className="flex items-center gap-0.5 pb-1.5 mb-2 border-b border-slate-200 shrink-0 flex-wrap"
+          className="typol-toolbar flex items-center gap-0.5 pb-1.5 mb-2 shrink-0 flex-wrap"
           onMouseDown={e => e.preventDefault()}
         >
           <TbBtn icon={Bold}          onClick={() => exec('bold')}   title="太字 (**) — Ctrl+B" />
@@ -600,7 +602,7 @@ function TbBtn({ icon: Icon, onClick, title }: { icon: LucideIcon; onClick: () =
       title={title}
       onMouseDown={e => e.preventDefault()}
       onClick={onClick}
-      className="p-1 rounded hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors"
+      className="typol-tbbtn p-1 rounded transition-colors"
     >
       <Icon size={14} />
     </button>
@@ -608,5 +610,5 @@ function TbBtn({ icon: Icon, onClick, title }: { icon: LucideIcon; onClick: () =
 }
 
 function TbDivider() {
-  return <div className="w-px h-4 bg-slate-300 mx-0.5" />
+  return <div className="typol-tbdivider w-px h-4 mx-0.5" />
 }
