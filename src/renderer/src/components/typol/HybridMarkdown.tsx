@@ -13,9 +13,16 @@
 //     スマート Enter/Tab・リッチペースト・右クリック挿入メニューが効く。
 //   - プレビューブロックは memo 化し、タイピングでは編集中ブロック以外を
 //     再レンダーしない（長文ノートの入力遅延対策）。
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { TypolMarkdown } from './TypolMarkdown'
 import { updateFence, type FenceState } from '../../utils/mdTask'
+
+export interface HybridMarkdownHandle {
+  /** 全文の 0-based 行番号へジャンプ（アウトライン用）。表示中のブロック構造
+   *  (blocksRef) から行→ブロックを引くので、編集中ブロック内の見出しでも
+   *  同名見出しとズレない。 */
+  jumpToLine: (line: number) => void
+}
 
 interface Block { text: string; sep: string }
 
@@ -79,16 +86,21 @@ const PreviewBlock = memo(function PreviewBlock({ index, text, onBlockChange, on
   )
 })
 
-export function HybridMarkdown({ value, onChange, placeholder }: {
+export const HybridMarkdown = forwardRef<HybridMarkdownHandle, {
   value: string
   onChange?: (next: string) => void
   placeholder?: string
-}) {
+}>(function HybridMarkdown({ value, onChange, placeholder }, ref) {
   const [blocks, setBlocks] = useState<Block[]>(() => splitBlocks(value))
   // 空ノートはいきなり書き始められるよう先頭ブロックをアクティブにする。
   const [active, setActive] = useState<number | null>(() => (value.trim() === '' ? 0 : null))
-  // 次のフォーカスでキャレットをどこへ置くか（ブロック間の矢印移動用）
-  const caretRef = useRef<'start' | 'end'>('end')
+  const activeRef = useRef(active)
+  activeRef.current = active
+  // 次のフォーカスでキャレットをどこへ置くか（'start'/'end' はブロック間の
+  // 矢印移動用、数値は分割直後などの明示オフセット）
+  const caretRef = useRef<'start' | 'end' | number>('end')
+  // 同じ index を再アクティブ化してもフォーカス effect が走るようにするための連番
+  const [focusTick, setFocusTick] = useState(0)
   const lastEmitted = useRef(value)
   const blocksRef = useRef(blocks)
   blocksRef.current = blocks
@@ -105,14 +117,52 @@ export function HybridMarkdown({ value, onChange, placeholder }: {
     setActive(null)
   }, [value])
 
+  const activate = useCallback((i: number, caret: 'start' | 'end' | number) => {
+    caretRef.current = caret
+    setActive(i)
+    setFocusTick(t => t + 1)
+  }, [])
+  const activateFromClick = useCallback((i: number) => activate(i, 'end'), [activate])
+
   const updateBlockText = useCallback((i: number, text: string) => {
+    // 編集中のブロック内に空行（= ブロック境界）ができたら、その場で再分割して
+    // 手前の段落をプレビューへ戻す（Typora の挙動）。解除するまで1ブロックが
+    // 延々と伸び続けないように。キャレットは分割後の該当サブブロックへ引き継ぐ。
+    if (i === activeRef.current && /\n{2,}/.test(text)) {
+      const parts = splitBlocks(text)
+      if (parts.length > 1) {
+        const cur = blocksRef.current
+        const ta = wrapRef.current?.querySelector<HTMLTextAreaElement>(`[data-hybrid-block="${i}"] textarea`)
+        const caret = ta && document.activeElement === ta ? ta.selectionStart : text.length
+        // join(parts) === text（バイト保存）なので、元ブロックの sep は最後の
+        // サブブロックへ付け足せば全文が変わらない。
+        const lastPart = parts[parts.length - 1]
+        parts[parts.length - 1] = { ...lastPart, sep: lastPart.sep + cur[i].sep }
+        const next = [...cur.slice(0, i), ...parts, ...cur.slice(i + 1)]
+        // キャレットを含むサブブロックとブロック内オフセットを求める
+        let acc = 0
+        let sub = parts.length - 1
+        let off = parts[parts.length - 1].text.length
+        for (let k = 0; k < parts.length; k++) {
+          const end = acc + parts[k].text.length
+          if (caret <= end) { sub = k; off = caret - acc; break }
+          acc = end + parts[k].sep.length
+        }
+        setBlocks(next)
+        const joined = join(next)
+        lastEmitted.current = joined
+        onChangeRef.current?.(joined)
+        activate(i + sub, off)
+        return
+      }
+    }
     const next = blocksRef.current.slice()
     next[i] = { ...next[i], text }
     setBlocks(next)
     const joined = join(next)
     lastEmitted.current = joined
     onChangeRef.current?.(joined)
-  }, [])
+  }, [activate])
 
   // アクティブ解除 = ブロック構造の正規化タイミング。確定済みテキスト
   // (lastEmitted) から再分割するので、appendBlock で作った未入力の空ブロック
@@ -122,12 +172,6 @@ export function HybridMarkdown({ value, onChange, placeholder }: {
     setBlocks(splitBlocks(lastEmitted.current))
   }, [])
 
-  const activate = useCallback((i: number, caret: 'start' | 'end') => {
-    caretRef.current = caret
-    setActive(i)
-  }, [])
-  const activateFromClick = useCallback((i: number) => activate(i, 'end'), [activate])
-
   // アクティブ切替後に textarea へフォーカス。キャレット復元は rAF では間に
   // 合わないことがあるので setTimeout(0)（MarkdownText の既知の挙動と同じ）。
   useEffect(() => {
@@ -136,11 +180,63 @@ export function HybridMarkdown({ value, onChange, placeholder }: {
       const ta = wrapRef.current?.querySelector<HTMLTextAreaElement>(`[data-hybrid-block="${active}"] textarea`)
       if (!ta) return
       ta.focus()
-      const pos = caretRef.current === 'start' ? 0 : ta.value.length
+      const c = caretRef.current
+      const pos = typeof c === 'number' ? Math.min(c, ta.value.length) : c === 'start' ? 0 : ta.value.length
       ta.setSelectionRange(pos, pos)
     }, 0)
     return () => clearTimeout(t)
-  }, [active])
+  }, [active, focusTick])
+
+  // アウトラインからのジャンプ: 全文の行番号 → 表示中のブロック構造で解決する。
+  // DOM の見出しテキスト一致に頼らないので、編集中ブロック（h要素が無い）や
+  // 同名見出しが混ざっていてもズレない。
+  useImperativeHandle(ref, () => ({
+    jumpToLine: (line: number) => {
+      const bs = blocksRef.current
+      const nl = (s: string) => (s.match(/\n/g)?.length ?? 0)
+      // ブロック k のテキストは行 [L, L+nl(text)] を占める（sep は改行のみ）
+      let L = 0
+      let bi = -1
+      let local = 0
+      for (let k = 0; k < bs.length; k++) {
+        const tn = nl(bs[k].text)
+        if (line <= L + tn) { bi = k; local = line - L; break }
+        L += tn + nl(bs[k].sep)
+      }
+      if (bi === -1) { bi = bs.length - 1; local = nl(bs[bi].text) }
+      const blockEl = wrapRef.current?.querySelector<HTMLElement>(`[data-hybrid-block="${bi}"]`)
+      if (!blockEl) return
+      const scroller = blockEl.closest<HTMLElement>('.typol-hybrid-scroll')
+      if (bi === activeRef.current) {
+        // 編集中ブロック: 見出し行を選択してスクローラをその行へ寄せる
+        const ta = blockEl.querySelector('textarea')
+        if (ta) {
+          const lines = ta.value.split('\n')
+          let pos = 0
+          for (let k = 0; k < local && k < lines.length; k++) pos += lines[k].length + 1
+          ta.focus({ preventScroll: true })
+          ta.setSelectionRange(pos, pos + (lines[local]?.length ?? 0))
+          if (scroller) {
+            const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22
+            const top = blockEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+            scroller.scrollTo({ top: Math.max(0, top + local * lh - 60), behavior: 'smooth' })
+          }
+          return
+        }
+      }
+      // プレビューブロック: ブロック内で local 行より手前にある見出しの数 = n 番目の h 要素
+      let fence: FenceState | null = null
+      let nth = 0
+      const tls = bs[bi].text.split('\n')
+      for (let k = 0; k < local && k < tls.length; k++) {
+        const nextF = updateFence(fence, tls[k])
+        if (fence === null && nextF === fence && /^#{1,6}\s+\S/.test(tls[k])) nth++
+        fence = nextF
+      }
+      const el = blockEl.querySelectorAll('h1,h2,h3,h4,h5,h6')[nth] ?? blockEl
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    },
+  }), [])
 
   // 末尾の余白クリック → 最後に新しいブロックを開いて書き始める。
   // この時点では emit しない（クリックだけでノート本文や updatedAt を
@@ -201,4 +297,4 @@ export function HybridMarkdown({ value, onChange, placeholder }: {
       <div className="flex-1 min-h-16 cursor-text" onClick={appendBlock} />
     </div>
   )
-}
+})

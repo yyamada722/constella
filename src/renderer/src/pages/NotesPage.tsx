@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo, useRef, useDeferredValue } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote, Paperclip, PanelLeftClose, PanelLeftOpen, FileUp, Palette, Check, PenLine } from 'lucide-react'
+import { Plus, Trash2, Tag, Pencil, Eye, Columns2, FolderKanban, Folder, FolderPlus, ChevronDown, ChevronRight, Star, Archive, ArchiveRestore, Download, ArrowDownAZ, Minus, Type, Share2, Unlink, FileDown, Presentation, Loader2, Search, X, ChevronUp, ListTree, Link2, FileText, StickyNote, Paperclip, PanelLeftClose, PanelLeftOpen, FileUp, Palette, Check, PenLine, MoveHorizontal } from 'lucide-react'
 import { useApp } from '../store'
 import { Note, NoteFolder, CanvasCard } from '../types'
 import { NoteAttachments } from '../components/NoteAttachments'
 import { generateId } from '../utils'
 import { TypolMarkdown as MarkdownText } from '../components/typol/TypolMarkdown'
-import { HybridMarkdown } from '../components/typol/HybridMarkdown'
+import { HybridMarkdown, type HybridMarkdownHandle } from '../components/typol/HybridMarkdown'
 import { NoteMinimap } from '../components/NoteMinimap'
 import { BOARD_COLOR_CLASSES, boardColorFor } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
@@ -22,7 +22,7 @@ import { usePopoverDismiss } from '../components/usePopoverDismiss'
 // 執筆面（エディタ+プレビュー）の見た目を、カラー（紙色と配色）とフォントの
 // 独立した2軸で切り替える。実体は writing-themes.css の .wtc-* / .wtf-* クラス
 // （typol.css の --tp-* を上書き）。paper / ink / font はスウォッチ表示用。
-type PaperTheme = 'default' | 'ladder' | 'sepia' | 'kinari' | 'vivid' | 'night'
+type PaperTheme = 'default' | 'ladder' | 'sepia' | 'kinari' | 'vivid' | 'night' | 'github'
 type FontTheme = 'default' | 'mincho' | 'klee' | 'mono'
 const PAPER_THEMES: { id: PaperTheme; name: string; desc: string; paper: string; ink: string }[] = [
   { id: 'default', name: '標準', desc: 'アプリのテーマに従う', paper: '#ffffff', ink: '#1e293b' },
@@ -31,6 +31,7 @@ const PAPER_THEMES: { id: PaperTheme; name: string; desc: string; paper: string;
   { id: 'kinari', name: '生成り', desc: 'あたたかいオフホワイト', paper: '#f7f6f3', ink: '#37352f' },
   { id: 'vivid', name: 'ポップ', desc: 'Sneh風 — ピンク見出し×カラフル', paper: '#fafaff', ink: '#ff3399' },
   { id: 'night', name: 'ナイト', desc: 'Ladder風ダーク — スレート×空色', paper: '#1e293b', ink: '#e2e8f0' },
+  { id: 'github', name: 'GitHub', desc: 'GitHub Dark風 — ほぼ黒×青リンク', paper: '#0d1117', ink: '#58a6ff' },
 ]
 const FONT_THEMES: { id: FontTheme; name: string; desc: string; font: string }[] = [
   { id: 'default', name: 'ゴシック', desc: '標準のサンセリフ', font: 'ui-sans-serif, "Hiragino Sans", "Yu Gothic UI", sans-serif' },
@@ -84,10 +85,23 @@ export default function NotesPage() {
     } catch { return 1 }
   })
   useEffect(() => { try { localStorage.setItem('constella.notes.fontScale', String(fontScale)) } catch { /* ignore */ } }, [fontScale])
-  const fontVars = useMemo(() => ({
+
+  // 本文カラムの最大幅 (rem)。ライブ/編集/プレビューの3モード共通で、
+  // WIDTH_FULL (999) は「全幅」= 制限なし。--note-maxw 経由で各モードに配る。
+  const WIDTH_MIN = 28, WIDTH_MAX = 72, WIDTH_STEP = 4, WIDTH_DEFAULT = 46, WIDTH_FULL = 999
+  const [noteWidth, setNoteWidth] = useState<number>(() => {
+    try {
+      const v = parseInt(localStorage.getItem('constella.notes.width') || String(WIDTH_DEFAULT), 10)
+      return Number.isFinite(v) && ((v >= WIDTH_MIN && v <= WIDTH_MAX) || v === WIDTH_FULL) ? v : WIDTH_DEFAULT
+    } catch { return WIDTH_DEFAULT }
+  })
+  useEffect(() => { try { localStorage.setItem('constella.notes.width', String(noteWidth)) } catch { /* ignore */ } }, [noteWidth])
+
+  const viewVars = useMemo(() => ({
     '--tp-edit-size': `${Math.round(14 * fontScale)}px`,
     '--tp-preview-size': `${Math.round(15 * fontScale)}px`,
-  }) as React.CSSProperties, [fontScale])
+    '--note-maxw': noteWidth >= WIDTH_FULL ? '100%' : `${noteWidth}rem`,
+  }) as React.CSSProperties, [fontScale, noteWidth])
 
   // 執筆テーマ — グローバルに記憶（ノートごとではなくユーザーの好み）。
   // localStorage 読み + 旧設定移行は1回だけ実行し、両stateで共有する。
@@ -595,9 +609,12 @@ export default function NotesPage() {
     return out
   }, [outlineOpen, selectedNote])
 
+  const hybridMdRef = useRef<HybridMarkdownHandle>(null)
   const jumpToHeading = (h: { text: string; line: number }, idx: number) => {
-    // hybrid はブロックごとに .typol-preview が分かれるのでスクローラ全域から探す
-    const prev = viewMode === 'hybrid' ? hybridEl() : document.querySelector('.typol-preview')
+    // hybrid はブロック構造ベースの行ジャンプ（編集中ブロック内の見出しや
+    // 同名見出しでも DOM テキスト一致に頼らずズレない）
+    if (viewMode === 'hybrid') { hybridMdRef.current?.jumpToLine(h.line); return }
+    const prev = document.querySelector('.typol-preview')
     if (prev) {
       const els = [...prev.querySelectorAll('h1,h2,h3,h4,h5,h6')]
       // 同名見出しが複数ある場合に備え、n番目の同名を選ぶ（テキスト一致優先、崩れたら index）
@@ -606,8 +623,6 @@ export default function NotesPage() {
       const el = sameText[nth] ?? sameText[0] ?? els[idx]
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-    // hybrid ではアクティブブロックの textarea は全文オフセットと一致しない
-    if (viewMode === 'hybrid') return
     const ta = editorTa()
     const content = selectedNoteRef.current?.content
     if (ta && content != null) {
@@ -1126,6 +1141,26 @@ export default function NotesPage() {
                   className="p-1 text-slate-500 hover:bg-slate-100"
                 ><Plus size={13} /></button>
               </div>
+              {/* 本文幅アジャスター — ライブ/編集/プレビューの本文カラム幅 */}
+              <div className="ml-1 flex items-center rounded-md border border-slate-200 overflow-hidden text-xs shrink-0">
+                <button
+                  onClick={() => setNoteWidth(w => w >= WIDTH_FULL ? WIDTH_MAX : Math.max(WIDTH_MIN, w - WIDTH_STEP))}
+                  title="本文の幅を狭く"
+                  className="p-1 text-slate-500 hover:bg-slate-100"
+                ><Minus size={13} /></button>
+                <button
+                  onClick={() => setNoteWidth(WIDTH_DEFAULT)}
+                  title={`本文の幅 — 現在 ${noteWidth >= WIDTH_FULL ? '全幅' : noteWidth}。クリックで標準(${WIDTH_DEFAULT})に戻す`}
+                  className="px-1.5 text-[10px] text-slate-600 hover:bg-slate-100 min-w-[42px] flex items-center justify-center gap-1"
+                >
+                  <MoveHorizontal size={11} /> {noteWidth >= WIDTH_FULL ? '全幅' : noteWidth}
+                </button>
+                <button
+                  onClick={() => setNoteWidth(w => w >= WIDTH_MAX ? WIDTH_FULL : Math.min(WIDTH_MAX, w + WIDTH_STEP))}
+                  title="本文の幅を広く（最大で全幅）"
+                  className="p-1 text-slate-500 hover:bg-slate-100"
+                ><Plus size={13} /></button>
+              </div>
               {/* 執筆テーマ — カラー（紙色）とフォントを独立に切替 */}
               <div className="relative shrink-0" ref={themeMenuRef}>
                 <button
@@ -1430,10 +1465,13 @@ export default function NotesPage() {
               <div className={`flex-1 flex flex-col min-h-0 min-w-0 ${themeClass}`}>
                 {viewMode === 'hybrid' ? (
                   /* ライブ (Typora 風) — センタービュー幅のスクローラにブロック列 */
-                  <div className="flex-1 min-h-0 overflow-y-auto typol-hybrid-scroll" style={fontVars}>
-                    <div className="max-w-[46rem] mx-auto w-full px-8 py-6 min-h-full flex flex-col">
+                  <div className="flex-1 min-h-0 overflow-y-auto typol-hybrid-scroll" style={viewVars}>
+                    <div className="max-w-[var(--note-maxw)] mx-auto w-full px-8 py-6 min-h-full flex flex-col">
+                      {/* key に紙テーマを含める: 切替時に再マウントして Mermaid 図を
+                          新しい面の明暗で再レンダーする（プレビュー/単一モードも同様） */}
                       <HybridMarkdown
-                        key={selectedNote.id + '-hybrid'}
+                        ref={hybridMdRef}
+                        key={`${selectedNote.id}-hybrid-${paperTheme}`}
                         value={selectedNote.content}
                         onChange={v => updateNote({ content: v })}
                         placeholder="ここにメモを書く…（マークダウン対応）"
@@ -1441,7 +1479,7 @@ export default function NotesPage() {
                     </div>
                   </div>
                 ) : viewMode === 'split' ? (
-                  <div className="flex-1 flex min-h-0 overflow-hidden" style={fontVars}>
+                  <div className="flex-1 flex min-h-0 overflow-hidden" style={viewVars}>
                     <MarkdownText
                       key={selectedNote.id + '-edit'}
                       value={selectedNote.content}
@@ -1451,7 +1489,7 @@ export default function NotesPage() {
                       placeholder="ここにメモを書く…（マークダウン対応）"
                     />
                     <MarkdownText
-                      key={selectedNote.id + '-preview'}
+                      key={`${selectedNote.id}-preview-${paperTheme}`}
                       value={selectedNote.content}
                       onChange={v => updateNote({ content: v })}
                       editing={false}
@@ -1460,15 +1498,16 @@ export default function NotesPage() {
                     />
                   </div>
                 ) : (
-                  <div className="flex-1 flex flex-col min-h-0" style={fontVars}>
+                  <div className="flex-1 flex flex-col min-h-0" style={viewVars}>
                     <MarkdownText
-                      key={selectedNote.id}
+                      key={`${selectedNote.id}-${paperTheme}`}
                       value={selectedNote.content}
                       onChange={v => updateNote({ content: v })}
                       editing={viewMode === 'edit'}
                       // プレビューはライブと同じセンタービュー幅。.typol-preview 自体が
                       // スクローラなので、要素ごと中央寄せする（scroll復元/ミニマップ互換）。
-                      extraClass={viewMode === 'edit' ? 'flex-1 min-h-0 px-6 py-4' : 'flex-1 min-h-0 px-8 py-6 w-full max-w-[46rem] mx-auto'}
+                      // 編集も同じ幅指定に従う（textarea が自前スクロールする点は不変）。
+                      extraClass={viewMode === 'edit' ? 'flex-1 min-h-0 px-6 py-4 w-full max-w-[var(--note-maxw)] mx-auto' : 'flex-1 min-h-0 px-8 py-6 w-full max-w-[var(--note-maxw)] mx-auto'}
                       placeholder="ここにメモを書く…（マークダウン対応）"
                     />
                   </div>

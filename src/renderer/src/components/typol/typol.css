@@ -24,6 +24,17 @@
   --tp-heading-color: var(--tp-text);
 }
 
+/* ===== Toolbar (edit mode) =====
+   Tailwind の slate 固定色ではなくトークンで塗る — ナイト等の固定紙色の執筆
+   テーマでもアイコンが紙色に沈まない（親の .typol-root がトークンを供給）。 */
+.typol-toolbar { border-bottom: 1px solid var(--tp-border); }
+.typol-tbbtn { color: var(--tp-text-mute); }
+.typol-tbbtn:hover {
+  color: var(--tp-text);
+  background: color-mix(in oklab, var(--tp-text) 12%, transparent);
+}
+.typol-tbdivider { background: var(--tp-border); }
+
 /* ===== Editor (textarea) ===== */
 .typol-root.typol-editor {
   width: 100%;

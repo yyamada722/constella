@@ -6,9 +6,11 @@
  * SVG cache, which is invalidated when the theme changes.
  */
 type MermaidApi = typeof import("mermaid").default;
+export type MermaidTheme = "default" | "dark";
 
 let mermaidPromise: Promise<MermaidApi> | null = null;
-let currentTheme: "default" | "dark" = "default";
+let initTheme: MermaidTheme = "default";
+// key = theme + "\0" + source — 同じ図でも面の明暗ごとに別レンダー
 const cache = new Map<string, string>();
 
 async function getMermaid(): Promise<MermaidApi> {
@@ -16,7 +18,7 @@ async function getMermaid(): Promise<MermaidApi> {
     mermaidPromise = import("mermaid").then((m) => {
       m.default.initialize({
         startOnLoad: false,
-        theme: currentTheme,
+        theme: initTheme,
         securityLevel: "strict",
         fontFamily: "inherit",
       });
@@ -26,37 +28,53 @@ async function getMermaid(): Promise<MermaidApi> {
   return mermaidPromise;
 }
 
-export function setMermaidTheme(theme: "light" | "dark") {
-  const t = theme === "dark" ? "dark" : "default";
-  if (t === currentTheme) return;
-  currentTheme = t;
+/** アプリテーマ切替時のキャッシュ掃除。テーマはキャッシュキーに含まれるので
+ *  衝突はしないが、使われなくなった面の SVG を溜め込まないために呼ぶ。 */
+export function setMermaidTheme(_theme: "light" | "dark") {
   cache.clear();
-  if (mermaidPromise) {
-    mermaidPromise.then((m) =>
-      m.initialize({
-        startOnLoad: false,
-        theme: t,
-        securityLevel: "strict",
-        fontFamily: "inherit",
-      })
-    );
-  }
 }
 
-export async function renderMermaidIn(root: HTMLElement) {
+/** ブロックが実際に描かれる面（最初の不透明背景）の輝度でテーマを決める。
+ *  執筆テーマの固定紙色（ナイト等）はアプリのライト/ダークと独立なので、
+ *  html.dark ではなく実際の背景色を見る必要がある。 */
+function surfaceTheme(el: HTMLElement): MermaidTheme {
+  let node: HTMLElement | null = el;
+  while (node) {
+    const bg = getComputedStyle(node).backgroundColor;
+    // rgb()/rgba() と、color-mix 由来の color(srgb r g b / a) の両対応
+    let r = -1, g = 0, b = 0, a = 1;
+    let m = /^rgba?\(([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\)/.exec(bg);
+    if (m) {
+      r = +m[1]; g = +m[2]; b = +m[3]; a = m[4] === undefined ? 1 : +m[4];
+    } else if ((m = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)(?:\s*\/\s*([\d.]+))?\)/.exec(bg))) {
+      r = +m[1] * 255; g = +m[2] * 255; b = +m[3] * 255; a = m[4] === undefined ? 1 : +m[4];
+    }
+    // 半透明の面（ハイブリッドのホバー色など）は透かして親の面で判定する
+    if (r >= 0 && a > 0.5) {
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128 ? "dark" : "default";
+    }
+    node = node.parentElement;
+  }
+  return document.documentElement.classList.contains("dark") ? "dark" : "default";
+}
+
+/** forceTheme: PDF 書き出しのようにスタイルがライト固定の経路で、オフスクリーン
+ *  DOM の背景検出に頼らず明示指定するためのオプション。 */
+export async function renderMermaidIn(root: HTMLElement, forceTheme?: MermaidTheme) {
   const blocks = root.querySelectorAll<HTMLElement>(".mermaid-block:not([data-rendered])");
   if (blocks.length === 0) return;
 
   // Fast-path from cache.
-  const remaining: HTMLElement[] = [];
+  const remaining: { block: HTMLElement; source: string; theme: MermaidTheme }[] = [];
   for (const block of blocks) {
     const source = decodeSource(block);
-    const cached = cache.get(source);
+    const theme = forceTheme ?? surfaceTheme(block);
+    const cached = cache.get(theme + "\0" + source);
     if (cached) {
       block.innerHTML = cached;
       block.dataset.rendered = "1";
     } else {
-      remaining.push(block);
+      remaining.push({ block, source, theme });
     }
   }
   if (remaining.length === 0) return;
@@ -65,18 +83,26 @@ export async function renderMermaidIn(root: HTMLElement) {
   try {
     mermaid = await getMermaid();
   } catch (e) {
-    for (const block of remaining) errorOut(block, e);
+    for (const r of remaining) errorOut(r.block, e);
     return;
   }
 
-  for (const block of remaining) {
-    const source = decodeSource(block);
+  for (const { block, source, theme } of remaining) {
+    if (theme !== initTheme) {
+      initTheme = theme;
+      mermaid.initialize({
+        startOnLoad: false,
+        theme,
+        securityLevel: "strict",
+        fontFamily: "inherit",
+      });
+    }
     const id = "mmd-" + Math.random().toString(36).slice(2, 10);
     try {
       const { svg } = await mermaid.render(id, source);
       block.innerHTML = svg;
       block.dataset.rendered = "1";
-      cache.set(source, svg);
+      cache.set(theme + "\0" + source, svg);
     } catch (e) {
       errorOut(block, e);
     }
