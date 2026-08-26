@@ -30,6 +30,25 @@ contextBridge.exposeInMainWorld('api', {
   replyRemoteMedia: (reqId: string, bytes: Uint8Array | null, mime?: string): void => {
     ipcRenderer.send('remote:media-reply', reqId, bytes, mime ?? '')
   },
+  // 他マシンとの同期(同期フォルダ方式): フォルダ内ファイルの読み書きは main が担当し、
+  // push/pull/競合の判定はレンダラー(persistence/folderSync.ts)が行う。
+  sync: {
+    get: (): Promise<unknown> => ipcRenderer.invoke('sync:get'),
+    configure: (patch: { folder?: string | null; enabled?: boolean; deviceName?: string }): Promise<unknown> =>
+      ipcRenderer.invoke('sync:configure', patch),
+    pickFolder: (): Promise<string | null> => ipcRenderer.invoke('sync:pick-folder'),
+    setDirty: (dirty: boolean): Promise<void> => ipcRenderer.invoke('sync:set-dirty', dirty),
+    inspect: (): Promise<unknown> => ipcRenderer.invoke('sync:inspect'),
+    push: (gen: number, expectPrev: number): Promise<unknown> => ipcRenderer.invoke('sync:push', gen, expectPrev),
+    pull: (expectedGen: number): Promise<unknown> => ipcRenderer.invoke('sync:pull', expectedGen),
+    listRemoteMedia: (): Promise<string[]> => ipcRenderer.invoke('sync:list-remote-media'),
+    readRemoteMedia: (name: string): Promise<{ bytes: Uint8Array; mime: string } | null> =>
+      ipcRenderer.invoke('sync:read-remote-media', name),
+    writeRemoteMedia: (id: string, bytes: Uint8Array, mime: string): Promise<boolean> =>
+      ipcRenderer.invoke('sync:write-remote-media', id, bytes, mime),
+    backupConflict: (source: 'local' | 'remote'): Promise<string | null> =>
+      ipcRenderer.invoke('sync:backup-conflict', source),
+  },
   // AI assistant — Anthropic Claude API proxied through main (key never enters the renderer).
   ai: {
     getSettings: (): Promise<{ hasKey: boolean; model: string }> => ipcRenderer.invoke('ai:get-settings'),

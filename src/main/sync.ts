@@ -1,0 +1,317 @@
+// ── 他マシンとの同期(同期フォルダ方式) — main 側のファイル入出力 ──
+// OneDrive/Dropbox/NAS などユーザーが選んだ「同期フォルダ」を媒介に、
+//   constella-sync.json … マニフェスト(世代番号 gen・押した端末・DBのSHA-256)
+//   constella.db        … DB スナップショット(丸ごと)
+//   media/<id>.<ext>    … メディア実体(追加専用 — 上書き・削除はしない)
+// を運ぶ。行レベルのマージはしない(1台ずつ使う前提)。push/pull/競合の判定は
+// レンダラー(persistence/folderSync.ts)が行い、ここはフォルダ内に閉じた
+// ファイル操作と検証だけを担当する。
+//
+// クラウドドライブはファイルを任意の順序で転送するため、「マニフェストだけ先に
+// 届いて DB がまだ古い」瞬間がある。マニフェストに DB の SHA-256 を焼き込み、
+// pull 時に実ファイルと照合することで、不整合スナップショットを取り込まない。
+import { app, ipcMain, dialog, BrowserWindow } from 'electron'
+import { join } from 'path'
+import { readFile, writeFile, mkdir, rename, readdir, stat, copyFile, unlink } from 'fs/promises'
+import { createHash, randomBytes } from 'crypto'
+import { hostname } from 'os'
+
+export interface SyncManifest {
+  app: 'constella'
+  version: 1
+  gen: number // Lamport 世代番号 — push のたびに +1
+  deviceId: string
+  deviceName: string
+  pushedAt: string
+  dbSize: number
+  dbSha256: string
+}
+
+// このマシンの同期状態。userData/sync.json に永続化。
+interface SyncSettings {
+  folder: string | null
+  enabled: boolean
+  deviceId: string
+  deviceName: string
+  lastGen: number // このマシンが最後に push/pull した世代
+  lastLocalEtag: string // その時点のローカル DB の etag(mtime-size)
+  lastSha: string // その時点の DB の SHA-256 — 同時 push 事故(クラウドの競合コピー)の検知用
+  lastSyncAt: string | null
+  // 前回の同期以降に「実際の編集」があったか。レンダラーが編集時に立て、push 完了で
+  // 下ろす(pull は main が下ろす)。etag ではなくこのフラグで dirty を判定する —
+  // 起動のたびの再シリアライズで DB ファイルが書き換わっても、編集していなければ
+  // クリーン扱いにするため(でないと A終了→B編集→A起動 の正常フローが毎回ニセ競合になる)。
+  dirty: boolean
+}
+
+interface SyncDeps {
+  dbPath: () => string
+  backupsDir: () => string
+  writeDbAtomic: (buf: Buffer) => Promise<void>
+  getMainWindow: () => BrowserWindow | null
+}
+
+const MANIFEST_NAME = 'constella-sync.json'
+const DB_NAME = 'constella.db'
+const MEDIA_DIR = 'media'
+const MEDIA_NAME_RE = /^[A-Za-z0-9]+\.[a-z0-9]{1,8}$/
+const MEDIA_READ_MAX = 512 * 1024 * 1024
+const CONFLICT_BACKUP_KEEP = 5
+
+// メディアはフォルダ内で人間が見ても分かるよう MIME 由来の拡張子を付ける。
+// 未知の MIME は .bin(復元時は octet-stream 扱い — 表示側は DB 側の mime を使う)。
+const EXT_BY_MIME: Record<string, string> = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+  'image/avif': 'avif', 'image/bmp': 'bmp', 'image/svg+xml': 'svg',
+  'application/pdf': 'pdf',
+  'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov', 'video/x-matroska': 'mkv', 'video/ogg': 'ogv',
+  'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/flac': 'flac', 'audio/aac': 'aac',
+  'text/plain': 'txt', 'application/json': 'json', 'application/zip': 'zip',
+}
+const MIME_BY_EXT: Record<string, string> = Object.fromEntries(Object.entries(EXT_BY_MIME).map(([m, e]) => [e, m]))
+
+// クラウドフォルダは NAS 同様に「応答しない」ことがあり、await が UI を道連れに
+// するので全 I/O に締め切りを付ける(タイムアウトは reject — 呼び出し側で失敗扱い)。
+function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms)
+    work.then(v => { clearTimeout(timer); resolve(v) }, e => { clearTimeout(timer); reject(e) })
+  })
+}
+
+const sha256 = (buf: Buffer): string => createHash('sha256').update(buf).digest('hex')
+const etagOf = async (p: string): Promise<string> => {
+  try { const s = await stat(p); return `${Math.floor(s.mtimeMs)}-${s.size}` } catch { return '' }
+}
+
+// tmp に書いて rename — クラウドクライアントに書きかけを拾われない & 中断で壊れない。
+async function writeAtomic(target: string, data: Buffer | string): Promise<void> {
+  const tmp = `${target}.tmp-${randomBytes(4).toString('hex')}`
+  await writeFile(tmp, data)
+  await rename(tmp, target)
+}
+
+export function initSync(deps: SyncDeps): void {
+  const settingsPath = (): string => join(app.getPath('userData'), 'sync.json')
+
+  async function loadSettings(): Promise<SyncSettings> {
+    let raw: Partial<SyncSettings> = {}
+    try { raw = JSON.parse(await readFile(settingsPath(), 'utf8')) } catch { /* first run */ }
+    return {
+      folder: typeof raw.folder === 'string' ? raw.folder : null,
+      enabled: !!raw.enabled,
+      deviceId: typeof raw.deviceId === 'string' && raw.deviceId ? raw.deviceId : randomBytes(8).toString('hex'),
+      deviceName: typeof raw.deviceName === 'string' && raw.deviceName ? raw.deviceName : hostname(),
+      lastGen: typeof raw.lastGen === 'number' ? raw.lastGen : 0,
+      lastLocalEtag: typeof raw.lastLocalEtag === 'string' ? raw.lastLocalEtag : '',
+      lastSha: typeof raw.lastSha === 'string' ? raw.lastSha : '',
+      lastSyncAt: typeof raw.lastSyncAt === 'string' ? raw.lastSyncAt : null,
+      dirty: !!raw.dirty,
+    }
+  }
+  async function saveSettings(s: SyncSettings): Promise<void> {
+    try { await writeFile(settingsPath(), JSON.stringify(s, null, 2)) } catch { /* best-effort */ }
+  }
+
+  const folderDbPath = (folder: string): string => join(folder, DB_NAME)
+  const mediaDirPath = (folder: string): string => join(folder, MEDIA_DIR)
+
+  async function readManifest(folder: string): Promise<{ manifest: SyncManifest | null; unreadable: boolean }> {
+    let raw: string
+    try {
+      raw = await withDeadline(readFile(join(folder, MANIFEST_NAME), 'utf8'), 15_000)
+    } catch (e) {
+      // ENOENT = まだ一度も push されていないフォルダ(正常)。それ以外は読めない扱い。
+      return { manifest: null, unreadable: (e as NodeJS.ErrnoException).code !== 'ENOENT' }
+    }
+    try {
+      const m = JSON.parse(raw) as SyncManifest
+      if (m && m.app === 'constella' && typeof m.gen === 'number' && m.gen > 0 && typeof m.dbSha256 === 'string') {
+        return { manifest: m, unreadable: false }
+      }
+    } catch { /* 部分的に転送済みの JSON 等 */ }
+    return { manifest: null, unreadable: true }
+  }
+
+  ipcMain.handle('sync:get', async () => await loadSettings())
+
+  // 「前回同期以降に実編集があった」フラグ。レンダラーが編集時に true、
+  // push 完了(かつ push 後に新たな編集が無いと確認)で false にする。
+  ipcMain.handle('sync:set-dirty', async (_e, dirty: boolean) => {
+    const s = await loadSettings()
+    if (s.dirty !== !!dirty) await saveSettings({ ...s, dirty: !!dirty })
+  })
+
+  ipcMain.handle('sync:configure', async (_e, patch: { folder?: string | null; enabled?: boolean; deviceName?: string }) => {
+    const cur = await loadSettings()
+    const next: SyncSettings = { ...cur }
+    if (patch.folder !== undefined && patch.folder !== cur.folder) {
+      // フォルダが変わったら世代の対応関係もリセット(新フォルダとは未同期)。
+      next.folder = patch.folder
+      next.lastGen = 0
+      next.lastLocalEtag = ''
+      next.lastSha = ''
+      next.lastSyncAt = null
+      next.dirty = false
+    }
+    if (patch.enabled !== undefined) next.enabled = !!patch.enabled
+    if (patch.deviceName !== undefined && patch.deviceName.trim()) next.deviceName = patch.deviceName.trim().slice(0, 40)
+    await saveSettings(next)
+    return next
+  })
+
+  ipcMain.handle('sync:pick-folder', async (): Promise<string | null> => {
+    const win = deps.getMainWindow()
+    if (!win || win.isDestroyed()) return null
+    const r = await dialog.showOpenDialog(win, {
+      title: '同期フォルダを選択(OneDrive / Dropbox / NAS など)',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0]
+  })
+
+  // 判定に必要な材料をひとまとめに返す(判定そのものはレンダラー側)。
+  ipcMain.handle('sync:inspect', async () => {
+    const s = await loadSettings()
+    const localEtag = await etagOf(deps.dbPath())
+    const out = {
+      configured: !!s.folder,
+      enabled: s.enabled,
+      folder: s.folder,
+      deviceName: s.deviceName,
+      lastGen: s.lastGen,
+      lastSha: s.lastSha,
+      lastSyncAt: s.lastSyncAt,
+      localEtag,
+      dirty: s.dirty,
+      folderOk: false,
+      manifest: null as SyncManifest | null,
+      manifestUnreadable: false,
+    }
+    if (!s.folder) return out
+    try { out.folderOk = await withDeadline(stat(s.folder).then(x => x.isDirectory()), 8_000) } catch { out.folderOk = false }
+    if (!out.folderOk) return out
+    const m = await readManifest(s.folder)
+    out.manifest = m.manifest
+    out.manifestUnreadable = m.unreadable
+    return out
+  })
+
+  // ローカル DB スナップショットをフォルダへ書き、マニフェストを最後に書く
+  // (マニフェストの rename がコミットポイント)。
+  ipcMain.handle('sync:push', async (_e, gen: number, expectPrev: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
+    const s = await loadSettings()
+    if (!s.folder || typeof gen !== 'number' || gen <= 0) return { ok: false, error: 'not-configured' }
+    try {
+      // 判定時点からフォルダ側が進んでいたら押さない(他マシンの push を上書きしない)。
+      const prev = await readManifest(s.folder)
+      const prevGen = prev.manifest ? prev.manifest.gen : 0
+      if (typeof expectPrev === 'number' && prevGen !== expectPrev) return { ok: false, error: 'changed' }
+      // etag は読み出し前に取る: 読んだバイト列より新しい保存の etag を「同期済み」と
+      // 記録すると、その保存分の push が漏れる(逆向きのズレは余分な push で済む)。
+      const etag = await etagOf(deps.dbPath())
+      const buf = await withDeadline(readFile(deps.dbPath()), 30_000)
+      if (buf.length === 0) return { ok: false, error: 'empty-db' }
+      const sha = sha256(buf)
+      // フォルダ側と中身が同一なら世代を上げず記録だけ更新(起動のたびの
+      // 再シリアライズで gen が空回りしないように)。
+      if (prev.manifest && prev.manifest.dbSha256 === sha) {
+        await saveSettings({ ...s, lastGen: prev.manifest.gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: new Date().toISOString() })
+        return { ok: true, manifest: prev.manifest }
+      }
+      await mkdir(s.folder, { recursive: true })
+      await withDeadline(writeAtomic(folderDbPath(s.folder), buf), 120_000)
+      const manifest: SyncManifest = {
+        app: 'constella', version: 1, gen,
+        deviceId: s.deviceId, deviceName: s.deviceName,
+        pushedAt: new Date().toISOString(), dbSize: buf.length, dbSha256: sha,
+      }
+      await withDeadline(writeAtomic(join(s.folder, MANIFEST_NAME), JSON.stringify(manifest, null, 2)), 30_000)
+      await saveSettings({ ...s, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt })
+      return { ok: true, manifest }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // フォルダのスナップショットをローカル DB に取り込む。SHA 照合で「クラウドが
+  // まだ運びかけの DB」を拒否(error:'inconsistent' → レンダラーは後で再試行)。
+  ipcMain.handle('sync:pull', async (_e, expectedGen: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
+    const s = await loadSettings()
+    if (!s.folder) return { ok: false, error: 'not-configured' }
+    try {
+      const { manifest } = await readManifest(s.folder)
+      if (!manifest || manifest.gen !== expectedGen) return { ok: false, error: 'changed' }
+      const buf = await withDeadline(readFile(folderDbPath(s.folder)), 120_000)
+      if (buf.length !== manifest.dbSize || sha256(buf) !== manifest.dbSha256) return { ok: false, error: 'inconsistent' }
+      if (!buf.subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) return { ok: false, error: 'inconsistent' }
+      await deps.writeDbAtomic(buf)
+      const etag = await etagOf(deps.dbPath())
+      // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
+      await saveSettings({ ...s, lastGen: manifest.gen, lastLocalEtag: etag, lastSha: manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false })
+      return { ok: true, manifest }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('sync:list-remote-media', async (): Promise<string[]> => {
+    const s = await loadSettings()
+    if (!s.folder) return []
+    try {
+      const names = await withDeadline(readdir(mediaDirPath(s.folder)), 15_000)
+      return names.filter(n => MEDIA_NAME_RE.test(n))
+    } catch { return [] }
+  })
+
+  ipcMain.handle('sync:read-remote-media', async (_e, name: string): Promise<{ bytes: Buffer; mime: string } | null> => {
+    const s = await loadSettings()
+    if (!s.folder || typeof name !== 'string' || !MEDIA_NAME_RE.test(name)) return null
+    const p = join(mediaDirPath(s.folder), name)
+    try {
+      const meta = await withDeadline(stat(p), 8_000)
+      if (!meta.isFile() || meta.size > MEDIA_READ_MAX) return null
+      const bytes = await withDeadline(readFile(p), 120_000)
+      const ext = name.slice(name.lastIndexOf('.') + 1)
+      return { bytes, mime: MIME_BY_EXT[ext] ?? 'application/octet-stream' }
+    } catch { return null }
+  })
+
+  ipcMain.handle('sync:write-remote-media', async (_e, id: string, bytes: Uint8Array, mime: string): Promise<boolean> => {
+    const s = await loadSettings()
+    if (!s.folder || typeof id !== 'string' || !/^[A-Za-z0-9]+$/.test(id) || !bytes?.length) return false
+    const ext = EXT_BY_MIME[String(mime)] ?? 'bin'
+    try {
+      const dir = mediaDirPath(s.folder)
+      await mkdir(dir, { recursive: true })
+      const target = join(dir, `${id}.${ext}`)
+      // 追加専用: 既にあれば書かない(id は不変なので中身も同一のはず)。
+      try { await stat(target); return true } catch { /* not yet */ }
+      await withDeadline(writeAtomic(target, Buffer.from(bytes)), 120_000)
+      return true
+    } catch { return false }
+  })
+
+  // 競合解決で「負けた側」の DB を db-backups へ退避 — どちらを選んでもデータは残る。
+  ipcMain.handle('sync:backup-conflict', async (_e, source: 'local' | 'remote'): Promise<string | null> => {
+    const s = await loadSettings()
+    const src = source === 'local' ? deps.dbPath() : s.folder ? folderDbPath(s.folder) : null
+    if (!src) return null
+    const d = new Date()
+    const pad = (n: number): string => String(n).padStart(2, '0')
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+    const dir = deps.backupsDir()
+    const name = `constella-conflict-${stamp}.db`
+    try {
+      await mkdir(dir, { recursive: true })
+      await withDeadline(copyFile(src, join(dir, name)), 60_000)
+    } catch { return null }
+    try {
+      const names = (await readdir(dir)).filter(n => /^constella-conflict-\d{8}-\d{6}\.db$/.test(n)).sort()
+      for (const n of names.slice(0, Math.max(0, names.length - CONFLICT_BACKUP_KEEP))) {
+        try { await unlink(join(dir, n)) } catch { /* best-effort prune */ }
+      }
+    } catch { /* ignore */ }
+    return name
+  })
+}

@@ -9,6 +9,7 @@ import HelpModal, { type HelpRequest } from './components/HelpModal'
 import { UpdateNotifier } from './components/UpdateNotifier'
 import { useApp } from './store'
 import { isRemote, isElectron } from './persistence/runtime'
+import { useFolderSyncStatus, manualFolderSync } from './persistence/folderSync'
 import MobileApp from './mobile/MobileApp'
 import { useStore as useMindtrainStore } from './mindtrain/store/useStore'
 import NotesPage from './pages/NotesPage'
@@ -65,29 +66,38 @@ function MindtrainBridge() {
   return null
 }
 
-// Manual "pull latest from server" button — shown top-right only when LAN access is
-// relevant (this is a remote client, or the desktop has the server enabled). The
-// reload-on-focus is automatic; this lets you force a refresh without switching apps.
+// Manual sync button — shown when LAN access is relevant (remote client / server
+// enabled) OR when folder sync (他マシンとの同期) is enabled. The automatic checks
+// run on focus; this lets you force a refresh without switching apps.
 function SyncButton() {
   const { syncNow } = useApp()
-  const [active, setActive] = useState(isRemote)
+  const folderSync = useFolderSyncStatus()
+  const [lanActive, setLanActive] = useState(isRemote)
   const [busy, setBusy] = useState(false)
   useEffect(() => {
-    if (isRemote) { setActive(true); return }
+    if (isRemote) { setLanActive(true); return }
     const api = (window as unknown as { api?: { remote?: { status: () => Promise<{ enabled: boolean }> } } }).api?.remote
-    api?.status().then(s => setActive(s.enabled)).catch(() => { /* ignore */ })
-    const onEvt = (e: Event) => setActive(!!(e as CustomEvent).detail?.enabled)
+    api?.status().then(s => setLanActive(s.enabled)).catch(() => { /* ignore */ })
+    const onEvt = (e: Event) => setLanActive(!!(e as CustomEvent).detail?.enabled)
     window.addEventListener('constella-remote', onEvt)
     return () => window.removeEventListener('constella-remote', onEvt)
   }, [])
-  if (!active) return null
+  if (!lanActive && !folderSync.enabled) return null
+  const spinning = busy || folderSync.phase === 'pushing' || folderSync.phase === 'pulling' || folderSync.phase === 'checking'
   return (
     <button
-      onClick={async () => { if (busy) return; setBusy(true); try { await syncNow() } finally { setBusy(false) } }}
-      title="サーバの最新データを取得（同期）"
+      onClick={async () => {
+        if (busy) return
+        setBusy(true)
+        try {
+          if (lanActive) await syncNow()
+          if (folderSync.enabled) await manualFolderSync()
+        } finally { setBusy(false) }
+      }}
+      title={folderSync.enabled ? '同期フォルダと今すぐ同期' : 'サーバの最新データを取得（同期）'}
       className="fixed bottom-4 right-4 z-40 flex items-center gap-1.5 px-3 py-2 rounded-full bg-white/90 backdrop-blur border border-slate-200 shadow-md text-xs font-medium text-slate-600 hover:text-indigo-600 hover:border-indigo-300 transition-colors"
     >
-      <RefreshCw size={14} className={busy ? 'animate-spin' : ''} /> 同期
+      <RefreshCw size={14} className={spinning ? 'animate-spin' : ''} /> 同期
     </button>
   )
 }

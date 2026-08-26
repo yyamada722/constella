@@ -584,6 +584,14 @@ export function restoreState(state: AppState): Promise<void> {
   return enqueueSaveState(state)
 }
 
+/**
+ * Wait until every queued save has been flushed to storage. The folder-sync
+ * push reads the on-disk DB file, so it must not run while a save is in flight.
+ */
+export function drainSaves(): Promise<void> {
+  return saveChain.then(() => undefined, () => undefined)
+}
+
 async function doSaveState(state: AppState): Promise<void> {
   const db = await getDb()
   // Defensive: an imported legacy backup (pre-master-project) may lack newer

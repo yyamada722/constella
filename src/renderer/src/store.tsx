@@ -4,6 +4,7 @@ import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNot
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
+import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit } from './persistence/folderSync'
 import { generateId } from './utils'
 
 // The single default master project that all pre-existing data is migrated under.
@@ -947,6 +948,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Latest committed state, for flushing on teardown without re-subscribing.
   const latest = useRef(history.present)
   latest.current = history.present
+  // 同期フォルダの状態(競合バナーの表示に使う)。
+  const folderSync = useFolderSyncStatus()
   // Version token of the DB as we last loaded/saved it — used to detect when another
   // device (iPad over the LAN) changed it so we reload on focus. Guards re-entrancy.
   const lastEtag = useRef('')
@@ -973,6 +976,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true
     ;(async () => {
+      // 他マシンとの同期(同期フォルダ): ロード前にチェックし、フォルダ側が進んで
+      // いれば DB ファイルを差し替えてから読む(hydrate 前なのでリロード不要)。
+      if (!isRemote) {
+        initFolderSync({
+          getLiveRefs: async () => {
+            const refs = collectMediaRefs(latest.current)
+            try {
+              const mt = await loadKv('mindtrain')
+              const m = mt?.match(/idb:[A-Za-z0-9]+/g)
+              if (m) refs.push(...m)
+            } catch { /* ignore */ }
+            return refs
+          },
+        })
+        try { await startupFolderSync() } catch { /* 同期の失敗で起動を止めない */ }
+      }
       let loaded: AppState | null
       try {
         loaded = await loadState()
@@ -1003,6 +1022,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!alive) return
       dispatch({ type: '__HYDRATE', payload: loaded })
       setHydrated(true)
+      // hydrate 後にメディアの差分転送(参照が出そろってから)と未送信分の push。
+      if (!isRemote) checkFolderSync('post-hydrate').catch(() => { /* ignore */ })
       // If the DB was auto-restored from a backup (corruption at load time),
       // surface it as a dismissible banner. (Not alert(): Electron's blocking
       // alert during boot is unreliable and would freeze first paint.)
@@ -1014,12 +1035,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Persist to SQLite (debounced). Never write before hydration or after a load
   // failure, or we'd clobber the stored data.
+  // 初回実行(HYDRATE 直後の保存)は「編集」ではないので同期の dirty には数えない。
+  const firstAutosaveRun = useRef(true)
   useEffect(() => {
     if (!hydrated || loadFailed) return
+    if (firstAutosaveRun.current) firstAutosaveRun.current = false
+    else if (!isRemote) markFolderSyncEdit()
     const id = setTimeout(() => {
       saveState(history.present)
         .then(() => dbEtag())
         .then(e => { if (e) lastEtag.current = e })
+        .then(() => { if (!isRemote) scheduleFolderPush() }) // 同期フォルダへの送信は少し待ってまとめる
         .catch(() => { /* ignore */ })
     }, 400)
     return () => clearTimeout(id)
@@ -1029,7 +1055,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // edit made within the 400ms debounce window isn't lost on reload/quit.
   useEffect(() => {
     if (!hydrated || loadFailed) return
-    const flush = () => { saveState(latest.current).then(() => dbEtag()).then(e => { if (e) lastEtag.current = e }).catch(() => { /* ignore */ }) }
+    const flush = () => {
+      saveState(latest.current)
+        .then(() => dbEtag())
+        .then(e => { if (e) lastEtag.current = e })
+        // 席を立つ(別マシンに移る)タイミングで同期フォルダにも送っておく。
+        .then(() => { if (!isRemote) return checkFolderSync('blur').then(() => undefined) })
+        .catch(() => { /* ignore */ })
+    }
     const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
     window.addEventListener('pagehide', flush)
     // 'blur' = the window lost focus (e.g. user picked up the iPad): flush now so the
@@ -1066,6 +1099,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     document.addEventListener('visibilitychange', onVis)
     return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis) }
   }, [hydrated, loadFailed, reloadFromServer])
+
+  // 同期フォルダのフォーカス時チェック: 別マシンが押した新世代があれば取り込む。
+  // 無効時は checkFolderSync 自身が即 no-op になるのでリスナーは常設でよい。
+  useEffect(() => {
+    if (!hydrated || loadFailed || isRemote) return
+    const onFocus = () => { checkFolderSync('focus').catch(() => { /* ignore */ }) }
+    const onVis = () => { if (document.visibilityState === 'visible') onFocus() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVis)
+    return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis) }
+  }, [hydrated, loadFailed])
 
   const value = useMemo(() => ({
     state: history.present,
@@ -1110,6 +1154,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
           >
             ×
           </button>
+        </div>
+      )}
+      {folderSync.phase === 'conflict' && folderSync.conflict && (
+        <div
+          data-folder-sync-conflict-banner="1"
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] max-w-[620px] px-4 py-3 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-900 text-xs shadow-lg"
+        >
+          <div className="flex items-start gap-2">
+            <span className="font-semibold shrink-0">⇄ 同期</span>
+            <span className="flex-1">
+              {folderSync.conflict.initial
+                ? 'この同期フォルダには既にデータがあります。どちらの内容から始めますか?'
+                : `「${folderSync.conflict.remoteDeviceName}」の変更とこのPCの変更が両方あります。どちらを採用しますか?`}
+              {' '}採用されなかった側は自動でバックアップに退避されます。
+              {folderSync.message && <span className="block mt-1 text-rose-600">{folderSync.message}</span>}
+            </span>
+          </div>
+          <div className="mt-2 flex items-center gap-2 justify-end">
+            <button
+              onClick={() => { resolveFolderSyncConflict('remote').catch(() => { /* ignore */ }) }}
+              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px]"
+              title="同期フォルダの内容でこのPCのデータを置き換えます(現在の内容は退避されます)"
+            >
+              {folderSync.conflict.initial ? '同期フォルダの内容を取り込む(推奨)' : '同期フォルダを採用'}
+            </button>
+            <button
+              onClick={() => { resolveFolderSyncConflict('local').catch(() => { /* ignore */ }) }}
+              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px]"
+              title="このPCの内容を同期フォルダへ送ります(フォルダ側は退避されます)"
+            >
+              {folderSync.conflict.initial ? 'このPCの内容で開始' : 'このPCを採用'}
+            </button>
+          </div>
         </div>
       )}
     </AppContext.Provider>
