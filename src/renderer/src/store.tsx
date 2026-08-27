@@ -134,6 +134,11 @@ export type Action =
   // 複製・貼り付け・一括削除など）。historyReducer は BATCH を1アクションとして
   // 見るので、past には適用前のスナップショットが1つだけ積まれる。
   | { type: 'BATCH'; payload: Action[] }
+  // 作業ファイル(受け渡し)の取り込み/返却マージ用の汎用パッチ。呼び出し側
+  // (persistence/handoff.ts)が計算済みの配列で該当コレクションを置き換える。
+  // historyReducer は1アクション=1スナップショットなので、取り込みもマージも
+  // Ctrl+Z 一発で丸ごと戻せる。
+  | { type: 'APPLY_STATE_PATCH'; payload: Partial<AppState> }
 
 const now = new Date().toISOString()
 
@@ -224,6 +229,7 @@ const initialState: AppState = {
 
 function reducer(state: AppState, action: Action): AppState {
   if (action.type === 'BATCH') return action.payload.reduce(reducer, state)
+  if (action.type === 'APPLY_STATE_PATCH') return { ...state, ...action.payload }
   switch (action.type) {
     case 'ADD_MASTER_PROJECT':
       // Ignore a re-add of an existing id: the mindtrain reconciliation can fire
@@ -817,7 +823,9 @@ function readLegacyState(): AppState | null {
 
 // All live media references: card media URLs plus idb: images embedded in any
 // Markdown text (card/page content, note content, task/research descriptions).
-function collectMediaRefs(s: AppState): string[] {
+// exported: 作業ファイル(handoff)の書き出しが部分状態に対しても同じ規則で
+// メディアを集めるのに使う。
+export function collectMediaRefs(s: AppState): string[] {
   const refs: string[] = []
   const scan = (text?: string) => {
     const m = text?.match(/idb:[A-Za-z0-9]+/g)
@@ -950,6 +958,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   latest.current = history.present
   // 同期フォルダの状態(競合バナーの表示に使う)。
   const folderSync = useFolderSyncStatus()
+
+  // E2E・デバッグ用の内部フック(ローカルアプリなので露出リスクは無い)。
+  // 実データの編集をUI操作なしで注入できるので、受け渡しマージ等の自動検証に使う。
+  useEffect(() => {
+    ;(window as unknown as Record<string, unknown>).__constella = { dispatch, getState: () => latest.current }
+  }, [])
   // Version token of the DB as we last loaded/saved it — used to detect when another
   // device (iPad over the LAN) changed it so we reload on focus. Guards re-entrancy.
   const lastEtag = useRef('')

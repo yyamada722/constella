@@ -1,11 +1,12 @@
 import { useState, useRef, useEffect, Fragment } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus, ArrowUpCircle, RefreshCw, Files, CircleHelp } from 'lucide-react'
+import { FileText, FolderKanban, Globe, Search, Settings, LayoutDashboard, Download, Upload, TrainFront, Boxes, ChevronDown, ChevronRight, Check, Pencil, Plus, Trash2, Brush, Wifi, PanelLeftClose, PanelLeftOpen, Activity, Palette, GitBranch, Map, Pin, Archive, ArchiveRestore, Folder, FolderInput, FolderMinus, ArrowUpCircle, RefreshCw, Files, CircleHelp, Package } from 'lucide-react'
 import { useApp } from '../store'
 import { useStore as useMindtrainStore } from '../mindtrain/store/useStore'
 import { exportBackup, importBackup } from '../persistence/backup'
 import { generateId } from '../utils'
 import { SettingsModal } from './SettingsModal'
+import { HandoffModal } from './HandoffModal'
 import { confirmDialog } from './ConfirmDialog'
 import { updateApi, useUpdateState } from './UpdateNotifier'
 
@@ -70,6 +71,7 @@ export default function Sidebar() {
   const { state, dispatch } = useApp()
   const [menuOpen, setMenuOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [handoffOpen, setHandoffOpen] = useState(false)
   // 新版がある(またはDL完了)とき、歯車ボタンにドットを出して気付けるようにする。
   const { state: updState } = useUpdateState()
   const updatePending = updState.phase === 'available' || updState.phase === 'downloaded'
@@ -660,6 +662,9 @@ export default function Sidebar() {
               </button>
               <UpdateMenuRow />
               <div className="h-px bg-slate-200 my-1" />
+              <button onClick={() => { setHandoffOpen(true); setMenuOpen(false) }} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100">
+                <Package size={15} /> 作業ファイル(受け渡し)…
+              </button>
               <button onClick={doExport} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-100">
                 <Download size={15} /> バックアップを書き出し
               </button>
@@ -672,6 +677,7 @@ export default function Sidebar() {
         )}
         <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={e => onImportFile(e.target.files?.[0])} />
         <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+        <HandoffModal open={handoffOpen} onClose={() => setHandoffOpen(false)} />
         <button
           onClick={() => setMenuOpen(o => !o)}
           title={expanded ? '' : (busy ?? '設定 / バックアップ')}
