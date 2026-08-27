@@ -1,12 +1,14 @@
 import { useState, useRef, useCallback, useEffect, memo, useMemo, createElement, forwardRef, useImperativeHandle } from 'react'
+import { createPortal } from 'react-dom'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus, Files as FilesGlyph } from 'lucide-react'
+import { Plus, ZoomIn, ZoomOut, Maximize, FileText, StickyNote, CheckSquare, Globe, Lightbulb, Trash2, List, LayoutGrid, X, ExternalLink, FileDown, Image as ImageIcon, MousePointer2, ArrowUpRight, Frame, Pencil, Eraser, Type, Video, Undo2, Redo2, Grid3x3, Copy, AlignStartVertical, AlignCenterVertical, AlignEndVertical, AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal, AlignHorizontalSpaceBetween, AlignVerticalSpaceBetween, BringToFront, SendToBack, Ban, Lock, Unlock, ClipboardPaste, Spline, Map as MapIcon, Crop, AudioLines, Play, Pause, ImageDown, FolderKanban, ChevronDown, Check, BookmarkPlus, Clock, CornerDownLeft, Link2, Camera, Layers, SkipBack, SkipForward, GripVertical, TrainFront, Unlink, Search, ListTodo, ListChecks, Volume2, VolumeX, Shapes, Brush, Share2, ChevronRight, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, SlidersHorizontal, FolderPlus, Files as FilesGlyph, CalendarDays, ChevronLeft } from 'lucide-react'
 import { useApp, type Action } from '../store'
 import { CanvasCard, CanvasTab, CanvasBoard, CardPage, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Bookmark, Task, Note, Project, ShapeKind, PortDir, Sketch } from '../types'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
+import { doingTotalMs, fmtDoingDuration } from '../utils/doingTime'
 import { fileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
 import { MarkdownText } from '../components/MarkdownText'
@@ -207,12 +209,19 @@ function ShapeGlyph({ kind }: { kind: ShapeKind }) {
 
 /* ── タスク下書きカード body ── */
 
+const DRAFT_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
 const TaskDraftCardBody = memo(function TaskDraftCardBody({ card, onUpdate, onSelect, locked }: {
   card: CanvasCard
   onUpdate: (updates: Partial<CanvasCard>) => void
   onSelect?: () => void
   locked: boolean
 }) {
+  // 対象月 picker — portaled to <body> (fixed coords) because the card lives
+  // inside the zoom/pan transform, which would hijack position:fixed.
+  const [monthPicker, setMonthPicker] = useState<{ x: number; y: number; year: number } | null>(null)
+  const monthBtnRef = useRef<HTMLButtonElement>(null)
+  const monthPopRef = usePopoverDismiss<HTMLDivElement>(!!monthPicker, () => setMonthPicker(null), monthBtnRef)
   return (
     <div className="flex-1 min-h-0 flex flex-col gap-1.5 px-3 py-2">
       <input
@@ -238,21 +247,66 @@ const TaskDraftCardBody = memo(function TaskDraftCardBody({ card, onUpdate, onSe
         autoFocus={!card.title && !locked && Date.now() - new Date(card.createdAt).getTime() < 3000}
         className="w-full bg-transparent text-[12px] font-medium text-slate-800 outline-none border-b border-transparent focus:border-yellow-400 placeholder-slate-400"
       />
-      <div className="flex flex-wrap gap-1 mt-auto">
+      <div className="flex flex-wrap items-center gap-1 mt-auto">
+        {/* 対象月 — same grammar as the フロー page: 今月(自動) or an absolute year+month. */}
+        <button
+          ref={monthBtnRef}
+          disabled={locked}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation()
+            const r = e.currentTarget.getBoundingClientRect()
+            setMonthPicker(mp => mp ? null : { x: r.left, y: r.bottom + 4, year: card.draftYear ?? new Date().getFullYear() })
+          }}
+          title="対象の月を選ぶ（今月＝自動で当月/翌月）"
+          className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-md border text-[9px] transition-colors ${card.draftMonth ? 'border-yellow-500 text-yellow-800 bg-yellow-400/20 font-semibold' : 'border-slate-200 text-slate-400 hover:border-yellow-400 hover:text-yellow-700'}`}
+        >
+          <CalendarDays size={10} />{card.draftMonth ? (card.draftYear ? `${card.draftYear}/${card.draftMonth}` : `${card.draftMonth}月`) : '今月'}
+        </button>
         {DRAFT_WHEN_OPTIONS.map(o => (
           <button
             key={o.key}
             disabled={locked}
             onMouseDown={e => e.stopPropagation()}
             onClick={e => { e.stopPropagation(); onUpdate({ draftWhen: card.draftWhen === o.key ? undefined : o.key }) }}
-            title={`目安: ${draftWhenToEndDate(o.key)}`}
+            title={`目安: ${draftWhenToEndDate(o.key, card.draftMonth, card.draftYear)}`}
             className={`px-1.5 py-0.5 rounded-full text-[9px] border transition-colors ${card.draftWhen === o.key ? 'bg-yellow-400/30 border-yellow-500 text-yellow-800 font-semibold' : 'border-slate-200 text-slate-400 hover:border-yellow-400 hover:text-yellow-700'}`}
           >{o.label}</button>
         ))}
       </div>
       <div className="text-[9px] text-slate-400 truncate">
-        {card.draftWhen ? `期日目安 ${draftWhenToEndDate(card.draftWhen)}` : 'Tab=子 / Enter=兄弟 / 下端子で親子付け'}
+        {card.draftWhen ? `期日目安 ${draftWhenToEndDate(card.draftWhen, card.draftMonth, card.draftYear)}` : 'Tab=子 / Enter=兄弟 / 下端子で親子付け'}
       </div>
+      {monthPicker && createPortal(
+        <div
+          ref={monthPopRef}
+          className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl p-2 w-[176px]"
+          style={{ left: monthPicker.x, top: monthPicker.y }}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => e.stopPropagation()}
+          onContextMenu={e => e.preventDefault()}
+        >
+          <button
+            onClick={() => { onUpdate({ draftMonth: undefined, draftYear: undefined }); setMonthPicker(null) }}
+            className={`w-full mb-1 px-2 py-1 rounded text-[11px] text-left ${card.draftMonth == null ? 'bg-yellow-400/20 text-yellow-800 font-semibold' : 'hover:bg-slate-100 text-slate-600'}`}
+          >今月（自動）</button>
+          <div className="flex items-center justify-between mb-1 px-0.5">
+            <button onClick={() => setMonthPicker(mp => mp ? { ...mp, year: mp.year - 1 } : mp)} title="前の年" className="p-0.5 rounded hover:bg-slate-100 text-slate-500"><ChevronLeft size={14} /></button>
+            <span className="text-[12px] font-semibold text-slate-700 tabular-nums">{monthPicker.year}年</span>
+            <button onClick={() => setMonthPicker(mp => mp ? { ...mp, year: mp.year + 1 } : mp)} title="次の年" className="p-0.5 rounded hover:bg-slate-100 text-slate-500"><ChevronRight size={14} /></button>
+          </div>
+          <div className="grid grid-cols-4 gap-1">
+            {DRAFT_MONTHS.map(m => (
+              <button
+                key={m}
+                onClick={() => { onUpdate({ draftMonth: m, draftYear: monthPicker.year }); setMonthPicker(null) }}
+                className={`px-1 py-1.5 rounded text-[11px] text-center transition-colors ${card.draftMonth === m && card.draftYear === monthPicker.year ? 'bg-yellow-500 text-white font-semibold' : 'hover:bg-yellow-50 text-slate-600 hover:text-yellow-700'}`}
+              >{m}月</button>
+            ))}
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   )
 })
@@ -3018,7 +3072,7 @@ export default function CanvasPage() {
     const ordered = [...drafts].sort((a, b) => depthOf(a.id) - depthOf(b.id))
     const idMap = new Map(drafts.map(d => [d.id, generateId()]))
     for (const d of ordered) {
-      const endDate = draftWhenToEndDate(d.draftWhen)
+      const endDate = draftWhenToEndDate(d.draftWhen, d.draftMonth, d.draftYear)
       const p = parentOf.get(d.id)
       const parentId = p?.draft ? idMap.get(p.draft) : p?.existing
       const task: Task = {
@@ -3038,7 +3092,7 @@ export default function CanvasPage() {
     for (const d of drafts) {
       dispatch({
         type: 'UPDATE_CANVAS_CARD',
-        payload: { ...d, type: 'todo', refTaskId: idMap.get(d.id)!, draftWhen: undefined, title: (d.title || '').trim() || '無題タスク' },
+        payload: { ...d, type: 'todo', refTaskId: idMap.get(d.id)!, draftWhen: undefined, draftMonth: undefined, draftYear: undefined, title: (d.title || '').trim() || '無題タスク' },
       })
     }
     setConvertOpen(false)
@@ -7145,6 +7199,15 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
               {(linkedTask.startDate || linkedTask.endDate) && (
                 <span className="font-mono">{linkedTask.startDate ?? '…'} 〜 {linkedTask.endDate ?? '…'}</span>
               )}
+              {(() => {
+                const total = doingTotalMs(linkedTask)
+                if (total < 60_000 && linkedTask.status !== 'in-progress') return null
+                return (
+                  <span className={`inline-flex items-center gap-0.5 ${linkedTask.status === 'in-progress' ? 'text-amber-600' : 'text-slate-400'}`} title="進行中だった時間の累計">
+                    <Clock size={9} />{fmtDoingDuration(total)}
+                  </span>
+                )
+              })()}
             </div>
             <MarkdownText
               key={linkedTask.id}

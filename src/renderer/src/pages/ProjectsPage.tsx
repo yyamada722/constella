@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip } from 'lucide-react'
+import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip, Timer } from 'lucide-react'
 import { useApp } from '../store'
 import { Task, Project, BoardColor } from '../types'
 import { generateId } from '../utils'
@@ -9,6 +9,8 @@ import { BOARD_COLOR_CLASSES, ALL_BOARD_COLORS, boardColorFor } from '../utils/b
 import { SearchInput } from '../components/SearchInput'
 import LinkedNotesField from '../components/LinkedNotesField'
 import LinkedFilesField from '../components/LinkedFilesField'
+import DoingTimeField from '../components/DoingTimeField'
+import { doingTotalMs, fmtDoingDuration } from '../utils/doingTime'
 import NotePanel from '../components/NotePanel'
 import { confirmDialog, chooseDialog } from '../components/ConfirmDialog'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
@@ -1167,6 +1169,7 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
             }}
           />
         </div>
+        <DoingTimeField task={task} onPatch={p => onUpdate({ ...task, ...p })} />
         <LinkedNotesField task={task} onChange={ids => onUpdate({ ...task, linkedNoteIds: ids.length > 0 ? ids : undefined })} />
         <LinkedFilesField task={task} onChange={ids => onUpdate({ ...task, fileIds: ids.length > 0 ? ids : undefined })} />
         {otherBoards.length > 0 && (
@@ -1353,6 +1356,19 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
           )}
         </p>
       )}
+      {(() => {
+        // 進行中の累計時間 chip — shown once the task has ever spent measurable
+        // time in 'in-progress' (or is currently running).
+        const doingTotal = doingTotalMs(task)
+        if (doingTotal < 60_000 && task.status !== 'in-progress') return null
+        const running = task.status === 'in-progress' && !!task.doingSince
+        return (
+          <p className={`text-[10px] mt-1 inline-flex items-center gap-1 ${running ? 'text-amber-600' : 'text-slate-400'}`}
+             title={`進行中だった時間の累計${running ? '（計測中）' : ''}`}>
+            <Timer size={10} />{fmtDoingDuration(doingTotal)}{running && <span className="text-[8px]">計測中</span>}
+          </p>
+        )
+      })()}
       {mode === 'tree' && hasChildren && (
         <div className="mt-2 flex items-center gap-2">
           {/* Tri-segment progress bar: emerald(done) | amber(doing) | slate(remaining todo).

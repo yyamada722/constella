@@ -9,6 +9,7 @@ import { holidayNameFor } from '../utils/jpHolidays'
 import { generateId } from '../utils'
 import LinkedNotesField from '../components/LinkedNotesField'
 import LinkedFilesField from '../components/LinkedFilesField'
+import DoingTimeField from '../components/DoingTimeField'
 
 const ROW_H = 30
 const LEFT_W_DEFAULT = 280
@@ -786,7 +787,11 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
             ) : (
               <select
                 value={editing.row.task.status}
-                onChange={e => { patchTask(editing.row, { status: e.target.value as Task['status'] }); setEditing(s => s ? { ...s, row: { ...s.row, task: { ...s.row.task, status: e.target.value as Task['status'] } } } : s) }}
+                // The reducer owns the 進行中 clock (doingMs/doingSince) on status
+                // transitions — drop them from the local snapshot so later patches
+                // from this popover don't overwrite the reducer's bookkeeping with
+                // stale values.
+                onChange={e => { const v = e.target.value as Task['status']; patchTask(editing.row, { status: v }); setEditing(s => s ? { ...s, row: { ...s.row, task: { ...s.row.task, status: v, doingMs: undefined, doingSince: undefined } } } : s) }}
                 className="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs outline-none focus:border-emerald-400"
               >
                 <option value="todo">未着手</option>
@@ -794,6 +799,12 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
                 <option value="done">完了</option>
               </select>
             )}
+          </div>
+          <div className="mb-2 px-0.5">
+            <DoingTimeField
+              task={(boards.find(b => b.id === editing.row.board.id)?.tasks.find(t => t.id === editing.row.task.id)) ?? editing.row.task}
+              onPatch={p => { patchTask(editing.row, p); setEditing(s => s ? { ...s, row: { ...s.row, task: { ...s.row.task, ...p } } } : s) }}
+            />
           </div>
           {/* Parent picker — can be any task across visible boards (cross-board parenting). */}
           {(() => {

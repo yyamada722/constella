@@ -449,9 +449,11 @@ function reducer(state: AppState, action: Action): AppState {
       // land in state with a completion timestamp — otherwise anything that sorts
       // by completedAt (or displays "✓ YYYY-MM-DD") silently drops them.
       const raw = action.payload.task
-      const task = raw.status === 'done' && !raw.completedAt
+      let task = raw.status === 'done' && !raw.completedAt
         ? { ...raw, completedAt: new Date().toISOString() }
         : raw
+      // Likewise start the 進行中 clock for tasks born in 'in-progress'.
+      if (task.status === 'in-progress' && !task.doingSince) task = { ...task, doingSince: new Date().toISOString() }
       return {
         ...state,
         projects: state.projects.map(p =>
@@ -475,13 +477,32 @@ function reducer(state: AppState, action: Action): AppState {
             tasks: p.tasks.map(t => {
               if (t.id !== action.payload.task.id) return t
               const next = action.payload.task
+              const now = new Date()
               const wasDone = t.status === 'done'
               const isDone = next.status === 'done'
-              if (!wasDone && isDone && !next.completedAt) return { ...next, completedAt: new Date().toISOString() }
-              if (wasDone && !isDone) return { ...next, completedAt: undefined }
+              let completedAt = next.completedAt
+              if (!wasDone && isDone && !completedAt) completedAt = now.toISOString()
+              else if (wasDone && !isDone) completedAt = undefined
               // Same-state 'done' updates: preserve existing completedAt when payload omits it.
-              if (wasDone && isDone && !next.completedAt && t.completedAt) return { ...next, completedAt: t.completedAt }
-              return next
+              else if (wasDone && isDone && !completedAt) completedAt = t.completedAt
+              // 進行中 cumulative clock. Payload values win (manual 手修正); when the
+              // payload omits them, carry the stored values so partial updates from a
+              // stale snapshot don't blank the counter. Transitions are derived from
+              // the STORE's previous status, so every status-change path accumulates
+              // here without callers having to know about the clock.
+              const wasDoing = t.status === 'in-progress'
+              const isDoing = next.status === 'in-progress'
+              let doingMs = next.doingMs ?? t.doingMs
+              let doingSince = next.doingSince ?? t.doingSince
+              if (wasDoing && !isDoing && t.doingSince) {
+                const seg = now.getTime() - Date.parse(t.doingSince)
+                doingMs = (doingMs ?? 0) + (Number.isFinite(seg) && seg > 0 ? seg : 0)
+              }
+              // Entering 'in-progress' always re-stamps the segment start — a stale
+              // doingSince carried in a snapshot payload must not backdate the clock.
+              if (!isDoing) doingSince = undefined
+              else if (!wasDoing) doingSince = now.toISOString()
+              return { ...next, completedAt, doingMs, doingSince }
             }),
           }
         }),
@@ -500,13 +521,39 @@ function reducer(state: AppState, action: Action): AppState {
         canvasCards: state.canvasCards.filter(c => c.refTaskId !== taskId),
       }
     }
-    case 'SET_PROJECT_TASKS':
+    case 'SET_PROJECT_TASKS': {
+      // Bulk task replacement (kanban D&D reorder/column drop, flow conversion,
+      // subtree moves). Column drops change status here — not via UPDATE_TASK —
+      // so the 進行中 clock transitions must be mirrored. Tasks with no previous
+      // entry in this project (moved in from another board, freshly converted)
+      // are left untouched: their status didn't transition.
+      const prevProject = state.projects.find(p => p.id === action.payload.projectId)
+      const prevById = new Map((prevProject?.tasks ?? []).map(t => [t.id, t]))
+      const nowIso = () => new Date().toISOString()
+      const tasks = action.payload.tasks.map(next => {
+        const prev = prevById.get(next.id)
+        if (!prev || prev.status === next.status) return next
+        const out = { ...next }
+        const wasDoing = prev.status === 'in-progress'
+        const isDoing = next.status === 'in-progress'
+        if (wasDoing && !isDoing && prev.doingSince) {
+          const seg = Date.now() - Date.parse(prev.doingSince)
+          out.doingMs = (out.doingMs ?? 0) + (Number.isFinite(seg) && seg > 0 ? seg : 0)
+        }
+        if (!isDoing) out.doingSince = undefined
+        else if (!wasDoing) out.doingSince = nowIso()
+        // Mirror UPDATE_TASK's completedAt auto-stamp for status changes made here.
+        if (prev.status !== 'done' && next.status === 'done' && !out.completedAt) out.completedAt = nowIso()
+        else if (prev.status === 'done' && next.status !== 'done') out.completedAt = undefined
+        return out
+      })
       return {
         ...state,
         projects: state.projects.map(p =>
-          p.id === action.payload.projectId ? { ...p, tasks: action.payload.tasks } : p
+          p.id === action.payload.projectId ? { ...p, tasks } : p
         )
       }
+    }
     case 'ADD_RESEARCH':
       return { ...state, research: [action.payload, ...state.research] }
     case 'UPDATE_RESEARCH':
