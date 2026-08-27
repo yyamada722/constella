@@ -459,6 +459,18 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
   useEffect(() => {
     const rd = ZOOM_PRESETS[zoomPreset].rangeDays
     setRangeDays(rd)
+    // Selecting 標準表示 means "show me my tasks" — re-fit the range to the data
+    // (same rule as the first-load fit below) instead of parking at today-7, which
+    // would leave bars older than a week invisible after a preset round-trip.
+    if (zoomPreset === 'default') {
+      let lo: string | undefined, hi: string | undefined
+      for (const r of rows) { if (r.kind !== 'task' || !r.span) continue; lo = minIso(lo, r.span.start); hi = maxIso(hi, r.span.end) }
+      if (lo && hi) {
+        setRangeStart(addDaysIso(lo, -7))
+        setRangeDays(Math.max(60, daysBetween(addDaysIso(lo, -7), hi) + 14))
+        return
+      }
+    }
     setRangeStart(addDaysIso(isoToday(), -PRESET_LOOKBACK_DAYS))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomPreset])
