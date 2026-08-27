@@ -8,7 +8,7 @@ import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { generateId } from '../utils'
 import { DRAFT_WHEN_OPTIONS, draftWhenToEndDate } from '../utils/draftWhen'
-import { doingTotalMs, fmtDoingDuration } from '../utils/doingTime'
+import DoingTimeChip from '../components/DoingTimeChip'
 import { fileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
 import { MarkdownText } from '../components/MarkdownText'
@@ -256,7 +256,11 @@ const TaskDraftCardBody = memo(function TaskDraftCardBody({ card, onUpdate, onSe
           onClick={e => {
             e.stopPropagation()
             const r = e.currentTarget.getBoundingClientRect()
-            setMonthPicker(mp => mp ? null : { x: r.left, y: r.bottom + 4, year: card.draftYear ?? new Date().getFullYear() })
+            // Clamp into the viewport — cards near the bottom/right edge would
+            // otherwise push the ~230px-tall grid offscreen and unclickable.
+            const x = Math.max(8, Math.min(r.left, window.innerWidth - 184))
+            const y = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 240))
+            setMonthPicker(mp => mp ? null : { x, y, year: card.draftYear ?? new Date().getFullYear() })
           }}
           title="対象の月を選ぶ（今月＝自動で当月/翌月）"
           className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-md border text-[9px] transition-colors ${card.draftMonth ? 'border-yellow-500 text-yellow-800 bg-yellow-400/20 font-semibold' : 'border-slate-200 text-slate-400 hover:border-yellow-400 hover:text-yellow-700'}`}
@@ -275,7 +279,8 @@ const TaskDraftCardBody = memo(function TaskDraftCardBody({ card, onUpdate, onSe
         ))}
       </div>
       <div className="text-[9px] text-slate-400 truncate">
-        {card.draftWhen ? `期日目安 ${draftWhenToEndDate(card.draftWhen, card.draftMonth, card.draftYear)}` : 'Tab=子 / Enter=兄弟 / 下端子で親子付け'}
+        {/* Month-only (no 旬 chip) still resolves — draftWhenToEndDate defaults to 月末. */}
+        {card.draftWhen || card.draftMonth ? `期日目安 ${draftWhenToEndDate(card.draftWhen, card.draftMonth, card.draftYear)}` : 'Tab=子 / Enter=兄弟 / 下端子で親子付け'}
       </div>
       {monthPicker && createPortal(
         <div
@@ -7199,15 +7204,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
               {(linkedTask.startDate || linkedTask.endDate) && (
                 <span className="font-mono">{linkedTask.startDate ?? '…'} 〜 {linkedTask.endDate ?? '…'}</span>
               )}
-              {(() => {
-                const total = doingTotalMs(linkedTask)
-                if (total < 60_000 && linkedTask.status !== 'in-progress') return null
-                return (
-                  <span className={`inline-flex items-center gap-0.5 ${linkedTask.status === 'in-progress' ? 'text-amber-600' : 'text-slate-400'}`} title="進行中だった時間の累計">
-                    <Clock size={9} />{fmtDoingDuration(total)}
-                  </span>
-                )
-              })()}
+              <DoingTimeChip task={linkedTask} />
             </div>
             <MarkdownText
               key={linkedTask.id}

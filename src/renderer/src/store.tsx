@@ -221,6 +221,53 @@ const initialState: AppState = {
   canvasStations: [],
 }
 
+// Status-transition bookkeeping shared by every task-writing action (ADD_TASK /
+// UPDATE_TASK / SET_PROJECT_TASKS): the completedAt auto-stamp and the 進行中
+// cumulative clock (doingMs/doingSince). Keeping it in ONE place is what makes
+// the clock trustworthy — a status change through any path accumulates the same
+// way. `prev` is the task currently in the store; pass undefined when there is
+// no prior entry in this project (cross-board move-in, bulk conversion): then
+// no transition is folded, only the invariants are normalized.
+function applyStatusBookkeeping(prev: Task | undefined, next: Task): Task {
+  const now = new Date()
+  if (!prev) {
+    let out = next
+    if (next.status === 'done' && !next.completedAt) out = { ...out, completedAt: now.toISOString() }
+    if (next.status === 'in-progress' && !next.doingSince) out = { ...out, doingSince: now.toISOString() }
+    else if (next.status !== 'in-progress' && next.doingSince) out = { ...out, doingSince: undefined }
+    return out
+  }
+  // completedAt: auto-stamp on →done, clear on leaving done, and preserve the
+  // stored value on same-state 'done' updates whose payload omitted it — a
+  // partial update must not blank the original completion time.
+  const wasDone = prev.status === 'done'
+  const isDone = next.status === 'done'
+  let completedAt = next.completedAt
+  if (!wasDone && isDone && !completedAt) completedAt = now.toISOString()
+  else if (wasDone && !isDone) completedAt = undefined
+  else if (wasDone && isDone && !completedAt) completedAt = prev.completedAt
+  // 進行中 clock. Payload values win (manual 手修正); when the payload omits
+  // them, carry the stored values so partial updates from a stale snapshot
+  // don't blank the counter. Transitions are derived from the STORE's previous
+  // status, so callers never have to know about the clock.
+  const wasDoing = prev.status === 'in-progress'
+  const isDoing = next.status === 'in-progress'
+  let doingMs = next.doingMs ?? prev.doingMs
+  let doingSince = next.doingSince ?? prev.doingSince
+  if (wasDoing && !isDoing && prev.doingSince) {
+    const seg = now.getTime() - Date.parse(prev.doingSince)
+    doingMs = (doingMs ?? 0) + (Number.isFinite(seg) && seg > 0 ? seg : 0)
+  }
+  if (!isDoing) doingSince = undefined
+  // Entering 'in-progress' always re-stamps the segment start — a stale
+  // doingSince carried in a snapshot payload must not backdate the clock.
+  else if (!wasDoing) doingSince = now.toISOString()
+  // Self-heal: a task that was already 進行中 before this feature shipped
+  // (doingSince NULL from the DB migration) starts its clock on first touch.
+  else if (!doingSince) doingSince = now.toISOString()
+  return { ...next, completedAt, doingMs, doingSince }
+}
+
 function reducer(state: AppState, action: Action): AppState {
   if (action.type === 'BATCH') return action.payload.reduce(reducer, state)
   switch (action.type) {
@@ -445,15 +492,9 @@ function reducer(state: AppState, action: Action): AppState {
       }
     }
     case 'ADD_TASK': {
-      // Mirror UPDATE_TASK's completedAt auto-stamp so bulk-imported 'done' tasks
-      // land in state with a completion timestamp — otherwise anything that sorts
-      // by completedAt (or displays "✓ YYYY-MM-DD") silently drops them.
-      const raw = action.payload.task
-      let task = raw.status === 'done' && !raw.completedAt
-        ? { ...raw, completedAt: new Date().toISOString() }
-        : raw
-      // Likewise start the 進行中 clock for tasks born in 'in-progress'.
-      if (task.status === 'in-progress' && !task.doingSince) task = { ...task, doingSince: new Date().toISOString() }
+      // Normalize completedAt / the 進行中 clock for tasks born 'done' or
+      // 'in-progress' (bulk import, AI add) — same rules as every other path.
+      const task = applyStatusBookkeeping(undefined, action.payload.task)
       return {
         ...state,
         projects: state.projects.map(p =>
@@ -464,46 +505,15 @@ function reducer(state: AppState, action: Action): AppState {
       }
     }
     case 'UPDATE_TASK':
-      // Auto-stamp completedAt on status transitions so "hide done" / completion-time
-      // sorts work without every caller having to remember to set it. Also preserve
-      // an existing completedAt if the payload omitted it while status remains 'done'
-      // — a partial update shouldn't blank out the original completion time.
+      // applyStatusBookkeeping stamps completedAt and runs the 進行中 clock off
+      // the store's previous status — callers just dispatch the task as-is.
       return {
         ...state,
         projects: state.projects.map(p => {
           if (p.id !== action.payload.projectId) return p
           return {
             ...p,
-            tasks: p.tasks.map(t => {
-              if (t.id !== action.payload.task.id) return t
-              const next = action.payload.task
-              const now = new Date()
-              const wasDone = t.status === 'done'
-              const isDone = next.status === 'done'
-              let completedAt = next.completedAt
-              if (!wasDone && isDone && !completedAt) completedAt = now.toISOString()
-              else if (wasDone && !isDone) completedAt = undefined
-              // Same-state 'done' updates: preserve existing completedAt when payload omits it.
-              else if (wasDone && isDone && !completedAt) completedAt = t.completedAt
-              // 進行中 cumulative clock. Payload values win (manual 手修正); when the
-              // payload omits them, carry the stored values so partial updates from a
-              // stale snapshot don't blank the counter. Transitions are derived from
-              // the STORE's previous status, so every status-change path accumulates
-              // here without callers having to know about the clock.
-              const wasDoing = t.status === 'in-progress'
-              const isDoing = next.status === 'in-progress'
-              let doingMs = next.doingMs ?? t.doingMs
-              let doingSince = next.doingSince ?? t.doingSince
-              if (wasDoing && !isDoing && t.doingSince) {
-                const seg = now.getTime() - Date.parse(t.doingSince)
-                doingMs = (doingMs ?? 0) + (Number.isFinite(seg) && seg > 0 ? seg : 0)
-              }
-              // Entering 'in-progress' always re-stamps the segment start — a stale
-              // doingSince carried in a snapshot payload must not backdate the clock.
-              if (!isDoing) doingSince = undefined
-              else if (!wasDoing) doingSince = now.toISOString()
-              return { ...next, completedAt, doingMs, doingSince }
-            }),
+            tasks: p.tasks.map(t => t.id === action.payload.task.id ? applyStatusBookkeeping(t, action.payload.task) : t),
           }
         }),
       }
@@ -524,29 +534,12 @@ function reducer(state: AppState, action: Action): AppState {
     case 'SET_PROJECT_TASKS': {
       // Bulk task replacement (kanban D&D reorder/column drop, flow conversion,
       // subtree moves). Column drops change status here — not via UPDATE_TASK —
-      // so the 進行中 clock transitions must be mirrored. Tasks with no previous
-      // entry in this project (moved in from another board, freshly converted)
-      // are left untouched: their status didn't transition.
+      // so the shared bookkeeping runs per task. Tasks with no previous entry in
+      // this project (moved in from another board, freshly converted) have no
+      // transition to fold — the helper only normalizes their invariants.
       const prevProject = state.projects.find(p => p.id === action.payload.projectId)
       const prevById = new Map((prevProject?.tasks ?? []).map(t => [t.id, t]))
-      const nowIso = () => new Date().toISOString()
-      const tasks = action.payload.tasks.map(next => {
-        const prev = prevById.get(next.id)
-        if (!prev || prev.status === next.status) return next
-        const out = { ...next }
-        const wasDoing = prev.status === 'in-progress'
-        const isDoing = next.status === 'in-progress'
-        if (wasDoing && !isDoing && prev.doingSince) {
-          const seg = Date.now() - Date.parse(prev.doingSince)
-          out.doingMs = (out.doingMs ?? 0) + (Number.isFinite(seg) && seg > 0 ? seg : 0)
-        }
-        if (!isDoing) out.doingSince = undefined
-        else if (!wasDoing) out.doingSince = nowIso()
-        // Mirror UPDATE_TASK's completedAt auto-stamp for status changes made here.
-        if (prev.status !== 'done' && next.status === 'done' && !out.completedAt) out.completedAt = nowIso()
-        else if (prev.status === 'done' && next.status !== 'done') out.completedAt = undefined
-        return out
-      })
+      const tasks = action.payload.tasks.map(next => applyStatusBookkeeping(prevById.get(next.id), next))
       return {
         ...state,
         projects: state.projects.map(p =>

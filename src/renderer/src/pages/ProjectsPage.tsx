@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip, Timer } from 'lucide-react'
+import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip } from 'lucide-react'
 import { useApp } from '../store'
 import { Task, Project, BoardColor } from '../types'
 import { generateId } from '../utils'
@@ -10,7 +10,7 @@ import { SearchInput } from '../components/SearchInput'
 import LinkedNotesField from '../components/LinkedNotesField'
 import LinkedFilesField from '../components/LinkedFilesField'
 import DoingTimeField from '../components/DoingTimeField'
-import { doingTotalMs, fmtDoingDuration } from '../utils/doingTime'
+import DoingTimeChip from '../components/DoingTimeChip'
 import NotePanel from '../components/NotePanel'
 import { confirmDialog, chooseDialog } from '../components/ConfirmDialog'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
@@ -475,10 +475,14 @@ export default function ProjectsPage() {
     const subtree = selectedProject.tasks.filter(t => t.id === taskId || descIds.has(t.id))
     const idMap = new Map<string, string>()
     for (const t of subtree) idMap.set(t.id, generateId())
-    const clonedRoot: Task = { ...dragged, id: idMap.get(taskId)!, parentId: undefined }
+    // Clones drop doingSince — copying a RUNNING clock segment would backdate the
+    // copy's timer to the original's start and double-count the elapsed time
+    // (the reducer re-stamps a fresh segment for in-progress clones). The settled
+    // doingMs is content like any other field and is copied as-is.
+    const clonedRoot: Task = { ...dragged, id: idMap.get(taskId)!, parentId: undefined, doingSince: undefined }
     const clonedRest: Task[] = subtree
       .filter(t => t.id !== taskId)
-      .map(t => ({ ...t, id: idMap.get(t.id)!, parentId: t.parentId ? idMap.get(t.parentId) : undefined }))
+      .map(t => ({ ...t, id: idMap.get(t.id)!, parentId: t.parentId ? idMap.get(t.parentId) : undefined, doingSince: undefined }))
     dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: targetBoardId, tasks: [...targetBoard.tasks, clonedRoot, ...clonedRest] } })
   }
 
@@ -1356,19 +1360,7 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
           )}
         </p>
       )}
-      {(() => {
-        // 進行中の累計時間 chip — shown once the task has ever spent measurable
-        // time in 'in-progress' (or is currently running).
-        const doingTotal = doingTotalMs(task)
-        if (doingTotal < 60_000 && task.status !== 'in-progress') return null
-        const running = task.status === 'in-progress' && !!task.doingSince
-        return (
-          <p className={`text-[10px] mt-1 inline-flex items-center gap-1 ${running ? 'text-amber-600' : 'text-slate-400'}`}
-             title={`進行中だった時間の累計${running ? '（計測中）' : ''}`}>
-            <Timer size={10} />{fmtDoingDuration(doingTotal)}{running && <span className="text-[8px]">計測中</span>}
-          </p>
-        )
-      })()}
+      <DoingTimeChip task={task} className="text-[10px] mt-1" />
       {mode === 'tree' && hasChildren && (
         <div className="mt-2 flex items-center gap-2">
           {/* Tri-segment progress bar: emerald(done) | amber(doing) | slate(remaining todo).
