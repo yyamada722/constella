@@ -442,6 +442,7 @@ function mergeStream<T extends { id: string }>(
     const theyChanged = S(t) !== S(b)
     const iChanged = S(m) !== S(b)
     if (!theyChanged) continue // 相手は触っていない → 自分の状態(編集/削除含む)を維持
+    if (S(m) === S(t)) continue // 双方の結果が同一(同じ返却の再取り込み等) → 競合ではない
     if (!iChanged) {
       // 相手だけが変えた → そのまま採用(追加/更新/削除)
       if (t) { result.set(id, t); out.applied[b ? 'updated' : 'added']++ }
