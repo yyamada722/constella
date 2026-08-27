@@ -127,10 +127,20 @@ export function initFolderSync(opts: {
   flushPendingSaves = opts.flushPendingSaves
 }
 
-/** push 直前に呼ぶ: デバウンス待ちの編集を確定させ、飛行中の保存も待ち切る。 */
-async function settleLocalWrites(): Promise<void> {
-  try { await flushPendingSaves?.() } catch { /* 保存側の失敗は push 側で検知される */ }
+/**
+ * push 直前に呼ぶ: デバウンス待ちの編集を確定させ、飛行中の保存も待ち切る。
+ * 確定に失敗したら false — その場合 push してはいけない。ディスク上の DB には
+ * まだ最新の編集が入っておらず、押したうえで dirty を落とすと「未保存の編集を
+ * 同期済みと記録する」ことになり、次の pull で消える。
+ */
+async function settleLocalWrites(): Promise<boolean> {
+  try {
+    await flushPendingSaves?.()
+  } catch {
+    return false
+  }
   await drainSaves()
+  return true
 }
 
 // ── 実編集の記録 ──
@@ -330,7 +340,11 @@ function setConflict(m: SyncManifest, initial: boolean): void {
 async function doPush(api: SyncApi, gen: number, expectPrev: number, trigger: FolderSyncTrigger): Promise<FolderSyncPhase> {
   setStatus({ phase: 'pushing' })
   // デバウンス待ちの編集を確定させてから seq を取る(確定処理自体は編集ではない)。
-  await settleLocalWrites()
+  if (!(await settleLocalWrites())) {
+    setStatus({ phase: 'error', message: '保存に失敗したため送信を見送りました' })
+    scheduleRetry(30_000)
+    return 'error'
+  }
   const seqAtPush = editSeq
   // メディアを先に上げる: マニフェスト(コミットポイント)が参照する実体が
   // フォルダに揃ってから DB+マニフェストを書く。
@@ -467,8 +481,15 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
   try {
     if (choice === 'local') {
       setStatus({ phase: 'pushing' })
-      await api.backupConflict('remote') // 負けるフォルダ側の DB を退避
-      await settleLocalWrites()
+      // 退避に失敗したら押さない。押すと相手側スナップショットが復元不能に消える。
+      if (!(await api.backupConflict('remote'))) {
+        setStatus({ phase: 'conflict', conflict: c, message: 'バックアップを作れなかったため中止しました(ディスクの空き容量をご確認ください)' })
+        return
+      }
+      if (!(await settleLocalWrites())) {
+        setStatus({ phase: 'conflict', conflict: c, message: '保存に失敗したため中止しました' })
+        return
+      }
       const seqAtPush = editSeq
       const failed = await pushMissingMedia(api)
       const r = await api.push(c.remoteGen + 1, c.remoteGen)
@@ -489,7 +510,12 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
         setStatus({ phase: 'conflict', conflict: c, message: 'クラウドの転送待ちのため取り込めませんでした。しばらくして再度お試しください' })
         return
       }
-      await api.backupConflict('local') // 負けるこのPCの DB を退避
+      // 退避に失敗したら取り込まない。取り込むとこのPCの内容が復元不能に消える。
+      if (!(await api.backupConflict('local'))) {
+        await api.pullDiscard().catch(() => { /* 次の prepare で上書きされる */ })
+        setStatus({ phase: 'conflict', conflict: c, message: 'バックアップを作れなかったため中止しました(ディスクの空き容量をご確認ください)' })
+        return
+      }
       freezeWrites()
       let r: { ok: boolean; error?: string }
       try {

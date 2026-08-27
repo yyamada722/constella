@@ -45,6 +45,8 @@ export type SyncMergePlan =
       // フォルダ側の app_kv(受け渡し台帳など)。マージ結果を push する際に
       // 取りこぼさないよう、こちらに無いキーだけ復元してから送る。
       theirsKv: Record<string, string>
+      // 並び順だけが違うコレクションの、相手側の id 並び(採用時に使う)。
+      theirsOrder: Record<string, string[]>
     }
   | { ok: false; reason: 'no-base' | 'inconsistent' | 'error'; message: string }
 
@@ -181,6 +183,40 @@ function diffStream(
   }
 }
 
+/**
+ * 並び順だけの変更を拾う。配列順は各テーブルの ord 列として保存される実データ
+ * (タスクの並べ替え等)なのに、id をキーにした3方向比較では全項目が「同じ」に
+ * 見えてしまい、相手の並べ替えが黙って捨てられる。共通 id の並びで比較して、
+ * 相手だけが並べ替えたコレクションを1行として差分に出す。
+ */
+function detectOrderChange(
+  def: StreamDef,
+  baseArr: Row[], mineArr: Row[], theirsArr: Row[],
+): { row: SyncMergeRow; theirsIds: string[] } | null {
+  const common = new Set(baseArr.map(x => x.id))
+  const mineIds = new Set(mineArr.map(x => x.id))
+  const theirsIds = new Set(theirsArr.map(x => x.id))
+  const keep = (ids: Row[]): string[] => ids.map(x => x.id).filter(id => common.has(id) && mineIds.has(id) && theirsIds.has(id))
+  const b = keep(baseArr).join(','), m = keep(mineArr).join(','), t = keep(theirsArr).join(',')
+  if (!b || t === m) return null
+  const theyMoved = t !== b
+  const iMoved = m !== b
+  if (!theyMoved) return null
+  return {
+    row: {
+      key: `order:${def.key}`,
+      stream: `order:${def.key}`,
+      typeLabel: '並び順',
+      label: def.typeLabel,
+      side: iMoved ? 'both' : 'theirs',
+      kindText: iMoved ? '両方で並べ替え' : '並べ替え',
+      fields: [{ label: '並び', mine: `${keep(mineArr).length}件の順序(このPC)`, theirs: `${keep(theirsArr).length}件の順序(相手)` }],
+      resolution: iMoved ? 'mine' : 'theirs',
+    },
+    theirsIds: theirsArr.map(x => x.id),
+  }
+}
+
 /** 競合中に呼ぶ: base とフォルダ側 DB を読み、項目単位の差分プランを作る。 */
 export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> {
   const api = syncApi()
@@ -205,8 +241,19 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
     const baseState = baseParsed.state
 
     const out = { rows: [] as SyncMergeRow[], mineByKey: new Map<string, { id: string } | null>(), theirsByKey: new Map<string, { id: string } | null>() }
+    const theirsOrder: Record<string, string[]> = {}
+    const addOrderRow = (def: StreamDef, bA: Row[], mA: Row[], tA: Row[]): void => {
+      const o = detectOrderChange(def, bA, mA, tA)
+      if (!o) return
+      out.rows.push(o.row)
+      theirsOrder[def.key] = o.theirsIds
+    }
     for (const { key, def } of STREAMS) {
-      diffStream(def, (baseState[key] ?? []) as unknown as Row[], (state[key] ?? []) as unknown as Row[], (theirsState[key] ?? []) as unknown as Row[], out)
+      const bA = (baseState[key] ?? []) as unknown as Row[]
+      const mA = (state[key] ?? []) as unknown as Row[]
+      const tA = (theirsState[key] ?? []) as unknown as Row[]
+      diffStream(def, bA, mA, tA, out)
+      addOrderRow(def, bA, mA, tA)
     }
     // タスクボード: メタとタスクを分けて粒度を確保
     diffStream(
@@ -216,18 +263,17 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
       stripTasks(theirsState.projects) as unknown as Row[],
       out,
     )
-    diffStream(
-      { key: 'tasks', typeLabel: 'タスク', label: label('title') },
-      flattenTasks(baseState.projects) as unknown as Row[],
-      flattenTasks(state.projects) as unknown as Row[],
-      flattenTasks(theirsState.projects) as unknown as Row[],
-      out,
-    )
+    const taskDef: StreamDef = { key: 'tasks', typeLabel: 'タスク', label: label('title') }
+    const bTasks = flattenTasks(baseState.projects) as unknown as Row[]
+    const mTasks = flattenTasks(state.projects) as unknown as Row[]
+    const tTasks = flattenTasks(theirsState.projects) as unknown as Row[]
+    diffStream(taskDef, bTasks, mTasks, tTasks, out)
+    addOrderRow(taskDef, bTasks, mTasks, tTasks)
 
     // 表示順: 要選択(both) → 相手の変更 → 自分の変更
     const order = { both: 0, theirs: 1, mine: 2 }
     out.rows.sort((a, b2) => order[a.side] - order[b2.side] || a.typeLabel.localeCompare(b2.typeLabel))
-    return { ok: true, folderGen: folder.gen, deviceName: folder.deviceName || '相手のマシン', rows: out.rows, mineByKey: out.mineByKey, theirsByKey: out.theirsByKey, mineState: state, theirsKv: theirsParsed.kv }
+    return { ok: true, folderGen: folder.gen, deviceName: folder.deviceName || '相手のマシン', rows: out.rows, mineByKey: out.mineByKey, theirsByKey: out.theirsByKey, mineState: state, theirsKv: theirsParsed.kv, theirsOrder }
   } catch (e) {
     return { ok: false, reason: 'error', message: e instanceof Error ? e.message : '差分の計算に失敗しました' }
   }
@@ -274,11 +320,19 @@ export async function applySyncMerge(
 
   // resolution==='theirs' の行だけ、相手側の値で 上書き/追加/削除 する。
   const byStream = new Map<string, { id: string; item: { id: string } | null }[]>()
+  const reorder = new Set<string>() // 相手の並び順を採用するコレクション
   for (const r of rows) {
     if (r.resolution !== 'theirs') continue
+    if (r.stream.startsWith('order:')) { reorder.add(r.stream.slice('order:'.length)); continue }
     const list = byStream.get(r.stream) ?? []
     list.push({ id: r.key.slice(r.key.indexOf(':') + 1), item: plan.theirsByKey.get(r.key) ?? null })
     byStream.set(r.stream, list)
+  }
+  // 相手の並びに寄せる。相手に無い id(こちらだけの新規)は現在の相対順で末尾に残す。
+  const applyOrder = (stream: string, arr: { id: string }[]): { id: string }[] => {
+    if (!reorder.has(stream)) return arr
+    const rank = new Map((plan.theirsOrder[stream] ?? []).map((id, i) => [id, i]))
+    return [...arr].sort((x, y) => (rank.get(x.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(y.id) ?? Number.MAX_SAFE_INTEGER))
   }
 
   const patch: Partial<AppState> = {}
@@ -295,14 +349,21 @@ export async function applySyncMerge(
   // 進んだ他の変更はそのまま生き残る。
   for (const [stream, changes] of byStream) {
     if (stream === 'projects' || stream === 'tasks') continue
-    ;(patch as Record<string, unknown>)[stream] = applyTo(current[stream as keyof AppState] as unknown as { id: string }[], changes)
+    ;(patch as Record<string, unknown>)[stream] = applyOrder(stream, applyTo(current[stream as keyof AppState] as unknown as { id: string }[], changes))
+  }
+  // 並び順だけ採用するコレクション(項目の差分は無い)も反映する。
+  for (const stream of reorder) {
+    if (stream === 'projects' || stream === 'tasks') continue
+    if ((patch as Record<string, unknown>)[stream]) continue
+    ;(patch as Record<string, unknown>)[stream] = applyOrder(stream, [...(current[stream as keyof AppState] as unknown as { id: string }[])])
   }
   const projChanges = byStream.get('projects') ?? []
   const taskChanges = byStream.get('tasks') ?? []
-  if (projChanges.length || taskChanges.length) {
-    const metas = applyTo(stripTasks(current.projects) as unknown as { id: string }[], projChanges) as unknown as Omit<Project, 'tasks'>[]
-    const flat = applyTo(flattenTasks(current.projects) as unknown as { id: string }[], taskChanges) as unknown as FlatTask[]
-    patch.projects = rebuildProjects(metas, flat, current.projects)
+  if (projChanges.length || taskChanges.length || reorder.has('projects') || reorder.has('tasks')) {
+    const metas = applyOrder('projects', applyTo(stripTasks(current.projects) as unknown as { id: string }[], projChanges)) as unknown as Omit<Project, 'tasks'>[]
+    const flat = applyOrder('tasks', applyTo(flattenTasks(current.projects) as unknown as { id: string }[], taskChanges)) as unknown as FlatTask[]
+    // 相手の並びを採用した場合、flat は既にその順に並んでいるので再ソートさせない。
+    patch.projects = rebuildProjects(metas, flat, current.projects, reorder.has('tasks'))
   }
 
   // アクティブなプロジェクトが相手側の削除で消えた場合、存在しない id が残ると

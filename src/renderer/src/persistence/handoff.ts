@@ -560,11 +560,11 @@ export const stripTasks = (projects: Project[]): (Omit<Project, 'tasks'> & { id:
 
 const STREAMS: { [K in keyof PackItems]?: StreamDef<{ id: string }> } = {
   notes: { key: 'notes', typeLabel: 'ノート', label: x => (x as Note).title || '(無題)' },
-  noteFolders: { key: 'noteFolders', typeLabel: 'ノートフォルダ', label: x => (x as NoteFolder).name },
+  noteFolders: { key: 'noteFolders', typeLabel: 'ノートフォルダ', label: x => (x as NoteFolder).name, derivedByReference: true },
   files: { key: 'files', typeLabel: 'ファイル', label: x => (x as FileItem).name, derivedByReference: true },
   fileFolders: { key: 'fileFolders', typeLabel: 'ファイルフォルダ', label: x => (x as FileFolder).name, derivedByReference: true },
   research: { key: 'research', typeLabel: 'リサーチ', label: x => (x as ResearchItem).title },
-  researchFolders: { key: 'researchFolders', typeLabel: 'リサーチフォルダ', label: x => (x as ResearchFolder).name },
+  researchFolders: { key: 'researchFolders', typeLabel: 'リサーチフォルダ', label: x => (x as ResearchFolder).name, derivedByReference: true },
   sketches: { key: 'sketches', typeLabel: 'スケッチ', label: x => (x as Sketch).name },
   flows: { key: 'flows', typeLabel: 'フロー', label: x => (x as Flow).name },
   plans: { key: 'plans', typeLabel: '計画', label: x => (x as Plan).name },
@@ -642,13 +642,20 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
   return { pack, result: { patch, applied, conflicts }, theirsByKey, mineState: state }
 }
 
-export function rebuildProjects(metas: Omit<Project, 'tasks'>[], flat: FlatTask[], mineProjects: Project[]): Project[] {
+export function rebuildProjects(
+  metas: Omit<Project, 'tasks'>[],
+  flat: FlatTask[],
+  mineProjects: Project[],
+  // flat が既に望みの順で並んでいる場合(相手の並び順を採用したとき)に true。
+  // 既定では「自分側の並び」に寄せ直すので、それだと採用した並びが打ち消される。
+  flatIsOrdered = false,
+): Project[] {
   const byProject = new Map<string, Task[]>()
   const metaIds = new Set(metas.map(m => m.id))
   // 自分側のタスク並び順を優先し、新規は末尾に付く(Map の挿入順で保たれる)。
   const order = new Map<string, number>()
   mineProjects.forEach(p => p.tasks.forEach((t, i) => order.set(t.id, i)))
-  const sorted = [...flat].sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9))
+  const sorted = flatIsOrdered ? flat : [...flat].sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9))
   for (const ft of sorted) {
     if (!metaIds.has(ft.__projectId)) continue // 親ボードごと消えた → タスクも消える
     const { __projectId, ...task } = ft
@@ -659,9 +666,67 @@ export function rebuildProjects(metas: Omit<Project, 'tasks'>[], flat: FlatTask[
   return metas.map(m => ({ ...m, tasks: byProject.get(m.id) ?? [] })) as Project[]
 }
 
+/**
+ * 凍結時点で計算した patch を「今」の状態に載せ替える。
+ *
+ * mergeStream は `new Map(mine)` から始めて相手の変更を重ねた**全置換配列**を返すので、
+ * そのまま適用すると凍結時点以降の編集が消える。ここでは patch と凍結スナップショットを
+ * 突き合わせて「マージが実際に加えた変更(追加/更新/削除)」だけを取り出し、
+ * それを現在の配列へ適用し直す。
+ */
+function rebasePatch(pending: PendingMerge, current: AppState): Partial<AppState> {
+  const out: Partial<AppState> = {}
+  const rebaseOne = (frozen: { id: string }[], merged: { id: string }[], now: { id: string }[]): { id: string }[] => {
+    const frozenById = new Map(frozen.map(x => [x.id, x]))
+    const mergedById = new Map(merged.map(x => [x.id, x]))
+    const next = [...now]
+    // マージが変えた/足したもの
+    for (const item of merged) {
+      const before = frozenById.get(item.id)
+      if (before && stableStringify(before) === stableStringify(item)) continue
+      const i = next.findIndex(x => x.id === item.id)
+      if (i >= 0) next[i] = item
+      else next.push(item)
+    }
+    // マージが消したもの
+    for (const item of frozen) {
+      if (mergedById.has(item.id)) continue
+      const i = next.findIndex(x => x.id === item.id)
+      if (i >= 0) next.splice(i, 1)
+    }
+    return next
+  }
+  for (const key of Object.keys(pending.result.patch) as (keyof AppState)[]) {
+    if (key === 'projects') continue // タスク入れ子は呼び出し側が組み立て直す
+    const merged = pending.result.patch[key] as unknown as { id: string }[] | undefined
+    if (!merged) continue
+    ;(out as Record<string, unknown>)[key] = rebaseOne(
+      pending.mineState[key] as unknown as { id: string }[],
+      merged,
+      current[key] as unknown as { id: string }[],
+    )
+  }
+  if (pending.result.patch.projects) {
+    const metas = rebaseOne(
+      stripTasks(pending.mineState.projects) as unknown as { id: string }[],
+      stripTasks(pending.result.patch.projects) as unknown as { id: string }[],
+      stripTasks(current.projects) as unknown as { id: string }[],
+    ) as unknown as Omit<Project, 'tasks'>[]
+    const flat = rebaseOne(
+      flattenTasks(pending.mineState.projects) as unknown as { id: string }[],
+      flattenTasks(pending.result.patch.projects) as unknown as { id: string }[],
+      flattenTasks(current.projects) as unknown as { id: string }[],
+    ) as unknown as FlatTask[]
+    out.projects = rebuildProjects(metas, flat, current.projects)
+  }
+  return out
+}
+
 /** 競合の解決(theirs/mine)を patch に反映した最終形を返し、メディアも取り込む。 */
-export async function applyReturnMerge(pending: PendingMerge, resolutions: MergeConflict[]): Promise<Partial<AppState>> {
-  const patch = { ...pending.result.patch }
+export async function applyReturnMerge(pending: PendingMerge, resolutions: MergeConflict[], current: AppState): Promise<Partial<AppState>> {
+  // 差分の計算は取り込み時点で凍結してよいが、適用の土台は「今」の状態にする。
+  // 競合の選択に時間をかけている間の編集(グローバル Ctrl+Z など)を巻き戻さない。
+  const patch = rebasePatch(pending, current)
   // key = "<stream>:<id>"。resolution が theirs の競合だけ、相手の版で上書き/削除する。
   const byStream = new Map<string, { id: string; item: { id: string } | null }[]>()
   for (const c of resolutions) {
@@ -685,9 +750,9 @@ export async function applyReturnMerge(pending: PendingMerge, resolutions: Merge
   const projChanges = byStream.get('projects') ?? []
   const taskChanges = byStream.get('tasks') ?? []
   if (projChanges.length || taskChanges.length) {
-    const current = (patch.projects ?? pending.mineState.projects) as Project[]
-    let metas = stripTasks(current)
-    let flat = flattenTasks(current)
+    const cur = (patch.projects ?? current.projects) as Project[]
+    let metas = stripTasks(cur)
+    let flat = flattenTasks(cur)
     for (const { id, item } of projChanges) {
       const i = metas.findIndex(x => x.id === id)
       if (item) { if (i >= 0) metas[i] = item as Omit<Project, 'tasks'>; else metas.push(item as Omit<Project, 'tasks'>) }
@@ -698,7 +763,7 @@ export async function applyReturnMerge(pending: PendingMerge, resolutions: Merge
       if (item) { if (i >= 0) flat[i] = item as FlatTask; else flat.push(item as FlatTask) }
       else flat = flat.filter(x => x.id !== id)
     }
-    patch.projects = rebuildProjects(metas, flat, pending.mineState.projects)
+    patch.projects = rebuildProjects(metas, flat, current.projects)
   }
   await importMedia(pending.pack.media)
   // 台帳に返却済みを記録し、base は次の貸出まで残す(再取り込みにも耐える)。

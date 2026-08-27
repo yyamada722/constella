@@ -131,7 +131,7 @@ export function HandoffModal({ open, onClose }: Props) {
         try {
           const p = await computeReturnMerge(state, pack)
           if (p.result.conflicts.length === 0) {
-            const patch = await applyReturnMerge(p, [])
+            const patch = await applyReturnMerge(p, [], state)
             dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
             const a = p.result.applied
             setLent(await loadHandoffIndex())
@@ -164,7 +164,8 @@ export function HandoffModal({ open, onClose }: Props) {
     if (!pending) return
     setBusy('マージ中…')
     try {
-      const patch = await applyReturnMerge(pending, resolutions)
+      // 適用の土台は「今」の状態(競合の選択中に進んだ編集を巻き戻さない)。
+      const patch = await applyReturnMerge(pending, resolutions, state)
       dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
       const a = pending.result.applied
       setLent(await loadHandoffIndex())
