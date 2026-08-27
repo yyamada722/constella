@@ -3,6 +3,7 @@ import { join, dirname, normalize, extname } from 'path'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
 import { createServer, Server } from 'http'
 import { networkInterfaces } from 'os'
+import { randomBytes } from 'crypto'
 import Anthropic from '@anthropic-ai/sdk'
 import { initUpdater } from './updater'
 import { initSync } from './sync'
@@ -60,11 +61,19 @@ async function dailyBackup(buf: Buffer): Promise<void> {
 // Shared by db:save and the folder-sync pull (which replaces the DB the same way).
 async function writeDbAtomic(buf: Buffer): Promise<void> {
   const p = dbPath()
-  const tmp = p + '.tmp'
+  // 一意な tmp 名: この関数は db:save と同期フォルダの pull という2人の書き手から
+  // 呼ばれる。固定名だと両者が同じ tmp に書き、片方の rename が相手の書きかけを
+  // 本体に載せて切り詰め DB を生む(旧実装は db:save 単独前提だった)。
+  const tmp = `${p}.tmp-${randomBytes(4).toString('hex')}`
   await mkdir(dirname(p), { recursive: true })
   await writeFile(tmp, buf)
   try { await copyFile(p, bakPath()) } catch { /* no previous file yet */ }
-  await rename(tmp, p)
+  try {
+    await rename(tmp, p)
+  } catch (e) {
+    try { await unlink(tmp) } catch { /* 掃除は best-effort */ }
+    throw e
+  }
   try { await dailyBackup(buf) } catch { /* backups are best-effort */ }
 }
 

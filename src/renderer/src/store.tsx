@@ -957,6 +957,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Latest committed state, for flushing on teardown without re-subscribing.
   const latest = useRef(history.present)
   latest.current = history.present
+  // hydrate/loadFailed の最新値を非 React コード(同期の flush フック)から読むための ref。
+  const hydratedRef = useRef(false)
+  const loadFailedRef = useRef(false)
   // 同期フォルダの状態(競合バナーの表示に使う)。
   const folderSync = useFolderSyncStatus()
   // 競合の「項目単位マージ」モーダル(バナーの「内容を確認して選ぶ」から)。
@@ -1006,6 +1009,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
             } catch { /* ignore */ }
             return refs
           },
+          // push は DB ファイルを読むので、400ms デバウンス待ちの編集を先に確定させる。
+          // これが無いと「編集を含まないバイトを送ってから dirty を落とす」ことになり、
+          // その編集は次の無関係な編集まで同期されない。
+          flushPendingSaves: async () => {
+            if (!hydratedRef.current || loadFailedRef.current) return
+            await saveState(latest.current)
+          },
         })
         try { await startupFolderSync() } catch { /* 同期の失敗で起動を止めない */ }
       }
@@ -1013,7 +1023,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         loaded = await loadState()
       } catch {
-        if (alive) { dispatch({ type: '__HYDRATE', payload: initialState }); setLoadFailed(true); setHydrated(true) }
+        if (alive) { dispatch({ type: '__HYDRATE', payload: initialState }); loadFailedRef.current = true; setLoadFailed(true); hydratedRef.current = true; setHydrated(true) }
         return
       }
       if (loaded === null) {
@@ -1038,6 +1048,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try { lastEtag.current = await dbEtag() } catch { /* ignore */ }
       if (!alive) return
       dispatch({ type: '__HYDRATE', payload: loaded })
+      hydratedRef.current = true
       setHydrated(true)
       // hydrate 後にメディアの差分転送(参照が出そろってから)と未送信分の push。
       if (!isRemote) checkFolderSync('post-hydrate').catch(() => { /* ignore */ })

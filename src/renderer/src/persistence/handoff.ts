@@ -419,6 +419,13 @@ interface StreamDef<T> {
   label: (x: T) => string
   // 比較から除外する揮発フィールド(PDF の表示位置など、作業内容でないもの)。
   normalize?: (x: T) => unknown
+  /**
+   * パックへの同梱が「参照されているか」で決まるコレクション(ファイル本体と、
+   * その親フォルダ)。相手側に無い = 削除ではなく「参照が外れただけ」なので、
+   * 削除としては適用しない。これを守らないと、借り手がノートから添付を外した
+   * だけで、貸出側の**全プロジェクトの**ライブラリからそのファイルが消える。
+   */
+  derivedByReference?: boolean
 }
 
 // 1コレクション分の 3方向マージ。conflicts の resolution を変えて再適用できるよう、
@@ -443,6 +450,9 @@ function mergeStream<T extends { id: string }>(
     const iChanged = S(m) !== S(b)
     if (!theyChanged) continue // 相手は触っていない → 自分の状態(編集/削除含む)を維持
     if (S(m) === S(t)) continue // 双方の結果が同一(同じ返却の再取り込み等) → 競合ではない
+    // 参照で同梱されるコレクションの「消失」は削除の意思表示ではない(参照が
+    // 外れただけでもパックから落ちる)。更新・追加だけを受け入れる。
+    if (!t && def.derivedByReference) continue
     if (!iChanged) {
       // 相手だけが変えた → そのまま採用(追加/更新/削除)
       if (t) { result.set(id, t); out.applied[b ? 'updated' : 'added']++ }
@@ -468,14 +478,14 @@ export const stripTasks = (projects: Project[]): (Omit<Project, 'tasks'> & { id:
 const STREAMS: { [K in keyof PackItems]?: StreamDef<{ id: string }> } = {
   notes: { key: 'notes', typeLabel: 'ノート', label: x => (x as Note).title || '(無題)' },
   noteFolders: { key: 'noteFolders', typeLabel: 'ノートフォルダ', label: x => (x as NoteFolder).name },
-  files: { key: 'files', typeLabel: 'ファイル', label: x => (x as FileItem).name },
-  fileFolders: { key: 'fileFolders', typeLabel: 'ファイルフォルダ', label: x => (x as FileFolder).name },
+  files: { key: 'files', typeLabel: 'ファイル', label: x => (x as FileItem).name, derivedByReference: true },
+  fileFolders: { key: 'fileFolders', typeLabel: 'ファイルフォルダ', label: x => (x as FileFolder).name, derivedByReference: true },
   research: { key: 'research', typeLabel: 'リサーチ', label: x => (x as ResearchItem).title },
   researchFolders: { key: 'researchFolders', typeLabel: 'リサーチフォルダ', label: x => (x as ResearchFolder).name },
   sketches: { key: 'sketches', typeLabel: 'スケッチ', label: x => (x as Sketch).name },
   flows: { key: 'flows', typeLabel: 'フロー', label: x => (x as Flow).name },
   plans: { key: 'plans', typeLabel: '計画', label: x => (x as Plan).name },
-  planFolders: { key: 'planFolders', typeLabel: '計画フォルダ', label: x => (x as PlanFolder).name },
+  planFolders: { key: 'planFolders', typeLabel: '計画フォルダ', label: x => (x as PlanFolder).name, derivedByReference: true },
   canvasBoards: { key: 'canvasBoards', typeLabel: 'キャンバスボード', label: x => (x as CanvasBoard).name },
   canvasTabs: { key: 'canvasTabs', typeLabel: 'キャンバスタブ', label: x => (x as CanvasTab).name },
   canvasCards: {

@@ -92,8 +92,15 @@ export function SyncMergeModal({ open, onClose }: Props) {
     setBusy(true)
     setError(null)
     try {
-      const r = await applySyncMerge(plan, rows)
-      if (!r.ok) { setError(r.message); return }
+      // 適用の土台は「今」の状態を渡す(モーダル表示中に進んだ編集を巻き戻さない)。
+      const r = await applySyncMerge(plan, rows, state)
+      if (!r.ok) {
+        // push に失敗してもディスクにはマージ結果が入っている。patch が返っていれば
+        // 画面にも反映してディスクとメモリの乖離を残さない。
+        if (r.patch) dispatch({ type: 'APPLY_STATE_PATCH', payload: r.patch })
+        setError(r.message)
+        return
+      }
       dispatch({ type: 'APPLY_STATE_PATCH', payload: r.patch })
       onClose()
       // 状態表示を「同期済み」に更新し、メディアの差分転送も走らせる。

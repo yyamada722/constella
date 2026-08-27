@@ -14,7 +14,7 @@
 import type { AppState } from '../store'
 import type { Project } from '../types'
 import { parseDbBytes, saveState } from './db'
-import { syncApi } from './folderSync'
+import { syncApi, clearFolderSyncDirty, markFolderSyncEdit } from './folderSync'
 import { stableStringify, flattenTasks, stripTasks, rebuildProjects, type FlatTask } from './handoff'
 
 // ── 差分行 ──
@@ -233,8 +233,17 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
 /**
  * 選択を反映したマージ結果を作り、保存してフォルダへ新世代として push する。
  * 戻り値の patch を APPLY_STATE_PATCH で dispatch すると画面にも反映される。
+ *
+ * `current` は**適用ボタンを押した時点**の状態を渡すこと。差分の計算はモーダルを
+ * 開いた時点のスナップショット(plan.mineState)で凍結してよいが、適用の土台まで
+ * 凍結すると、モーダル表示中に進んだ編集(グローバル Ctrl+Z、LAN の focus-sync に
+ * よる再 hydrate 等)がディスクと push 先で巻き戻る。
  */
-export async function applySyncMerge(plan: Extract<SyncMergePlan, { ok: true }>, rows: SyncMergeRow[]): Promise<{ ok: true; patch: Partial<AppState> } | { ok: false; message: string }> {
+export async function applySyncMerge(
+  plan: Extract<SyncMergePlan, { ok: true }>,
+  rows: SyncMergeRow[],
+  current: AppState,
+): Promise<{ ok: true; patch: Partial<AppState> } | { ok: false; message: string; patch?: Partial<AppState> }> {
   const api = syncApi()
   if (!api) return { ok: false, message: 'デスクトップ版でのみ利用できます' }
 
@@ -257,19 +266,21 @@ export async function applySyncMerge(plan: Extract<SyncMergePlan, { ok: true }>,
     }
     return next
   }
+  // 土台は「適用時点」の状態。相手側を採用した行だけを重ねるので、モーダル表示中に
+  // 進んだ他の変更はそのまま生き残る。
   for (const [stream, changes] of byStream) {
     if (stream === 'projects' || stream === 'tasks') continue
-    ;(patch as Record<string, unknown>)[stream] = applyTo(plan.mineState[stream as keyof AppState] as unknown as { id: string }[], changes)
+    ;(patch as Record<string, unknown>)[stream] = applyTo(current[stream as keyof AppState] as unknown as { id: string }[], changes)
   }
   const projChanges = byStream.get('projects') ?? []
   const taskChanges = byStream.get('tasks') ?? []
   if (projChanges.length || taskChanges.length) {
-    const metas = applyTo(stripTasks(plan.mineState.projects) as unknown as { id: string }[], projChanges) as unknown as Omit<Project, 'tasks'>[]
-    const flat = applyTo(flattenTasks(plan.mineState.projects) as unknown as { id: string }[], taskChanges) as unknown as FlatTask[]
-    patch.projects = rebuildProjects(metas, flat, plan.mineState.projects)
+    const metas = applyTo(stripTasks(current.projects) as unknown as { id: string }[], projChanges) as unknown as Omit<Project, 'tasks'>[]
+    const flat = applyTo(flattenTasks(current.projects) as unknown as { id: string }[], taskChanges) as unknown as FlatTask[]
+    patch.projects = rebuildProjects(metas, flat, current.projects)
   }
 
-  const merged: AppState = { ...plan.mineState, ...patch }
+  const merged: AppState = { ...current, ...patch }
   // 先に保存してから push(push はディスク上の DB ファイルを読むため)。
   try {
     await saveState(merged)
@@ -278,10 +289,20 @@ export async function applySyncMerge(plan: Extract<SyncMergePlan, { ok: true }>,
   }
   const r = await api.push(plan.folderGen + 1, plan.folderGen)
   if (!r.ok) {
-    // フォルダ側がさらに進んだ等。ローカルにはマージ結果が保存済みなので、
-    // 次のチェックで再度競合表示になり、もう一度この画面から選び直せる。
-    return { ok: false, message: r.error === 'changed' ? '同期フォルダ側が更新されました。もう一度開き直してください' : `送信に失敗しました: ${r.error ?? ''}` }
+    // フォルダ側がさらに進んだ等。ディスクにはマージ結果が入っているのにメモリ側は
+    // 未マージなので、(a) 呼び出し側が patch を dispatch して両者を揃えられるよう
+    // patch を返し、(b) 未 push であることを dirty として残す(落とすと次の pull で
+    // マージ結果ごと無警告に上書きされる)。
+    markFolderSyncEdit()
+    return {
+      ok: false,
+      patch,
+      message: r.error === 'changed'
+        ? '同期フォルダ側が更新されました。マージ結果はこのPCに保存済みです — もう一度開き直して送信してください'
+        : `送信に失敗しました: ${r.error ?? ''}(マージ結果はこのPCに保存済みです)`,
+    }
   }
-  await api.setDirty(false).catch(() => { /* 次の push で再確定 */ })
+  // dirty は必ずこの入口で落とす(main の永続フラグとレンダラー側フラグを揃える)。
+  await clearFolderSyncDirty()
   return { ok: true, patch }
 }

@@ -40,7 +40,7 @@ contextBridge.exposeInMainWorld('api', {
     setDirty: (dirty: boolean): Promise<void> => ipcRenderer.invoke('sync:set-dirty', dirty),
     inspect: (): Promise<unknown> => ipcRenderer.invoke('sync:inspect'),
     push: (gen: number, expectPrev: number): Promise<unknown> => ipcRenderer.invoke('sync:push', gen, expectPrev),
-    pull: (expectedGen: number): Promise<unknown> => ipcRenderer.invoke('sync:pull', expectedGen),
+    pull: (expectedGen: number, deadlineMs?: number): Promise<unknown> => ipcRenderer.invoke('sync:pull', expectedGen, deadlineMs),
     // 競合の項目単位マージ用: base スナップショット / フォルダ側 DB の生バイト。
     readBase: (): Promise<Uint8Array | null> => ipcRenderer.invoke('sync:read-base'),
     readFolderDb: (): Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }> =>

@@ -52,7 +52,7 @@ export interface SyncApi {
   setDirty: (dirty: boolean) => Promise<void>
   inspect: () => Promise<InspectResult>
   push: (gen: number, expectPrev: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
-  pull: (expectedGen: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
+  pull: (expectedGen: number, deadlineMs?: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   readBase: () => Promise<Uint8Array | null>
   readFolderDb: () => Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }>
   listRemoteMedia: () => Promise<string[]>
@@ -112,9 +112,23 @@ let lastReconcileAt = 0
 
 // 現在の状態が参照している idb: の id 一覧(store.tsx が初期化時に注入)。
 let getLiveRefs: (() => Promise<string[]>) | null = null
+// 未確定の編集(store の 400ms デバウンス待ち)を即座にディスクへ書き出す。
+// push は DB ファイルを読むので、これを先に流さないと「編集を含まないバイトを
+// 送ったうえで dirty を落とす」= その編集が恒久的に未同期になる。
+let flushPendingSaves: (() => Promise<void>) | null = null
 
-export function initFolderSync(opts: { getLiveRefs: () => Promise<string[]> }): void {
+export function initFolderSync(opts: {
+  getLiveRefs: () => Promise<string[]>
+  flushPendingSaves: () => Promise<void>
+}): void {
   getLiveRefs = opts.getLiveRefs
+  flushPendingSaves = opts.flushPendingSaves
+}
+
+/** push 直前に呼ぶ: デバウンス待ちの編集を確定させ、飛行中の保存も待ち切る。 */
+async function settleLocalWrites(): Promise<void> {
+  try { await flushPendingSaves?.() } catch { /* 保存側の失敗は push 側で検知される */ }
+  await drainSaves()
 }
 
 // ── 実編集の記録 ──
@@ -134,8 +148,19 @@ export function markFolderSyncEdit(): void {
 
 async function clearDirtyIfNoNewEdits(api: SyncApi, seqAtPush: number): Promise<void> {
   if (editSeq !== seqAtPush) return // push 中に編集された → dirty のまま(次で再送)
+  await clearFolderSyncDirty()
+}
+
+/**
+ * dirty を下ろす唯一の入口。main の永続フラグとレンダラー側の dirtyMarked を
+ * 必ず同時に落とす — 片方だけ落とすと markFolderSyncEdit が
+ * `if (dirtyMarked) return` で以後永久に握り潰され、その後の編集が push も
+ * されず、相手が世代を進めた時に無警告 pull で消える。
+ */
+export async function clearFolderSyncDirty(): Promise<void> {
+  const api = syncApi()
   dirtyMarked = false
-  await api.setDirty(false).catch(() => { /* 次の push で再確定される */ })
+  if (api) await api.setDirty(false).catch(() => { /* 次の push で再確定される */ })
 }
 
 function scheduleRetry(ms: number): void {
@@ -298,8 +323,9 @@ function setConflict(m: SyncManifest, initial: boolean): void {
 
 async function doPush(api: SyncApi, gen: number, expectPrev: number, trigger: FolderSyncTrigger): Promise<FolderSyncPhase> {
   setStatus({ phase: 'pushing' })
+  // デバウンス待ちの編集を確定させてから seq を取る(確定処理自体は編集ではない)。
+  await settleLocalWrites()
   const seqAtPush = editSeq
-  await drainSaves()
   // メディアを先に上げる: マニフェスト(コミットポイント)が参照する実体が
   // フォルダに揃ってから DB+マニフェストを書く。
   const failed = await pushMissingMedia(api)
@@ -325,16 +351,44 @@ async function doPush(api: SyncApi, gen: number, expectPrev: number, trigger: Fo
   return 'idle'
 }
 
+// 起動時チェックを待ち切れず先に起動した(= 以降ユーザーが編集しうる)ことを示す。
+// これが立った後の起動時 pull は DB を差し替えてはならない — 差し替えても
+// 凍結中に積まれた編集ごとリロードで消えるだけになる。
+let startupAbandoned = false
+// 起動時 pull の締め切り。startupFolderSync の待ち時間より短くして、
+// 「見捨てた後に裏で成功して DB を差し替える」窓自体を作らない。
+const STARTUP_PULL_DEADLINE_MS = 18_000
+const STARTUP_WAIT_MS = 25_000
+
 async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger): Promise<'pulled' | FolderSyncPhase> {
   setStatus({ phase: 'pulling' })
-  // これ以降の書き込みが取り込んだ DB を上書きしないよう凍結し、差し替えに
-  // 成功したらページごとリロードして全ストアを新データで立ち上げ直す。
-  // 起動時(startup)も同じ道を通る: mindtrain ストアがバンドル評価の時点で
-  // 旧 DB を sql.js に読み込んでいるため、ファイル差し替えだけでは旧データが
-  // メモリに残り、次の自動保存で取り込んだ内容を巻き戻してしまう。
+  // 起動時チェックを既に見捨てていたら、DB を差し替えずに次の focus 判定へ回す
+  // (この時点でユーザーは編集を始めている可能性があり、凍結+リロードは消失を生む)。
+  if (trigger === 'startup' && startupAbandoned) {
+    setStatus({ phase: 'waiting', message: 'クラウドの転送完了を待っています' })
+    scheduleRetry(15_000)
+    return 'waiting'
+  }
+  // 取り込み中の書き込みを止めるだけでなく、既に saveChain に載っている保存を
+  // 待ち切る。freezeWrites は saveState の入口フラグにすぎず、飛行中の db:save は
+  // 止まらない — それが pull 後に着地すると、取り込んだ DB を旧バイトで上書きした
+  // まま「同期済み」と記録され、相手の世代を二度と取りに行かなくなる。
   freezeWrites()
-  const r = await api.pull(m.gen)
-  if (r.ok) {
+  let r: { ok: boolean; error?: string }
+  try {
+    await drainSaves()
+    // 起動時(startup)も凍結+リロードの道を通る: mindtrain ストアがバンドル評価の
+    // 時点で旧 DB を sql.js に読み込んでいるため、ファイル差し替えだけでは旧データが
+    // メモリに残り、次の自動保存で取り込んだ内容を巻き戻してしまう。
+    r = await api.pull(m.gen, trigger === 'startup' ? STARTUP_PULL_DEADLINE_MS : undefined)
+  } catch (e) {
+    // IPC 自体の失敗など。凍結したままにすると以後の保存が無言で捨てられるので必ず解除。
+    thawWrites()
+    setStatus({ phase: 'error', message: e instanceof Error ? e.message : '取り込みに失敗しました' })
+    scheduleRetry(60_000)
+    return 'error'
+  }
+  if (r.ok && !(trigger === 'startup' && startupAbandoned)) {
     window.location.reload()
     return 'pulled'
   }
@@ -353,10 +407,15 @@ async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger)
 export async function startupFolderSync(): Promise<void> {
   const api = syncApi()
   if (!api) return
+  startupAbandoned = false
+  let timer: ReturnType<typeof setTimeout> | undefined
   await Promise.race([
     checkFolderSync('startup'),
-    new Promise<void>(resolve => setTimeout(resolve, 25_000)),
+    new Promise<void>(resolve => {
+      timer = setTimeout(() => { startupAbandoned = true; resolve() }, STARTUP_WAIT_MS)
+    }),
   ]).catch(() => { /* 同期の失敗で起動を壊さない */ })
+  if (timer) clearTimeout(timer)
 }
 
 /** 設定画面の「今すぐ同期」/ フローティング同期ボタン用。 */
@@ -374,9 +433,9 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
   try {
     if (choice === 'local') {
       setStatus({ phase: 'pushing' })
-      const seqAtPush = editSeq
       await api.backupConflict('remote') // 負けるフォルダ側の DB を退避
-      await drainSaves()
+      await settleLocalWrites()
+      const seqAtPush = editSeq
       const failed = await pushMissingMedia(api)
       const r = await api.push(c.remoteGen + 1, c.remoteGen)
       if (!r.ok) {
@@ -391,7 +450,15 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
       setStatus({ phase: 'pulling' })
       await api.backupConflict('local') // 負けるこのPCの DB を退避
       freezeWrites()
-      const r = await api.pull(c.remoteGen)
+      let r: { ok: boolean; error?: string }
+      try {
+        await drainSaves() // 飛行中の保存が pull 後に着地して取り込みを潰すのを防ぐ
+        r = await api.pull(c.remoteGen)
+      } catch (e) {
+        thawWrites() // 凍結したままだと以後の保存が無言で捨てられる
+        setStatus({ phase: 'conflict', conflict: c, message: e instanceof Error ? e.message : '取り込みに失敗しました' })
+        return
+      }
       if (r.ok) {
         window.location.reload()
         return

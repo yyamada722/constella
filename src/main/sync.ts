@@ -243,13 +243,16 @@ export function initSync(deps: SyncDeps): void {
 
   // フォルダのスナップショットをローカル DB に取り込む。SHA 照合で「クラウドが
   // まだ運びかけの DB」を拒否(error:'inconsistent' → レンダラーは後で再試行)。
-  ipcMain.handle('sync:pull', async (_e, expectedGen: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
+  ipcMain.handle('sync:pull', async (_e, expectedGen: number, deadlineMs?: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
     const s = await loadSettings()
     if (!s.folder) return { ok: false, error: 'not-configured' }
     try {
       const { manifest } = await readManifest(s.folder)
       if (!manifest || manifest.gen !== expectedGen) return { ok: false, error: 'changed' }
-      const buf = await withDeadline(readFile(folderDbPath(s.folder)), 120_000)
+      // 起動時はレンダラーが待てる時間より短い締め切りを渡してくる。長い既定値のまま
+      // だと「起動チェックを見捨てた後に裏で成功して DB を差し替える」窓ができる。
+      const readDeadline = typeof deadlineMs === 'number' && deadlineMs > 0 ? Math.min(deadlineMs, 120_000) : 120_000
+      const buf = await withDeadline(readFile(folderDbPath(s.folder)), readDeadline)
       if (buf.length !== manifest.dbSize || sha256(buf) !== manifest.dbSha256) return { ok: false, error: 'inconsistent' }
       if (!buf.subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) return { ok: false, error: 'inconsistent' }
       await deps.writeDbAtomic(buf)
