@@ -53,6 +53,8 @@ export interface SyncApi {
   inspect: () => Promise<InspectResult>
   push: (gen: number, expectPrev: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   pull: (expectedGen: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
+  readBase: () => Promise<Uint8Array | null>
+  readFolderDb: () => Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }>
   listRemoteMedia: () => Promise<string[]>
   readRemoteMedia: (name: string) => Promise<{ bytes: Uint8Array; mime: string } | null>
   writeRemoteMedia: (id: string, bytes: Uint8Array, mime: string) => Promise<boolean>

@@ -390,8 +390,8 @@ export async function exportReturn(state: AppState, entry: RecvIndexEntry, exclu
 
 // ── 返却の 3方向マージ(貸出側) ──
 
-// 比較用の安定シリアライズ(キー順を正規化、undefined は無視)。
-function stableStringify(v: unknown): string {
+// 比較用の安定シリアライズ(キー順を正規化、undefined は無視)。同期の項目単位マージでも使う。
+export function stableStringify(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null'
   if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']'
   const o = v as Record<string, unknown>
@@ -459,10 +459,10 @@ function mergeStream<T extends { id: string }>(
 }
 
 // タスクは projects[].tasks に入れ子だが、粒度を保つためフラット化してマージする。
-interface FlatTask extends Task { __projectId: string }
-const flattenTasks = (projects: Project[]): FlatTask[] =>
+export interface FlatTask extends Task { __projectId: string }
+export const flattenTasks = (projects: Project[]): FlatTask[] =>
   projects.flatMap(p => p.tasks.map(t => ({ ...t, __projectId: p.id })))
-const stripTasks = (projects: Project[]): (Omit<Project, 'tasks'> & { id: string })[] =>
+export const stripTasks = (projects: Project[]): (Omit<Project, 'tasks'> & { id: string })[] =>
   projects.map(({ tasks: _tasks, ...meta }) => meta)
 
 const STREAMS: { [K in keyof PackItems]?: StreamDef<{ id: string }> } = {
@@ -549,7 +549,7 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
   return { pack, result: { patch, applied, conflicts }, theirsByKey, mineState: state }
 }
 
-function rebuildProjects(metas: Omit<Project, 'tasks'>[], flat: FlatTask[], mineProjects: Project[]): Project[] {
+export function rebuildProjects(metas: Omit<Project, 'tasks'>[], flat: FlatTask[], mineProjects: Project[]): Project[] {
   const byProject = new Map<string, Task[]>()
   const metaIds = new Set(metas.map(m => m.id))
   // 自分側のタスク並び順を優先し、新規は末尾に付く(Map の挿入順で保たれる)。

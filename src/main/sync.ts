@@ -93,6 +93,12 @@ async function writeAtomic(target: string, data: Buffer | string): Promise<void>
 
 export function initSync(deps: SyncDeps): void {
   const settingsPath = (): string => join(app.getPath('userData'), 'sync.json')
+  // 最後に push/pull した世代の DB スナップショット。競合時の「項目単位マージ」の
+  // 共通祖先(base)になる — これがあると 相手だけ/自分だけ/両方 の変更を分類できる。
+  const basePath = (): string => join(app.getPath('userData'), 'sync-base.db')
+  async function writeBase(buf: Buffer): Promise<void> {
+    try { await writeAtomic(basePath(), buf) } catch { /* base は best-effort(無ければ全体択一にフォールバック) */ }
+  }
 
   async function loadSettings(): Promise<SyncSettings> {
     let raw: Partial<SyncSettings> = {}
@@ -228,6 +234,7 @@ export function initSync(deps: SyncDeps): void {
       }
       await withDeadline(writeAtomic(join(s.folder, MANIFEST_NAME), JSON.stringify(manifest, null, 2)), 30_000)
       await saveSettings({ ...s, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt })
+      await writeBase(buf)
       return { ok: true, manifest }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -249,7 +256,33 @@ export function initSync(deps: SyncDeps): void {
       const etag = await etagOf(deps.dbPath())
       // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
       await saveSettings({ ...s, lastGen: manifest.gen, lastLocalEtag: etag, lastSha: manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false })
+      await writeBase(buf)
       return { ok: true, manifest }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // 項目単位マージ用: base スナップショットと、フォルダ側 DB の生バイト読み出し。
+  ipcMain.handle('sync:read-base', async (): Promise<Buffer | null> => {
+    const s = await loadSettings()
+    try {
+      const buf = await withDeadline(readFile(basePath()), 30_000)
+      // base は「lastSha の世代」のはず — 食い違うなら信用しない(別フォルダ切替直後など)。
+      if (s.lastSha && sha256(buf) !== s.lastSha) return null
+      return buf
+    } catch { return null }
+  })
+
+  ipcMain.handle('sync:read-folder-db', async (): Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Buffer; deviceName?: string }> => {
+    const s = await loadSettings()
+    if (!s.folder) return { ok: false, error: 'not-configured' }
+    try {
+      const { manifest } = await readManifest(s.folder)
+      if (!manifest) return { ok: false, error: 'no-manifest' }
+      const buf = await withDeadline(readFile(folderDbPath(s.folder)), 120_000)
+      if (buf.length !== manifest.dbSize || sha256(buf) !== manifest.dbSha256) return { ok: false, error: 'inconsistent' }
+      return { ok: true, gen: manifest.gen, bytes: buf, deviceName: manifest.deviceName }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }

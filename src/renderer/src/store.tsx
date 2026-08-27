@@ -5,6 +5,7 @@ import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
 import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit } from './persistence/folderSync'
+import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
 
 // The single default master project that all pre-existing data is migrated under.
@@ -958,6 +959,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   latest.current = history.present
   // 同期フォルダの状態(競合バナーの表示に使う)。
   const folderSync = useFolderSyncStatus()
+  // 競合の「項目単位マージ」モーダル(バナーの「内容を確認して選ぶ」から)。
+  const [syncMergeOpen, setSyncMergeOpen] = useState(false)
 
   // E2E・デバッグ用の内部フック(ローカルアプリなので露出リスクは無い)。
   // 実データの編集をUI操作なしで注入できるので、受け渡しマージ等の自動検証に使う。
@@ -1186,6 +1189,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
             </span>
           </div>
           <div className="mt-2 flex items-center gap-2 justify-end">
+            {!folderSync.conflict.initial && (
+              <button
+                onClick={() => setSyncMergeOpen(true)}
+                className="px-2.5 py-1 rounded border border-indigo-400 bg-indigo-500 text-white hover:bg-indigo-600 font-semibold text-[11px]"
+                title="双方の変更を項目ごとに確認して、どこまで取り込むか選びます"
+              >
+                内容を確認して選ぶ…
+              </button>
+            )}
             <button
               onClick={() => { resolveFolderSyncConflict('remote').catch(() => { /* ignore */ }) }}
               className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px]"
@@ -1203,6 +1215,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
+      <SyncMergeModal open={syncMergeOpen} onClose={() => setSyncMergeOpen(false)} />
     </AppContext.Provider>
   )
 }

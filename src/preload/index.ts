@@ -41,6 +41,10 @@ contextBridge.exposeInMainWorld('api', {
     inspect: (): Promise<unknown> => ipcRenderer.invoke('sync:inspect'),
     push: (gen: number, expectPrev: number): Promise<unknown> => ipcRenderer.invoke('sync:push', gen, expectPrev),
     pull: (expectedGen: number): Promise<unknown> => ipcRenderer.invoke('sync:pull', expectedGen),
+    // 競合の項目単位マージ用: base スナップショット / フォルダ側 DB の生バイト。
+    readBase: (): Promise<Uint8Array | null> => ipcRenderer.invoke('sync:read-base'),
+    readFolderDb: (): Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }> =>
+      ipcRenderer.invoke('sync:read-folder-db'),
     listRemoteMedia: (): Promise<string[]> => ipcRenderer.invoke('sync:list-remote-media'),
     readRemoteMedia: (name: string): Promise<{ bytes: Uint8Array; mime: string } | null> =>
       ipcRenderer.invoke('sync:read-remote-media', name),

@@ -333,7 +333,30 @@ const B = (v: unknown): string | number | null => (v == null ? null : typeof v =
 
 /** Returns the persisted AppState, or null if the database has never been initialized. */
 export async function loadState(): Promise<AppState | null> {
-  const db = await getDb()
+  return readState(await getDb())
+}
+
+/**
+ * 任意の DB バイト列を AppState に読み出す(本体の DB は触らない)。
+ * 同期フォルダ側 DB / 最終同期時点の base スナップショットの解析に使う
+ * (競合の項目単位マージ)。壊れたバイト列は null。
+ */
+export async function parseDbBytes(bytes: Uint8Array): Promise<AppState | null> {
+  if (!sqlModule) sqlModule = await initSqlJs({ locateFile: () => wasmUrl })
+  let db: Database
+  try {
+    db = openVerified(sqlModule, bytes)
+  } catch { return null }
+  try {
+    db.run(SCHEMA) // 欠けているテーブルだけ補う(CREATE IF NOT EXISTS なので破壊しない)
+    return readState(db)
+  } catch { return null } finally {
+    try { db.close() } catch { /* ignore */ }
+  }
+}
+
+// 与えられた DB インスタンスから AppState を組み立てる(loadState / parseDbBytes 共用)。
+function readState(db: Database): AppState | null {
   const initialized = rows(db, "SELECT value FROM meta WHERE key='initialized'")[0]
   if (!initialized) return null
 
