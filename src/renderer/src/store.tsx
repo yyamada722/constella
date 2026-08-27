@@ -749,6 +749,11 @@ const COALESCABLE = new Set<Action['type']>([
 // active master project must not become an undo step (an UNDO would teleport the
 // user to a different project).
 const NO_HISTORY = new Set<Action['type']>(['SET_CANVAS_CARD_VIEW', 'SET_ACTIVE_MASTER_PROJECT'])
+
+// 同期の dirty(= 他マシンへ送るべき変更)を立てないアクション。閲覧状態の変更を
+// 編集として数えると、プロジェクトを切り替えたり PDF のページを送っただけで
+// 新世代が push され、相手に実編集があるとニセ競合になる。
+const NOT_A_SYNC_EDIT = NO_HISTORY
 // Discrete, atomic edits (add/remove/paste of a flow node/group) that must stay
 // their own undo step and NOT absorb a following continuous edit. Without this,
 // creating a memo/image then immediately typing/resizing (<500ms) would coalesce
@@ -965,11 +970,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // 競合の「項目単位マージ」モーダル(バナーの「内容を確認して選ぶ」から)。
   const [syncMergeOpen, setSyncMergeOpen] = useState(false)
 
-  // E2E・デバッグ用の内部フック(ローカルアプリなので露出リスクは無い)。
-  // 実データの編集をUI操作なしで注入できるので、受け渡しマージ等の自動検証に使う。
-  useEffect(() => {
-    ;(window as unknown as Record<string, unknown>).__constella = { dispatch, getState: () => latest.current }
-  }, [])
   // Version token of the DB as we last loaded/saved it — used to detect when another
   // device (iPad over the LAN) changed it so we reload on focus. Guards re-entrancy.
   const lastEtag = useRef('')
@@ -1047,6 +1047,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       sweepMedia(refs).catch(() => { /* ignore */ })
       try { lastEtag.current = await dbEtag() } catch { /* ignore */ }
       if (!alive) return
+      // latest は通常レンダー中に更新されるが、直後に走る post-hydrate の
+      // メディア照合(getLiveRefs)がレンダー前に読むと hydrate 前のサンプル状態を
+      // 走査してしまい、取り込んだDBだけが参照するメディアが落とされる。先に反映。
+      latest.current = loaded
       dispatch({ type: '__HYDRATE', payload: loaded })
       hydratedRef.current = true
       setHydrated(true)
@@ -1063,12 +1067,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Persist to SQLite (debounced). Never write before hydration or after a load
   // failure, or we'd clobber the stored data.
-  // 初回実行(HYDRATE 直後の保存)は「編集」ではないので同期の dirty には数えない。
-  const firstAutosaveRun = useRef(true)
+  // dirty のマークは dispatchTracked(UI 由来のアクションのみ)が担当する。
+  // present の変化を数えると、__HYDRATE や閲覧状態の変更まで編集扱いになる。
   useEffect(() => {
     if (!hydrated || loadFailed) return
-    if (firstAutosaveRun.current) firstAutosaveRun.current = false
-    else if (!isRemote) markFolderSyncEdit()
     const id = setTimeout(() => {
       saveState(history.present)
         .then(() => dbEtag())
@@ -1139,15 +1141,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis) }
   }, [hydrated, loadFailed])
 
+  // UI から届くアクションだけを「同期すべき実編集」として記録する入口。
+  // 内部 dispatch(__HYDRATE / focus-sync の再ロード)はここを通らないので、
+  // 何も編集していないのに dirty が立ってニセ競合になることがない。
+  const dispatchTracked = useCallback((action: Action | { type: 'UNDO' } | { type: 'REDO' }) => {
+    if (!isRemote && !NOT_A_SYNC_EDIT.has(action.type as Action['type'])) markFolderSyncEdit()
+    dispatch(action as Action)
+  }, [])
+
+  // E2E・デバッグ用の内部フック(ローカルアプリなので露出リスクは無い)。
+  // 実データの編集をUI操作なしで注入できるので、受け渡しマージ等の自動検証に使う。
+  // dispatch は UI と同じ dispatchTracked を渡す — 生の dispatch を渡すと同期の
+  // dirty が立たず、テストが本番と違う経路を通ってしまう。
+  useEffect(() => {
+    ;(window as unknown as Record<string, unknown>).__constella = { dispatch: dispatchTracked, getState: () => latest.current }
+  }, [dispatchTracked])
+
   const value = useMemo(() => ({
     state: history.present,
-    dispatch: dispatch as React.Dispatch<Action>,
+    dispatch: dispatchTracked as React.Dispatch<Action>,
     canUndo: history.past.length > 0,
     canRedo: history.future.length > 0,
-    undo: () => dispatch({ type: 'UNDO' }),
-    redo: () => dispatch({ type: 'REDO' }),
+    undo: () => dispatchTracked({ type: 'UNDO' }),
+    redo: () => dispatchTracked({ type: 'REDO' }),
     syncNow: reloadFromServer,
-  }), [history, reloadFromServer])
+  }), [history, reloadFromServer, dispatchTracked])
 
   if (!hydrated) {
     return <div className="h-screen w-screen flex items-center justify-center text-slate-400 text-sm">読み込み中…</div>

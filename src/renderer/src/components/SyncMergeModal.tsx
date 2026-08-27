@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { X, GitMerge } from 'lucide-react'
 import { useApp } from '../store'
 import { prepareSyncMerge, applySyncMerge, type SyncMergePlan, type SyncMergeRow } from '../persistence/syncMerge'
-import { manualFolderSync } from '../persistence/folderSync'
+import { manualFolderSync, clearFolderSyncDirty } from '../persistence/folderSync'
 
 interface Props {
   open: boolean
@@ -102,6 +102,10 @@ export function SyncMergeModal({ open, onClose }: Props) {
         return
       }
       dispatch({ type: 'APPLY_STATE_PATCH', payload: r.patch })
+      // この dispatch は UI 経由なので編集としてマークされるが、いま push した内容
+      // そのものなので送るべき差分は無い。ここで下ろさないと直後の同期チェックが
+      // 同じ内容をもう1世代ぶん押してしまう。
+      await clearFolderSyncDirty()
       onClose()
       // 状態表示を「同期済み」に更新し、メディアの差分転送も走らせる。
       manualFolderSync().catch(() => { /* ignore */ })

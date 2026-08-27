@@ -353,7 +353,7 @@ export async function loadState(): Promise<AppState | null> {
  * 同期フォルダ側 DB / 最終同期時点の base スナップショットの解析に使う
  * (競合の項目単位マージ)。壊れたバイト列は null。
  */
-export async function parseDbBytes(bytes: Uint8Array): Promise<AppState | null> {
+export async function parseDbBytes(bytes: Uint8Array): Promise<{ state: AppState; kv: Record<string, string> } | null> {
   if (!sqlModule) sqlModule = await initSqlJs({ locateFile: () => wasmUrl })
   let db: Database
   try {
@@ -365,7 +365,13 @@ export async function parseDbBytes(bytes: Uint8Array): Promise<AppState | null> 
     // 旧バージョンのDBを SELECT * で読むと値が黙って undefined になり、
     // 「相手がこのフィールドを消した」という幻の差分を生む。
     applySchemaAndMigrations(db)
-    return readState(db)
+    const state = readState(db)
+    if (!state) return null
+    // app_kv も返す: 受け渡しの台帳(handoff.*)はここに載るため、AppState だけを
+    // マージして push すると相手側の台帳を取りこぼす。
+    const kv: Record<string, string> = {}
+    for (const r of rows(db, 'SELECT key, value FROM app_kv')) kv[str(r.key)] = str(r.value)
+    return { state, kv }
   } catch { return null } finally {
     try { db.close() } catch { /* ignore */ }
   }

@@ -75,7 +75,19 @@ export interface HandoffPack {
 // handoff.recv.index    … 受け取った一覧 [{handoffId,masterId,name,sourceMasterId,receivedAt}]
 
 export interface HandoffIndexEntry { id: string; name: string; exportedAt: string; returnedAt?: string }
-export interface RecvIndexEntry { handoffId: string; masterId: string; name: string; sourceMasterId: string; receivedAt: string }
+export interface RecvIndexEntry {
+  handoffId: string
+  masterId: string
+  name: string
+  sourceMasterId: string
+  receivedAt: string
+  /**
+   * 取り込み時に ID 衝突で振り直した対応(新 id → 元 id)。返却時にこれで元へ戻す。
+   * 戻さないと、貸出側のマージが「元 id は削除・新 id は追加」と解釈し、
+   * パック外からその項目を参照していた箇所が壊れる。
+   */
+  idMap?: Record<string, string>
+}
 
 export async function loadHandoffIndex(): Promise<HandoffIndexEntry[]> {
   try { return JSON.parse((await loadKv('handoff.index')) || '[]') } catch { return [] }
@@ -120,6 +132,46 @@ function descendantFolderIds(all: { id: string; parentId?: string }[], rootIds: 
   return out
 }
 
+// 選択された項目がリンクしている実体(ノート/スケッチ/計画)を選択に足す。
+// 参照が増えても新たな参照は生まないので、1周で安定する。
+function expandLinkedSelection(state: AppState, sel: HandoffSelection): HandoffSelection {
+  const next: HandoffSelection = {
+    ...sel,
+    noteIds: new Set(sel.noteIds),
+    sketchIds: new Set(sel.sketchIds),
+    planIds: new Set(sel.planIds),
+  }
+  const noteFolderIds = descendantFolderIds(state.noteFolders, sel.noteFolderIds)
+  const inPack = (n: { id: string; folderId?: string }): boolean =>
+    next.noteIds.has(n.id) || !!(n.folderId && noteFolderIds.has(n.folderId))
+
+  // タスクの「関連ノート」
+  for (const p of state.projects) {
+    if (!sel.projectIds.has(p.id)) continue
+    for (const t of p.tasks) for (const id of t.linkedNoteIds ?? []) next.noteIds.add(id)
+  }
+  // 同梱されるキャンバスタブ上のカードが指す実体
+  const boardIds = new Set(state.canvasBoards.filter(b => sel.canvasBoardIds.has(b.id)).map(b => b.id))
+  const tabIds = new Set(state.canvasTabs.filter(t => (t.boardId && boardIds.has(t.boardId)) || sel.canvasTabIds.has(t.id)).map(t => t.id))
+  for (const c of state.canvasCards) {
+    if (!tabIds.has(c.tabId)) continue
+    if (c.refNoteId) next.noteIds.add(c.refNoteId)
+    if (c.refSketchId) next.sketchIds.add(c.refSketchId)
+    if (c.refPlanId) next.planIds.add(c.refPlanId)
+  }
+  // 引き込んだノートがさらに参照するもの(添付ファイルは buildPackItems 側が拾う)
+  for (const n of state.notes) if (inPack(n)) next.noteIds.add(n.id)
+  // 実在しない id は落とす(削除済みへのリンクが残っているケース)
+  const drop = <T,>(s: Set<string>, all: { id: string }[]): Set<string> => {
+    const ids = new Set(all.map(x => x.id))
+    return new Set([...s].filter(x => ids.has(x))) as Set<string> & T
+  }
+  next.noteIds = drop(next.noteIds, state.notes)
+  next.sketchIds = drop(next.sketchIds, state.sketches)
+  next.planIds = drop(next.planIds, state.plans)
+  return next
+}
+
 // 選択アイテムの親フォルダ鎖(先祖)も同梱 — 相手側でフォルダ参照が宙に浮かないように。
 function ancestorFolders<T extends { id: string; parentId?: string }>(all: T[], fromIds: Iterable<string | undefined>): Set<string> {
   const byId = new Map(all.map(f => [f.id, f]))
@@ -130,8 +182,16 @@ function ancestorFolders<T extends { id: string; parentId?: string }>(all: T[], 
   return out
 }
 
-/** 選択から自己完結のサブセットを作る(参照ファイル・親フォルダは自動同梱)。 */
+/**
+ * 選択から自己完結のサブセットを作る(参照ファイル・親フォルダは自動同梱)。
+ *
+ * タスクの linkedNoteIds やカードの refNoteId/refSketchId/refPlanId が指す実体も
+ * 引き込む — これらを落とすと相手側でリンクが宙に浮き、「自己完結」ではなくなる。
+ * refTabId(別キャンバスへのジャンプ)と refTaskId は、辿ると別ボードを丸ごと
+ * 引き込みかねないので対象外(相手側では参照先なしとして表示される)。
+ */
 export function buildPackItems(state: AppState, sel: HandoffSelection): PackItems {
+  sel = expandLinkedSelection(state, sel)
   const noteFolderIds = descendantFolderIds(state.noteFolders, sel.noteFolderIds)
   const notes = state.notes.filter(n => sel.noteIds.has(n.id) || (n.folderId && noteFolderIds.has(n.folderId)))
   for (const id of ancestorFolders(state.noteFolders, notes.map(n => n.folderId))) noteFolderIds.add(id)
@@ -292,7 +352,7 @@ function reparentItems(items: PackItems, masterId: string): PackItems {
 // 実運用の id はランダム生成なのでまず衝突しないが、初期サンプルデータの固定 id
 // ('1' など)を双方が持っているケースが現実に起こり得る。振り直した項目は返却時に
 // 元の id と一致しなくなる(貸出側では「削除+追加」として現れる)が、データは失わない。
-function remapCollidingIds(state: AppState, items: PackItems): PackItems {
+function remapCollidingIds(state: AppState, items: PackItems): { items: PackItems; map: Map<string, string> } {
   const existing = new Set<string>()
   const collect = (arr: { id: string }[]): void => arr.forEach(x => existing.add(x.id))
   for (const key of Object.keys(EMPTY_ITEMS) as (keyof PackItems)[]) collect(state[key] as { id: string }[])
@@ -302,8 +362,12 @@ function remapCollidingIds(state: AppState, items: PackItems): PackItems {
   const claim = (id: string): void => { if (existing.has(id) && !map.has(id)) map.set(id, generateId()) }
   for (const key of Object.keys(EMPTY_ITEMS) as (keyof PackItems)[]) (items[key] as { id: string }[]).forEach(x => claim(x.id))
   items.projects.forEach(p => p.tasks.forEach(t => claim(t.id)))
-  if (map.size === 0) return items
+  if (map.size === 0) return { items, map }
+  return { items: applyIdMap(items, map), map }
+}
 
+/** 与えられた対応表(旧 id → 新 id)で、参照フィールドまで含めて id を置き換える。 */
+function applyIdMap(items: PackItems, map: Map<string, string>): PackItems {
   const r = (id: string | undefined): string | undefined => (id ? map.get(id) ?? id : id)
   const rq = (id: string): string => map.get(id) ?? id
   const rArr = (ids: string[] | undefined): string[] | undefined => ids?.map(rq)
@@ -344,11 +408,18 @@ function remapCollidingIds(state: AppState, items: PackItems): PackItems {
  */
 export async function receiveHandoff(state: AppState, pack: HandoffPack): Promise<{ patch: Partial<AppState>; master: MasterProject }> {
   const recv = await loadRecvIndex()
-  if (recv.some(r => r.handoffId === pack.handoffId)) {
+  // 取り込みは undo できるが台帳は履歴の外にあるため、「台帳にはあるがプロジェクトが
+  // 無い」= 取り込みを取り消した/削除した状態になりうる。その場合は再取り込みを許す
+  // (でないと undo した瞬間に、そのファイルを二度と開けなくなる)。
+  const stale = recv.filter(r => r.handoffId === pack.handoffId && !state.masterProjects.some(m => m.id === r.masterId))
+  const live = recv.filter(r => r.handoffId === pack.handoffId && state.masterProjects.some(m => m.id === r.masterId))
+  if (live.length > 0) {
     throw new Error(`この作業ファイル(${pack.name})は既に取り込み済みです。返却を受け取る側の場合は、元のマシンで取り込んでください`)
   }
+  const kept = stale.length > 0 ? recv.filter(r => !stale.includes(r)) : recv
   const master: MasterProject = { id: generateId(), name: `📦 ${pack.name}`, createdAt: new Date().toISOString() }
-  const items = reparentItems(remapCollidingIds(state, pack.items), master.id)
+  const remap = remapCollidingIds(state, pack.items)
+  const items = reparentItems(remap.items, master.id)
   await importMedia(pack.media)
   const patch: Partial<AppState> = {
     masterProjects: [...state.masterProjects, master],
@@ -358,8 +429,16 @@ export async function receiveHandoff(state: AppState, pack: HandoffPack): Promis
     // 既存配列の後ろに連結。id は元のまま維持する(返却マージの前提)。
     ;(patch as Record<string, unknown[]>)[key] = [...(state[key] as unknown[]), ...(items[key] as unknown[])]
   }
-  recv.unshift({ handoffId: pack.handoffId, masterId: master.id, name: pack.name, sourceMasterId: pack.sourceMasterId, receivedAt: new Date().toISOString() })
-  await saveKv('handoff.recv.index', JSON.stringify(recv.slice(0, 30)))
+  // 逆引き(新 id → 元 id)を控える。返却時にこれで元の id へ戻さないと、貸出側の
+  // マージが「元 id は削除・新 id は追加」と解釈してパック外の参照を壊す。
+  const idMap: Record<string, string> = {}
+  for (const [orig, next] of remap.map) idMap[next] = orig
+  kept.unshift({
+    handoffId: pack.handoffId, masterId: master.id, name: pack.name,
+    sourceMasterId: pack.sourceMasterId, receivedAt: new Date().toISOString(),
+    ...(Object.keys(idMap).length ? { idMap } : {}),
+  })
+  await saveKv('handoff.recv.index', JSON.stringify(kept.slice(0, 30)))
   return { patch, master }
 }
 
@@ -377,7 +456,11 @@ export async function exportReturn(state: AppState, entry: RecvIndexEntry, exclu
   state.researchFolders.forEach(f => { if (f.masterProjectId === entry.masterId && !f.parentId) sel.researchFolderIds.add(f.id) })
   state.research.forEach(r => { if (r.masterProjectId === entry.masterId) sel.researchIds.add(r.id) })
   state.sketches.forEach(s => { if (s.masterProjectId === entry.masterId) sel.sketchIds.add(s.id) })
-  const items = reparentItems(buildPackItems(state, sel), entry.sourceMasterId)
+  // ID衝突で振り直していた場合は元の id へ戻してから返す(貸出側のマージが
+  // 「元 id は削除・新 id は追加」と解釈してパック外の参照を壊さないように)。
+  const inverse = new Map(Object.entries(entry.idMap ?? {}))
+  const packed = buildPackItems(state, sel)
+  const items = reparentItems(inverse.size ? applyIdMap(packed, inverse) : packed, entry.sourceMasterId)
   const { media, omitted } = await collectPackMedia(items, excludeVideos)
   const pack: HandoffPack = {
     app: 'constella-pack', version: 1, kind: 'return',

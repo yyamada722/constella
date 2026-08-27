@@ -40,7 +40,11 @@ contextBridge.exposeInMainWorld('api', {
     setDirty: (dirty: boolean): Promise<void> => ipcRenderer.invoke('sync:set-dirty', dirty),
     inspect: (): Promise<unknown> => ipcRenderer.invoke('sync:inspect'),
     push: (gen: number, expectPrev: number): Promise<unknown> => ipcRenderer.invoke('sync:push', gen, expectPrev),
-    pull: (expectedGen: number, deadlineMs?: number): Promise<unknown> => ipcRenderer.invoke('sync:pull', expectedGen, deadlineMs),
+    // pull は prepare(長いフォルダ読み)→ commit(ローカルDB差し替え)の2段。
+    // 間にレンダラーが「その間の編集」を確認できるようにするための分割。
+    pullPrepare: (expectedGen: number, deadlineMs?: number): Promise<unknown> => ipcRenderer.invoke('sync:pull-prepare', expectedGen, deadlineMs),
+    pullCommit: (expectedGen: number): Promise<unknown> => ipcRenderer.invoke('sync:pull-commit', expectedGen),
+    pullDiscard: (): Promise<void> => ipcRenderer.invoke('sync:pull-discard'),
     // 競合の項目単位マージ用: base スナップショット / フォルダ側 DB の生バイト。
     readBase: (): Promise<Uint8Array | null> => ipcRenderer.invoke('sync:read-base'),
     readFolderDb: (): Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }> =>

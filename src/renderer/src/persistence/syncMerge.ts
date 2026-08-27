@@ -13,7 +13,7 @@
 // できないため対象外 — このPCの版が維持される。
 import type { AppState } from '../store'
 import type { Project } from '../types'
-import { parseDbBytes, saveState } from './db'
+import { parseDbBytes, saveState, saveKv, loadKv } from './db'
 import { syncApi, clearFolderSyncDirty, markFolderSyncEdit } from './folderSync'
 import { stableStringify, flattenTasks, stripTasks, rebuildProjects, type FlatTask } from './handoff'
 
@@ -42,6 +42,9 @@ export type SyncMergePlan =
       mineByKey: Map<string, { id: string } | null>
       theirsByKey: Map<string, { id: string } | null>
       mineState: AppState
+      // フォルダ側の app_kv(受け渡し台帳など)。マージ結果を push する際に
+      // 取りこぼさないよう、こちらに無いキーだけ復元してから送る。
+      theirsKv: Record<string, string>
     }
   | { ok: false; reason: 'no-base' | 'inconsistent' | 'error'; message: string }
 
@@ -193,11 +196,13 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
     if (!baseBytes) {
       return { ok: false, reason: 'no-base', message: 'この競合には比較の基準(前回同期時の記録)がありません。今回は「このPCを採用 / 同期フォルダを採用」からお選びください。次回の同期からは項目単位で選べるようになります' }
     }
-    const [theirsState, baseState] = await Promise.all([
+    const [theirsParsed, baseParsed] = await Promise.all([
       parseDbBytes(new Uint8Array(folder.bytes)),
       parseDbBytes(new Uint8Array(baseBytes)),
     ])
-    if (!theirsState || !baseState) return { ok: false, reason: 'error', message: '比較用データの読み取りに失敗しました' }
+    if (!theirsParsed || !baseParsed) return { ok: false, reason: 'error', message: '比較用データの読み取りに失敗しました' }
+    const theirsState = theirsParsed.state
+    const baseState = baseParsed.state
 
     const out = { rows: [] as SyncMergeRow[], mineByKey: new Map<string, { id: string } | null>(), theirsByKey: new Map<string, { id: string } | null>() }
     for (const { key, def } of STREAMS) {
@@ -222,13 +227,33 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
     // 表示順: 要選択(both) → 相手の変更 → 自分の変更
     const order = { both: 0, theirs: 1, mine: 2 }
     out.rows.sort((a, b2) => order[a.side] - order[b2.side] || a.typeLabel.localeCompare(b2.typeLabel))
-    return { ok: true, folderGen: folder.gen, deviceName: folder.deviceName || '相手のマシン', rows: out.rows, mineByKey: out.mineByKey, theirsByKey: out.theirsByKey, mineState: state }
+    return { ok: true, folderGen: folder.gen, deviceName: folder.deviceName || '相手のマシン', rows: out.rows, mineByKey: out.mineByKey, theirsByKey: out.theirsByKey, mineState: state, theirsKv: theirsParsed.kv }
   } catch (e) {
     return { ok: false, reason: 'error', message: e instanceof Error ? e.message : '差分の計算に失敗しました' }
   }
 }
 
 // ── 適用 ──
+
+// このPCが持っている受け渡し台帳のキー(存在するものだけ)。フォルダ側の台帳を
+// 復元する際に「こちらに無いものだけ」を判定するために使う。
+async function loadHandoffKeys(): Promise<Record<string, string | undefined>> {
+  const out: Record<string, string | undefined> = {}
+  for (const k of ['handoff.index', 'handoff.recv.index']) {
+    const v = await loadKv(k)
+    if (v != null) out[k] = v
+  }
+  // base は id ごとに増えるので、index に載っている分だけ確認する。
+  try {
+    const idx = JSON.parse(out['handoff.index'] ?? '[]') as { id: string }[]
+    for (const e of idx) {
+      const key = `handoff.base.${e.id}`
+      const v = await loadKv(key)
+      if (v != null) out[key] = v
+    }
+  } catch { /* 台帳が壊れていても復元処理は続行 */ }
+  return out
+}
 
 /**
  * 選択を反映したマージ結果を作り、保存してフォルダへ新世代として push する。
@@ -280,13 +305,35 @@ export async function applySyncMerge(
     patch.projects = rebuildProjects(metas, flat, current.projects)
   }
 
+  // アクティブなプロジェクトが相手側の削除で消えた場合、存在しない id が残ると
+  // 画面が空に見える。生き残っているプロジェクトへ寄せる。
+  if (patch.masterProjects) {
+    const activeId = patch.activeMasterProjectId ?? current.activeMasterProjectId
+    if (!patch.masterProjects.some(p => p.id === activeId)) {
+      patch.activeMasterProjectId = patch.masterProjects[0]?.id ?? ''
+    }
+  }
+
   const merged: AppState = { ...current, ...patch }
+  // 受け渡しの台帳(app_kv の handoff.*)は AppState の外にあるため、マージ結果を
+  // そのまま push すると相手側の台帳が消える。こちらに無いキーだけ先に復元する
+  // (貸出記録が消えると、その返却ファイルを取り込めなくなる)。
+  try {
+    const mine = await loadHandoffKeys()
+    for (const [k, v] of Object.entries(plan.theirsKv)) {
+      if (!k.startsWith('handoff.')) continue // mindtrain 等の単一ブロブはマージ不能なのでこのPCの版を維持
+      if (mine[k] === undefined) await saveKv(k, v)
+    }
+  } catch { /* 台帳の復元は best-effort — 失敗してもマージ自体は成立する */ }
   // 先に保存してから push(push はディスク上の DB ファイルを読むため)。
   try {
     await saveState(merged)
   } catch (e) {
     return { ok: false, message: `マージ結果の保存に失敗しました: ${e instanceof Error ? e.message : e}` }
   }
+  // 相手側スナップショットを退避してから上書きする。項目単位で「自分」を選んだ行の
+  // 相手の値は、この push で唯一の保管場所だったフォルダ側DBから消えるため。
+  await api.backupConflict('remote').catch(() => { /* 退避は best-effort */ })
   const r = await api.push(plan.folderGen + 1, plan.folderGen)
   if (!r.ok) {
     // フォルダ側がさらに進んだ等。ディスクにはマージ結果が入っているのにメモリ側は

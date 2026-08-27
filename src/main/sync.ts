@@ -119,6 +119,22 @@ export function initSync(deps: SyncDeps): void {
     try { await writeFile(settingsPath(), JSON.stringify(s, null, 2)) } catch { /* best-effort */ }
   }
 
+  // sync.json への read-modify-write は必ずここを通す。ハンドラごとに
+  // loadSettings → 長い await → saveSettings とやると、その間に走った別ハンドラの
+  // 変更(dirty=true やフォルダ切替)を古いスナップショットで塗り潰してしまう。
+  // 読み出しと書き込みをひと続きにして到着順に直列化する。
+  let settingsLock: Promise<unknown> = Promise.resolve()
+  function updateSettings(mutate: (s: SyncSettings) => SyncSettings): Promise<SyncSettings> {
+    const run = settingsLock.then(async () => {
+      const cur = await loadSettings()
+      const next = mutate(cur)
+      await saveSettings(next)
+      return next
+    })
+    settingsLock = run.then(() => undefined, () => undefined)
+    return run
+  }
+
   const folderDbPath = (folder: string): string => join(folder, DB_NAME)
   const mediaDirPath = (folder: string): string => join(folder, MEDIA_DIR)
 
@@ -144,12 +160,11 @@ export function initSync(deps: SyncDeps): void {
   // 「前回同期以降に実編集があった」フラグ。レンダラーが編集時に true、
   // push 完了(かつ push 後に新たな編集が無いと確認)で false にする。
   ipcMain.handle('sync:set-dirty', async (_e, dirty: boolean) => {
-    const s = await loadSettings()
-    if (s.dirty !== !!dirty) await saveSettings({ ...s, dirty: !!dirty })
+    await updateSettings(s => (s.dirty === !!dirty ? s : { ...s, dirty: !!dirty }))
   })
 
   ipcMain.handle('sync:configure', async (_e, patch: { folder?: string | null; enabled?: boolean; deviceName?: string }) => {
-    const cur = await loadSettings()
+    return await updateSettings(cur => {
     const next: SyncSettings = { ...cur }
     if (patch.folder !== undefined && patch.folder !== cur.folder) {
       // フォルダが変わったら世代の対応関係もリセット(新フォルダとは未同期)。
@@ -162,8 +177,8 @@ export function initSync(deps: SyncDeps): void {
     }
     if (patch.enabled !== undefined) next.enabled = !!patch.enabled
     if (patch.deviceName !== undefined && patch.deviceName.trim()) next.deviceName = patch.deviceName.trim().slice(0, 40)
-    await saveSettings(next)
     return next
+    })
   })
 
   ipcMain.handle('sync:pick-folder', async (): Promise<string | null> => {
@@ -222,7 +237,10 @@ export function initSync(deps: SyncDeps): void {
       // フォルダ側と中身が同一なら世代を上げず記録だけ更新(起動のたびの
       // 再シリアライズで gen が空回りしないように)。
       if (prev.manifest && prev.manifest.dbSha256 === sha) {
-        await saveSettings({ ...s, lastGen: prev.manifest.gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: new Date().toISOString() })
+        await updateSettings(c => ({ ...c, lastGen: prev.manifest!.gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: new Date().toISOString() }))
+        // base も揃えておく。ここを飛ばすと lastSha と sync-base.db が食い違い、
+        // 以後の競合で項目単位マージが使えなくなる(全体択一に劣化する)。
+        await writeBase(buf)
         return { ok: true, manifest: prev.manifest }
       }
       await mkdir(s.folder, { recursive: true })
@@ -233,7 +251,7 @@ export function initSync(deps: SyncDeps): void {
         pushedAt: new Date().toISOString(), dbSize: buf.length, dbSha256: sha,
       }
       await withDeadline(writeAtomic(join(s.folder, MANIFEST_NAME), JSON.stringify(manifest, null, 2)), 30_000)
-      await saveSettings({ ...s, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt })
+      await updateSettings(c => ({ ...c, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt }))
       await writeBase(buf)
       return { ok: true, manifest }
     } catch (e) {
@@ -243,7 +261,13 @@ export function initSync(deps: SyncDeps): void {
 
   // フォルダのスナップショットをローカル DB に取り込む。SHA 照合で「クラウドが
   // まだ運びかけの DB」を拒否(error:'inconsistent' → レンダラーは後で再試行)。
-  ipcMain.handle('sync:pull', async (_e, expectedGen: number, deadlineMs?: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
+  // pull は2段構え。フォルダからの読み出しはクラウド次第で数十秒かかりうるので、
+  // その長い I/O(prepare)と、ローカルDBの差し替え(commit)を分ける。
+  // レンダラーは prepare 完了後・commit 直前に「その間にユーザーが編集していないか」
+  // を確認でき、編集があれば差し替えずに競合として扱える(黙って捨てない)。
+  let prepared: { gen: number; buf: Buffer; manifest: SyncManifest } | null = null
+
+  ipcMain.handle('sync:pull-prepare', async (_e, expectedGen: number, deadlineMs?: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
     const s = await loadSettings()
     if (!s.folder) return { ok: false, error: 'not-configured' }
     try {
@@ -255,16 +279,34 @@ export function initSync(deps: SyncDeps): void {
       const buf = await withDeadline(readFile(folderDbPath(s.folder)), readDeadline)
       if (buf.length !== manifest.dbSize || sha256(buf) !== manifest.dbSha256) return { ok: false, error: 'inconsistent' }
       if (!buf.subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) return { ok: false, error: 'inconsistent' }
-      await deps.writeDbAtomic(buf)
-      const etag = await etagOf(deps.dbPath())
-      // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
-      await saveSettings({ ...s, lastGen: manifest.gen, lastLocalEtag: etag, lastSha: manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false })
-      await writeBase(buf)
+      prepared = { gen: manifest.gen, buf, manifest }
       return { ok: true, manifest }
     } catch (e) {
+      prepared = null
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
+
+  ipcMain.handle('sync:pull-commit', async (_e, expectedGen: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
+    const s = await loadSettings()
+    const p = prepared
+    if (!s.folder) return { ok: false, error: 'not-configured' }
+    if (!p || p.gen !== expectedGen) return { ok: false, error: 'not-prepared' }
+    try {
+      await deps.writeDbAtomic(p.buf)
+      const etag = await etagOf(deps.dbPath())
+      // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
+      await updateSettings(c => ({ ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false }))
+      await writeBase(p.buf)
+      return { ok: true, manifest: p.manifest }
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      prepared = null
+    }
+  })
+
+  ipcMain.handle('sync:pull-discard', async () => { prepared = null })
 
   // 項目単位マージ用: base スナップショットと、フォルダ側 DB の生バイト読み出し。
   ipcMain.handle('sync:read-base', async (): Promise<Buffer | null> => {

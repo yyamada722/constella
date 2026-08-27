@@ -52,7 +52,9 @@ export interface SyncApi {
   setDirty: (dirty: boolean) => Promise<void>
   inspect: () => Promise<InspectResult>
   push: (gen: number, expectPrev: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
-  pull: (expectedGen: number, deadlineMs?: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
+  pullPrepare: (expectedGen: number, deadlineMs?: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
+  pullCommit: (expectedGen: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
+  pullDiscard: () => Promise<void>
   readBase: () => Promise<Uint8Array | null>
   readFolderDb: () => Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }>
   listRemoteMedia: () => Promise<string[]>
@@ -255,6 +257,10 @@ export async function checkFolderSync(trigger: FolderSyncTrigger): Promise<'pull
   // 競合はユーザーの選択待ち — 自動チェックで状態を塗り替えない(手動は再判定を許す)。
   if (status.phase === 'conflict' && trigger !== 'manual') return 'conflict'
   busy = true
+  // 判定に使う dirty は inspect 時点のスナップショット。ここから pull を確定するまでの
+  // 間に入った編集は「まだ dirty に反映されていない編集」なので、editSeq で見張って
+  // 取り込み前に競合へ振り替える(黙って捨てない)。
+  const seqAtCheck = editSeq
   try {
     const ins = await api.inspect()
     const base = { enabled: ins.configured && ins.enabled, folder: ins.folder, lastSyncAt: ins.lastSyncAt }
@@ -299,7 +305,7 @@ export async function checkFolderSync(trigger: FolderSyncTrigger): Promise<'pull
         setConflict(m, ins.lastGen === 0)
         return 'conflict'
       }
-      return await doPull(api, m, trigger)
+      return await doPull(api, m, trigger, seqAtCheck)
     }
 
     // フォルダ側が自分の記録より古い = フォルダが差し替え/巻き戻しされた。
@@ -360,7 +366,7 @@ let startupAbandoned = false
 const STARTUP_PULL_DEADLINE_MS = 18_000
 const STARTUP_WAIT_MS = 25_000
 
-async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger): Promise<'pulled' | FolderSyncPhase> {
+async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger, seqAtCheck: number): Promise<'pulled' | FolderSyncPhase> {
   setStatus({ phase: 'pulling' })
   // 起動時チェックを既に見捨てていたら、DB を差し替えずに次の focus 判定へ回す
   // (この時点でユーザーは編集を始めている可能性があり、凍結+リロードは消失を生む)。
@@ -369,18 +375,51 @@ async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger)
     scheduleRetry(15_000)
     return 'waiting'
   }
-  // 取り込み中の書き込みを止めるだけでなく、既に saveChain に載っている保存を
-  // 待ち切る。freezeWrites は saveState の入口フラグにすぎず、飛行中の db:save は
-  // 止まらない — それが pull 後に着地すると、取り込んだ DB を旧バイトで上書きした
-  // まま「同期済み」と記録され、相手の世代を二度と取りに行かなくなる。
+  // 第1段: フォルダからの読み出し(クラウド次第で数十秒)。ここではまだローカルDBを
+  // 触らないので凍結もしない — ユーザーは普通に編集でき、その編集は保存される。
+  let prep: { ok: boolean; error?: string }
+  try {
+    prep = await api.pullPrepare(m.gen, trigger === 'startup' ? STARTUP_PULL_DEADLINE_MS : undefined)
+  } catch (e) {
+    setStatus({ phase: 'error', message: e instanceof Error ? e.message : '取り込みに失敗しました' })
+    scheduleRetry(60_000)
+    return 'error'
+  }
+  if (!prep.ok) {
+    setStatus({
+      phase: 'waiting',
+      message: trigger === 'startup'
+        ? 'クラウドの転送完了を待っています(それまでこのPCの内容で表示します)'
+        : 'クラウドの転送完了を待っています',
+    })
+    scheduleRetry(30_000)
+    return 'waiting'
+  }
+  // 判定(inspect)から取り込み確定までの間にユーザーが編集していたら、それを黙って
+  // 捨てない。両方に変更がある状態=競合なので、ユーザーに選ばせる(項目単位マージも使える)。
+  //
+  // 起動時(startup)は hydrate 前でユーザーが編集しようがなく、この時点の editSeq の
+  // 動きは各ストアの初期化(路線図ストアの再バインド等)なので対象外。起動後まで
+  // ずれ込んだケースは startupAbandoned が受け持つ。
+  const editedDuringPull = trigger !== 'startup' && editSeq !== seqAtCheck
+  if (editedDuringPull || (trigger === 'startup' && startupAbandoned)) {
+    await api.pullDiscard().catch(() => { /* 次の prepare で上書きされる */ })
+    if (editedDuringPull) { setConflict(m, false); return 'conflict' }
+    setStatus({ phase: 'waiting', message: 'クラウドの転送完了を待っています' })
+    scheduleRetry(15_000)
+    return 'waiting'
+  }
+  // 第2段: ローカルDBの差し替え(ローカルI/Oのみ=短い)。ここだけ凍結する。
+  // 取り込んだ DB を後から着地した保存が上書きしないよう、飛行中の保存も待ち切る
+  // (freezeWrites は saveState の入口フラグにすぎず、既に飛んでいる db:save は止まらない)。
+  // 起動時も凍結+リロードの道を通る: mindtrain ストアがバンドル評価の時点で旧 DB を
+  // sql.js に読み込んでいるため、ファイル差し替えだけでは旧データがメモリに残り、
+  // 次の自動保存で取り込んだ内容を巻き戻してしまう。
   freezeWrites()
   let r: { ok: boolean; error?: string }
   try {
     await drainSaves()
-    // 起動時(startup)も凍結+リロードの道を通る: mindtrain ストアがバンドル評価の
-    // 時点で旧 DB を sql.js に読み込んでいるため、ファイル差し替えだけでは旧データが
-    // メモリに残り、次の自動保存で取り込んだ内容を巻き戻してしまう。
-    r = await api.pull(m.gen, trigger === 'startup' ? STARTUP_PULL_DEADLINE_MS : undefined)
+    r = await api.pullCommit(m.gen)
   } catch (e) {
     // IPC 自体の失敗など。凍結したままにすると以後の保存が無言で捨てられるので必ず解除。
     thawWrites()
@@ -388,17 +427,12 @@ async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger)
     scheduleRetry(60_000)
     return 'error'
   }
-  if (r.ok && !(trigger === 'startup' && startupAbandoned)) {
+  if (r.ok) {
     window.location.reload()
     return 'pulled'
   }
   thawWrites()
-  setStatus({
-    phase: 'waiting',
-    message: trigger === 'startup'
-      ? 'クラウドの転送完了を待っています(それまでこのPCの内容で表示します)'
-      : 'クラウドの転送完了を待っています',
-  })
+  setStatus({ phase: 'waiting', message: 'クラウドの転送完了を待っています' })
   scheduleRetry(30_000)
   return 'waiting'
 }
@@ -448,12 +482,19 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
       if (failed > 0) scheduleRetry(60_000)
     } else {
       setStatus({ phase: 'pulling' })
+      // ここはユーザーが明示的に「フォルダ側を採用」と選んだ経路なので、読み出し中の
+      // 編集は競合に戻さず退避で守る(backupConflict('local') が直前に走っている)。
+      const prep = await api.pullPrepare(c.remoteGen).catch(() => ({ ok: false as const }))
+      if (!prep.ok) {
+        setStatus({ phase: 'conflict', conflict: c, message: 'クラウドの転送待ちのため取り込めませんでした。しばらくして再度お試しください' })
+        return
+      }
       await api.backupConflict('local') // 負けるこのPCの DB を退避
       freezeWrites()
       let r: { ok: boolean; error?: string }
       try {
         await drainSaves() // 飛行中の保存が pull 後に着地して取り込みを潰すのを防ぐ
-        r = await api.pull(c.remoteGen)
+        r = await api.pullCommit(c.remoteGen)
       } catch (e) {
         thawWrites() // 凍結したままだと以後の保存が無言で捨てられる
         setStatus({ phase: 'conflict', conflict: c, message: e instanceof Error ? e.message : '取り込みに失敗しました' })
