@@ -21,7 +21,7 @@ import type {
 } from '../types'
 import { loadKv, saveKv } from './db'
 import {
-  stableStringify, classifyStream, streamLabel,
+  stableStringify, compareKey, classifyStream, streamLabel,
   flattenTasks, stripTasks, rebuildProjects,
   MERGE_STREAMS, PROJECTS_STREAM, TASKS_STREAM,
   type FlatTask, type MergeStreamDef,
@@ -605,16 +605,28 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
  * 突き合わせて「マージが実際に加えた変更(追加/更新/削除)」だけを取り出し、
  * それを現在の配列へ適用し直す。
  */
-function rebasePatch(pending: PendingMerge, current: AppState): Partial<AppState> {
+function rebasePatch(pending: PendingMerge, current: AppState, skipped: string[]): Partial<AppState> {
   const out: Partial<AppState> = {}
   const rebaseOne = (frozen: { id: string }[], merged: { id: string }[], now: { id: string }[]): { id: string }[] => {
     const frozenById = new Map(frozen.map(x => [x.id, x]))
     const mergedById = new Map(merged.map(x => [x.id, x]))
+    const nowById = new Map(now.map(x => [x.id, x]))
     const next = [...now]
+    // 取り込み画面を開いてから、この PC 側でその項目自体が変わっていないか。
+    // 変わっているのに凍結時点の決定を当てると、その間の編集(や削除)を
+    // 無言で潰してしまう。変わった項目は適用を見送る。
+    const untouched = (id: string): boolean => {
+      const f = frozenById.get(id) ?? null
+      const n = nowById.get(id) ?? null
+      if (compareKey(f) === compareKey(n)) return true
+      skipped.push(id)
+      return false
+    }
     // マージが変えた/足したもの
     for (const item of merged) {
       const before = frozenById.get(item.id)
-      if (before && stableStringify(before) === stableStringify(item)) continue
+      if (before && compareKey(before) === compareKey(item)) continue
+      if (!untouched(item.id)) continue
       const i = next.findIndex(x => x.id === item.id)
       if (i >= 0) next[i] = item
       else next.push(item)
@@ -622,6 +634,7 @@ function rebasePatch(pending: PendingMerge, current: AppState): Partial<AppState
     // マージが消したもの
     for (const item of frozen) {
       if (mergedById.has(item.id)) continue
+      if (!untouched(item.id)) continue
       const i = next.findIndex(x => x.id === item.id)
       if (i >= 0) next.splice(i, 1)
     }
@@ -657,7 +670,8 @@ function rebasePatch(pending: PendingMerge, current: AppState): Partial<AppState
 export async function applyReturnMerge(pending: PendingMerge, resolutions: MergeConflict[], current: AppState): Promise<Partial<AppState>> {
   // 差分の計算は取り込み時点で凍結してよいが、適用の土台は「今」の状態にする。
   // 競合の選択に時間をかけている間の編集(グローバル Ctrl+Z など)を巻き戻さない。
-  const patch = rebasePatch(pending, current)
+  const skipped: string[] = []
+  const patch = rebasePatch(pending, current, skipped)
   // key = "<stream>:<id>"。resolution が theirs の競合だけ、相手の版で上書き/削除する。
   const byStream = new Map<string, { id: string; item: { id: string } | null }[]>()
   for (const c of resolutions) {

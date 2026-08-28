@@ -521,6 +521,14 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
         setStatus({ phase: 'conflict', conflict: c, message: 'クラウドの転送待ちのため取り込めませんでした。しばらくして再度お試しください' })
         return
       }
+      // 退避する前に未確定の編集を確定させる。prepare は数十秒かかりうるので、
+      // その間の編集やデバウンス待ちの編集がディスクに無いまま退避すると、
+      // 「退避したはずなのに直前の作業が入っていない」バックアップになる。
+      if (!(await settleLocalWrites())) {
+        await api.pullDiscard().catch(() => { /* 次の prepare で上書きされる */ })
+        setStatus({ phase: 'conflict', conflict: c, message: '保存に失敗したため中止しました' })
+        return
+      }
       // 退避に失敗したら取り込まない。取り込むとこのPCの内容が復元不能に消える。
       if (!(await api.backupConflict('local'))) {
         await api.pullDiscard().catch(() => { /* 次の prepare で上書きされる */ })

@@ -106,6 +106,12 @@ export function SyncMergeModal({ open, onClose }: Props) {
       // そのものなので送るべき差分は無い。ここで下ろさないと直後の同期チェックが
       // 同じ内容をもう1世代ぶん押してしまう。
       await clearFolderSyncDirty()
+      if (r.skipped > 0) {
+        // この画面を開いている間にこのPCで変わった項目は、選択をそのまま当てると
+        // その編集を消してしまうため見送っている。黙って落とさず知らせる。
+        setError(`この画面を開いている間に変更された ${r.skipped} 件は、変更を失わないよう適用を見送りました。必要なら開き直して選び直してください`)
+        return
+      }
       onClose()
       // 状態表示を「同期済み」に更新し、メディアの差分転送も走らせる。
       manualFolderSync().catch(() => { /* ignore */ })

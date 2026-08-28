@@ -204,6 +204,21 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
 
 // ── 適用 ──
 
+// 台帳(配列)の統合。同じ id は「このPCの版」を優先し、相手にしかない記録を足す。
+// 片方を丸ごと捨てると、相手が貸し出した記録が push で共有状態から消える。
+function mergeLedger(mineRaw: string | undefined, theirsRaw: string, idKey: string): string {
+  const parse = (raw: string | undefined): Record<string, unknown>[] => {
+    try { const v = JSON.parse(raw ?? '[]'); return Array.isArray(v) ? v : [] } catch { return [] }
+  }
+  const merged = parse(mineRaw)
+  const seen = new Set(merged.map(x => String(x[idKey])))
+  for (const e of parse(theirsRaw)) {
+    const id = String(e[idKey])
+    if (!seen.has(id)) { merged.push(e); seen.add(id) }
+  }
+  return JSON.stringify(merged.slice(0, 60))
+}
+
 // このPCが持っている受け渡し台帳のキー(存在するものだけ)。フォルダ側の台帳を
 // 復元する際に「こちらに無いものだけ」を判定するために使う。
 async function loadHandoffKeys(): Promise<Record<string, string | undefined>> {
@@ -237,7 +252,7 @@ export async function applySyncMerge(
   plan: Extract<SyncMergePlan, { ok: true }>,
   rows: SyncMergeRow[],
   current: AppState,
-): Promise<{ ok: true; patch: Partial<AppState> } | { ok: false; message: string; patch?: Partial<AppState> }> {
+): Promise<{ ok: true; patch: Partial<AppState>; skipped: number } | { ok: false; message: string; patch?: Partial<AppState> }> {
   const api = syncApi()
   if (!api) return { ok: false, message: 'デスクトップ版でのみ利用できます' }
 
@@ -256,12 +271,24 @@ export async function applySyncMerge(
     reorder.has(stream) ? applyOrder(arr, plan.theirsOrder[stream] ?? []) : arr
 
   const patch: Partial<AppState> = {}
+  // モーダルを開いてから今までに、その項目自体がこのPCで変わっていないか。
+  // 変わっているのに差分表示時の決定(特に「相手が削除」)をそのまま当てると、
+  // 選択中に入れた編集を無言で消してしまう。変わった項目は適用を見送る。
+  const changedSinceOpen: string[] = []
+  const stillSame = (stream: string, id: string, arr: { id: string }[]): boolean => {
+    const frozen = plan.mineByKey.get(`${stream}:${id}`) ?? null
+    const now = arr.find(x => x.id === id) ?? null
+    if (compareKey(frozen) === compareKey(now)) return true
+    changedSinceOpen.push(id)
+    return false
+  }
   const applyTo = applyChanges
   // 土台は「適用時点」の状態。相手側を採用した行だけを重ねるので、モーダル表示中に
   // 進んだ他の変更はそのまま生き残る。
   for (const [stream, changes] of byStream) {
     if (stream === 'projects' || stream === 'tasks') continue
-    ;(patch as Record<string, unknown>)[stream] = ordered(stream, applyTo(current[stream as keyof AppState] as unknown as { id: string }[], changes))
+    const arr = current[stream as keyof AppState] as unknown as { id: string }[]
+    ;(patch as Record<string, unknown>)[stream] = ordered(stream, applyTo(arr, changes.filter(c => stillSame(stream, c.id, arr))))
   }
   // 並び順だけ採用するコレクション(項目の差分は無い)も反映する。
   for (const stream of reorder) {
@@ -272,8 +299,10 @@ export async function applySyncMerge(
   const projChanges = byStream.get('projects') ?? []
   const taskChanges = byStream.get('tasks') ?? []
   if (projChanges.length || taskChanges.length || reorder.has('projects') || reorder.has('tasks')) {
-    const metas = ordered('projects', applyTo(stripTasks(current.projects) as unknown as { id: string }[], projChanges)) as unknown as Omit<Project, 'tasks'>[]
-    const flat = ordered('tasks', applyTo(flattenTasks(current.projects) as unknown as { id: string }[], taskChanges)) as unknown as FlatTask[]
+    const curMetas = stripTasks(current.projects) as unknown as { id: string }[]
+    const curFlat = flattenTasks(current.projects) as unknown as { id: string }[]
+    const metas = ordered('projects', applyTo(curMetas, projChanges.filter(c => stillSame('projects', c.id, curMetas)))) as unknown as Omit<Project, 'tasks'>[]
+    const flat = ordered('tasks', applyTo(curFlat, taskChanges.filter(c => stillSame('tasks', c.id, curFlat)))) as unknown as FlatTask[]
     // 相手の並びを採用した場合、flat は既にその順に並んでいるので再ソートさせない。
     patch.projects = rebuildProjects(metas, flat, current.projects, reorder.has('tasks'))
   }
@@ -295,6 +324,12 @@ export async function applySyncMerge(
     const mine = await loadHandoffKeys()
     for (const [k, v] of Object.entries(plan.theirsKv)) {
       if (!k.startsWith('handoff.')) continue // mindtrain 等の単一ブロブはマージ不能なのでこのPCの版を維持
+      // 一覧(index)は配列なので「こちらに無ければ入れる」では足りない。両方が
+      // 別々の貸出記録を持っていると相手側の記録が push で消えるため、id で統合する。
+      if (k === 'handoff.index' || k === 'handoff.recv.index') {
+        await saveKv(k, mergeLedger(mine[k], v, k === 'handoff.index' ? 'id' : 'handoffId'))
+        continue
+      }
       if (mine[k] === undefined) await saveKv(k, v)
     }
   } catch { /* 台帳の復元は best-effort — 失敗してもマージ自体は成立する */ }
@@ -305,8 +340,13 @@ export async function applySyncMerge(
     return { ok: false, message: `マージ結果の保存に失敗しました: ${e instanceof Error ? e.message : e}` }
   }
   // 相手側スナップショットを退避してから上書きする。項目単位で「自分」を選んだ行の
-  // 相手の値は、この push で唯一の保管場所だったフォルダ側DBから消えるため。
-  await api.backupConflict('remote').catch(() => { /* 退避は best-effort */ })
+  // 相手の値は、この push で唯一の保管場所だったフォルダ側DBから消えるため、
+  // 退避に失敗したら押さない(押すと復元不能に消える)。
+  const backedUp = await api.backupConflict('remote').catch(() => null)
+  if (!backedUp) {
+    markFolderSyncEdit()
+    return { ok: false, patch, message: 'バックアップを作れなかったため送信を中止しました(ディスクの空き容量をご確認ください)。マージ結果はこのPCに保存済みです' }
+  }
   const r = await api.push(plan.folderGen + 1, plan.folderGen)
   if (!r.ok) {
     // フォルダ側がさらに進んだ等。ディスクにはマージ結果が入っているのにメモリ側は
@@ -324,5 +364,5 @@ export async function applySyncMerge(
   }
   // dirty は必ずこの入口で落とす(main の永続フラグとレンダラー側フラグを揃える)。
   await clearFolderSyncDirty()
-  return { ok: true, patch }
+  return { ok: true, patch, skipped: changedSinceOpen.length }
 }
