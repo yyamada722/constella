@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('api', {
     readFolderDb: (): Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }> =>
       ipcRenderer.invoke('sync:read-folder-db'),
     listRemoteMedia: (): Promise<string[]> => ipcRenderer.invoke('sync:list-remote-media'),
+    backupMediaRefs: (): Promise<string[]> => ipcRenderer.invoke('sync:backup-media-refs'),
     readRemoteMedia: (name: string): Promise<{ bytes: Uint8Array; mime: string } | null> =>
       ipcRenderer.invoke('sync:read-remote-media', name),
     writeRemoteMedia: (id: string, bytes: Uint8Array, mime: string): Promise<boolean> =>

@@ -20,6 +20,12 @@ import type {
   CanvasBoard, CanvasTab, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation,
 } from '../types'
 import { loadKv, saveKv } from './db'
+import {
+  stableStringify, classifyStream, streamLabel,
+  flattenTasks, stripTasks, rebuildProjects,
+  MERGE_STREAMS, PROJECTS_STREAM, TASKS_STREAM,
+  type FlatTask, type MergeStreamDef,
+} from './merge'
 import { getMediaBlob, importMedia, MEDIA_PREFIX } from './media'
 import { markFolderSyncEdit } from './folderSync'
 import { generateId } from '../utils'
@@ -330,11 +336,19 @@ export function parsePack(text: string): HandoffPack {
 // 返却書き出し時: 元のマスターへ)。
 function reparentItems(items: PackItems, masterId: string): PackItems {
   const re = <T extends { masterProjectId: string }>(arr: T[]): T[] => arr.map(x => ({ ...x, masterProjectId: masterId }))
+  // 他プロジェクトへの共有参照は**送り手のマスターID**で記録されている。
+  // DEFAULT_MASTER_ID('master-default')は全インストールで同一なので、そのまま
+  // 渡すと受領側の無関係なプロジェクトに他人のノートが実体参照として現れ、
+  // そこでの編集が単一ソースへ書き戻ってしまう。受け渡し先では共有を解いて持つ。
+  const unshare = <T extends { shared?: boolean; refByMasterIds?: string[] }>(arr: T[]): T[] =>
+    arr.map(({ shared: _shared, refByMasterIds: _refs, ...rest }) => rest as unknown as T)
+  const unlink = <T extends { linkedMasterIds?: string[] }>(arr: T[]): T[] =>
+    arr.map(({ linkedMasterIds: _linked, ...rest }) => rest as unknown as T)
   return {
     ...items,
-    notes: re(items.notes),
+    notes: unshare(re(items.notes)),
     noteFolders: re(items.noteFolders),
-    files: re(items.files),
+    files: unlink(re(items.files)),
     fileFolders: re(items.fileFolders),
     projects: re(items.projects),
     research: re(items.research),
@@ -473,15 +487,6 @@ export async function exportReturn(state: AppState, entry: RecvIndexEntry, exclu
 
 // ── 返却の 3方向マージ(貸出側) ──
 
-// 比較用の安定シリアライズ(キー順を正規化、undefined は無視)。同期の項目単位マージでも使う。
-export function stableStringify(v: unknown): string {
-  if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null'
-  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']'
-  const o = v as Record<string, unknown>
-  const keys = Object.keys(o).filter(k => o[k] !== undefined).sort()
-  return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(o[k])).join(',') + '}'
-}
-
 export interface MergeConflict {
   key: string // "<stream>:<id>"
   typeLabel: string
@@ -496,94 +501,45 @@ export interface MergeResult {
   conflicts: MergeConflict[]
 }
 
-interface StreamDef<T> {
-  key: string
-  typeLabel: string
-  label: (x: T) => string
-  // 比較から除外する揮発フィールド(PDF の表示位置など、作業内容でないもの)。
-  normalize?: (x: T) => unknown
-  /**
-   * パックへの同梱が「参照されているか」で決まるコレクション(ファイル本体と、
-   * その親フォルダ)。相手側に無い = 削除ではなく「参照が外れただけ」なので、
-   * 削除としては適用しない。これを守らないと、借り手がノートから添付を外した
-   * だけで、貸出側の**全プロジェクトの**ライブラリからそのファイルが消える。
-   */
-  derivedByReference?: boolean
+const KIND_MAP: Record<string, MergeConflict['kind']> = {
+  'both-edited': 'both-edited',
+  'they-edited-i-deleted': 'they-edited-i-deleted',
+  'they-deleted-i-edited': 'they-deleted-i-edited',
 }
 
-// 1コレクション分の 3方向マージ。conflicts の resolution を変えて再適用できるよう、
-// 決定(conflict)は適用せず記録し、適用は applyResolutions で行う。
+// 1コレクション分の 3方向マージ。分類は共通コアに任せ、ここでは
+// 「相手だけの変更を適用した配列」を組み立て、競合は記録だけして applyResolutions に回す。
 function mergeStream<T extends { id: string }>(
-  def: StreamDef<T>,
+  def: MergeStreamDef,
   baseArr: T[], mineArr: T[], theirsArr: T[],
   out: { conflicts: MergeConflict[]; theirsByKey: Map<string, T | null>; applied: MergeResult['applied'] },
 ): T[] {
-  const base = new Map(baseArr.map(x => [x.id, x]))
-  const mine = new Map(mineArr.map(x => [x.id, x]))
-  const theirs = new Map(theirsArr.map(x => [x.id, x]))
-  const S = (x: T | undefined | null): string => (x == null ? '∅' : stableStringify(def.normalize ? def.normalize(x) : x))
-
-  const result = new Map(mine) // 自分の並び・自分だけの新規はそのまま生かす
-  const ids = new Set<string>([...base.keys(), ...theirs.keys()])
-  for (const id of ids) {
-    const b = base.get(id) ?? null
-    const t = theirs.get(id) ?? null
-    const m = mine.get(id) ?? null
-    const theyChanged = S(t) !== S(b)
-    const iChanged = S(m) !== S(b)
-    if (!theyChanged) continue // 相手は触っていない → 自分の状態(編集/削除含む)を維持
-    if (S(m) === S(t)) continue // 双方の結果が同一(同じ返却の再取り込み等) → 競合ではない
-    // 参照で同梱されるコレクションの「消失」は削除の意思表示ではない(参照が
-    // 外れただけでもパックから落ちる)。更新・追加だけを受け入れる。
-    if (!t && def.derivedByReference) continue
-    if (!iChanged) {
-      // 相手だけが変えた → そのまま採用(追加/更新/削除)
-      if (t) { result.set(id, t); out.applied[b ? 'updated' : 'added']++ }
-      else { result.delete(id); out.applied.deleted++ }
+  const result = new Map(mineArr.map(x => [x.id, x])) // 自分の並び・自分だけの新規はそのまま生かす
+  for (const e of classifyStream(def, baseArr, mineArr, theirsArr)) {
+    if (e.side === 'mine') continue // 相手は触っていない → 自分の状態を維持
+    if (e.side === 'theirs') {
+      if (e.theirs) { result.set(e.id, e.theirs); out.applied[e.base ? 'updated' : 'added']++ }
+      else { result.delete(e.id); out.applied.deleted++ }
       continue
     }
     // 両方が変えた → 競合として記録(既定は相手の版)
-    const kind: MergeConflict['kind'] = !m ? 'they-edited-i-deleted' : !t ? 'they-deleted-i-edited' : 'both-edited'
-    const key = `${def.key}:${id}`
-    out.conflicts.push({ key, typeLabel: def.typeLabel, label: def.label((t ?? m) as T), kind, resolution: 'theirs' })
-    out.theirsByKey.set(key, t)
+    const key = `${def.key}:${e.id}`
+    out.conflicts.push({
+      key,
+      typeLabel: def.typeLabel,
+      label: streamLabel(def, (e.theirs ?? e.mine) as Record<string, unknown>),
+      kind: KIND_MAP[e.kind] ?? 'both-edited',
+      resolution: 'theirs',
+    })
+    out.theirsByKey.set(key, e.theirs)
   }
   return [...result.values()]
 }
 
-// タスクは projects[].tasks に入れ子だが、粒度を保つためフラット化してマージする。
-export interface FlatTask extends Task { __projectId: string }
-export const flattenTasks = (projects: Project[]): FlatTask[] =>
-  projects.flatMap(p => p.tasks.map(t => ({ ...t, __projectId: p.id })))
-export const stripTasks = (projects: Project[]): (Omit<Project, 'tasks'> & { id: string })[] =>
-  projects.map(({ tasks: _tasks, ...meta }) => meta)
-
-const STREAMS: { [K in keyof PackItems]?: StreamDef<{ id: string }> } = {
-  notes: { key: 'notes', typeLabel: 'ノート', label: x => (x as Note).title || '(無題)' },
-  noteFolders: { key: 'noteFolders', typeLabel: 'ノートフォルダ', label: x => (x as NoteFolder).name, derivedByReference: true },
-  files: { key: 'files', typeLabel: 'ファイル', label: x => (x as FileItem).name, derivedByReference: true },
-  fileFolders: { key: 'fileFolders', typeLabel: 'ファイルフォルダ', label: x => (x as FileFolder).name, derivedByReference: true },
-  research: { key: 'research', typeLabel: 'リサーチ', label: x => (x as ResearchItem).title },
-  researchFolders: { key: 'researchFolders', typeLabel: 'リサーチフォルダ', label: x => (x as ResearchFolder).name, derivedByReference: true },
-  sketches: { key: 'sketches', typeLabel: 'スケッチ', label: x => (x as Sketch).name },
-  flows: { key: 'flows', typeLabel: 'フロー', label: x => (x as Flow).name },
-  plans: { key: 'plans', typeLabel: '計画', label: x => (x as Plan).name },
-  planFolders: { key: 'planFolders', typeLabel: '計画フォルダ', label: x => (x as PlanFolder).name, derivedByReference: true },
-  canvasBoards: { key: 'canvasBoards', typeLabel: 'キャンバスボード', label: x => (x as CanvasBoard).name },
-  canvasTabs: { key: 'canvasTabs', typeLabel: 'キャンバスタブ', label: x => (x as CanvasTab).name },
-  canvasCards: {
-    key: 'canvasCards', typeLabel: 'カード',
-    label: x => (x as CanvasCard).title || (x as CanvasCard).content?.slice(0, 24) || '(カード)',
-    // PDF の表示ページなどの閲覧状態は作業内容ではない — 競合ノイズにしない。
-    normalize: x => { const { pdf: _pdf, ...rest } = x as CanvasCard; return rest },
-  },
-  canvasArrows: { key: 'canvasArrows', typeLabel: '矢印', label: x => (x as CanvasArrow).label || '(矢印)' },
-  canvasGroups: { key: 'canvasGroups', typeLabel: 'グループ', label: x => (x as CanvasGroup).title || '(グループ)' },
-  canvasStrokes: { key: 'canvasStrokes', typeLabel: '描き込み', label: () => '(描き込み)' },
-  canvasLabels: { key: 'canvasLabels', typeLabel: 'ラベル', label: x => (x as CanvasLabel).text || '(ラベル)' },
-  canvasRails: { key: 'canvasRails', typeLabel: '路線', label: x => (x as CanvasRail).name },
-  canvasStations: { key: 'canvasStations', typeLabel: '駅', label: x => (x as CanvasStation).name },
-}
+// パックに載るコレクションだけを共通レジストリから引く(順序も揃う)。
+const STREAMS: { [K in keyof PackItems]?: MergeStreamDef } = Object.fromEntries(
+  MERGE_STREAMS.filter(d => d.key in EMPTY_ITEMS).map(d => [d.key, d]),
+) as { [K in keyof PackItems]?: MergeStreamDef }
 
 export interface PendingMerge {
   pack: HandoffPack
@@ -623,15 +579,14 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
 
   // タスク: プロジェクトのメタとタスクを別ストリームでマージしてから組み立て直す。
   const projMeta = mergeStream(
-    { key: 'projects', typeLabel: 'タスクボード', label: x => (x as Project).name },
+    PROJECTS_STREAM,
     stripTasks(baseR.projects) as { id: string }[],
     stripTasks(state.projects) as { id: string }[],
     stripTasks(theirs.projects) as { id: string }[],
     out,
   ) as (Omit<Project, 'tasks'>)[]
-  const taskDef: StreamDef<{ id: string }> = { key: 'tasks', typeLabel: 'タスク', label: x => (x as FlatTask).title }
   const mergedTasks = mergeStream(
-    taskDef,
+    TASKS_STREAM,
     flattenTasks(baseR.projects) as { id: string }[],
     flattenTasks(state.projects) as { id: string }[],
     flattenTasks(theirs.projects) as { id: string }[],
@@ -640,30 +595,6 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
   patch.projects = rebuildProjects(projMeta, mergedTasks, state.projects)
 
   return { pack, result: { patch, applied, conflicts }, theirsByKey, mineState: state }
-}
-
-export function rebuildProjects(
-  metas: Omit<Project, 'tasks'>[],
-  flat: FlatTask[],
-  mineProjects: Project[],
-  // flat が既に望みの順で並んでいる場合(相手の並び順を採用したとき)に true。
-  // 既定では「自分側の並び」に寄せ直すので、それだと採用した並びが打ち消される。
-  flatIsOrdered = false,
-): Project[] {
-  const byProject = new Map<string, Task[]>()
-  const metaIds = new Set(metas.map(m => m.id))
-  // 自分側のタスク並び順を優先し、新規は末尾に付く(Map の挿入順で保たれる)。
-  const order = new Map<string, number>()
-  mineProjects.forEach(p => p.tasks.forEach((t, i) => order.set(t.id, i)))
-  const sorted = flatIsOrdered ? flat : [...flat].sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9))
-  for (const ft of sorted) {
-    if (!metaIds.has(ft.__projectId)) continue // 親ボードごと消えた → タスクも消える
-    const { __projectId, ...task } = ft
-    const list = byProject.get(__projectId) ?? []
-    list.push(task)
-    byProject.set(__projectId, list)
-  }
-  return metas.map(m => ({ ...m, tasks: byProject.get(m.id) ?? [] })) as Project[]
 }
 
 /**
@@ -766,7 +697,26 @@ export async function applyReturnMerge(pending: PendingMerge, resolutions: Merge
     patch.projects = rebuildProjects(metas, flat, current.projects)
   }
   await importMedia(pending.pack.media)
-  // 台帳に返却済みを記録し、base は次の貸出まで残す(再取り込みにも耐える)。
+  // base を「マージ後の状態」へ進める。ここを据え置くと、同じ handoffId の2通目の
+  // 返却(途中経過→最終版)で1回目に取り込んだ全項目が iChanged 扱いになり、
+  // 貸出側が何も触っていない項目まで競合として並び、既定(相手)のまま適用すると
+  // マージ済みの作業が旧版へ巻き戻る。
+  try {
+    const merged = { ...pending.mineState, ...patch } as AppState
+    const rawBase = await loadKv(`handoff.base.${pending.pack.handoffId}`)
+    const sourceMasterId = rawBase
+      ? (JSON.parse(rawBase) as { sourceMasterId: string }).sourceMasterId
+      : pending.pack.sourceMasterId
+    const nextBase = reparentItems({ ...EMPTY_ITEMS, ...pending.pack.items }, sourceMasterId)
+    // 相手が送ってきた項目のうち、マージ後に手元へ残ったものが次の共通祖先。
+    for (const key of Object.keys(EMPTY_ITEMS) as (keyof PackItems)[]) {
+      const live = new Map((merged[key] as unknown as { id: string }[]).map(x => [x.id, x]))
+      ;(nextBase as unknown as Record<string, unknown[]>)[key] =
+        (nextBase[key] as { id: string }[]).map(x => live.get(x.id) ?? x).filter(x => live.has(x.id))
+    }
+    await saveKv(`handoff.base.${pending.pack.handoffId}`, JSON.stringify({ sourceMasterId, items: nextBase }))
+  } catch { /* base の更新は best-effort — 失敗しても今回のマージ自体は成立している */ }
+  // 台帳に返却済みを記録する。
   const index = await loadHandoffIndex()
   const e = index.find(x => x.id === pending.pack.handoffId)
   if (e) { e.returnedAt = new Date().toISOString(); await saveKv('handoff.index', JSON.stringify(index)) }

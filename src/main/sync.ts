@@ -47,7 +47,7 @@ interface SyncSettings {
 interface SyncDeps {
   dbPath: () => string
   backupsDir: () => string
-  writeDbAtomic: (buf: Buffer) => Promise<void>
+  writeDbAtomic: (buf: Buffer, opts?: { fromRemote?: boolean }) => Promise<void>
   getMainWindow: () => BrowserWindow | null
 }
 
@@ -293,7 +293,9 @@ export function initSync(deps: SyncDeps): void {
     if (!s.folder) return { ok: false, error: 'not-configured' }
     if (!p || p.gen !== expectedGen) return { ok: false, error: 'not-prepared' }
     try {
-      await deps.writeDbAtomic(p.buf)
+      // リモート由来なので日次バックアップ枠は消費しない(その日のローカル作業の
+      // バックアップが作られなくなるのを避ける)。
+      await deps.writeDbAtomic(p.buf, { fromRemote: true })
       const etag = await etagOf(deps.dbPath())
       // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
       await updateSettings(c => ({ ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false }))
@@ -331,6 +333,27 @@ export function initSync(deps: SyncDeps): void {
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
+  })
+
+  // 競合バックアップ(退避したDB)が参照している idb: の id 一覧。
+  // 退避はDBファイルだけをコピーするのに対し、メディア実体はレンダラーの
+  // IndexedDB にあるため、参照が生存集合から外れると sweep の7日猶予後に消える。
+  // 「退避したから安全」と案内している以上、これらは掃除対象から守る必要がある。
+  // SQLite を解釈せず、ファイル全体から idb:<id> を拾う(DELETE 済み領域を拾って
+  // 余分に守ることはあっても、生きている参照を取りこぼすことはない)。
+  ipcMain.handle('sync:backup-media-refs', async (): Promise<string[]> => {
+    const out = new Set<string>()
+    try {
+      const dir = deps.backupsDir()
+      const names = (await readdir(dir)).filter(n => /^constella-conflict-\d{8}-\d{6}\.db$/.test(n))
+      for (const n of names) {
+        try {
+          const buf = await withDeadline(readFile(join(dir, n)), 30_000)
+          for (const m of buf.toString('latin1').matchAll(/idb:([A-Za-z0-9]+)/g)) out.add(m[1])
+        } catch { /* 読めない退避はスキップ */ }
+      }
+    } catch { /* db-backups が無い */ }
+    return [...out]
   })
 
   ipcMain.handle('sync:list-remote-media', async (): Promise<string[]> => {

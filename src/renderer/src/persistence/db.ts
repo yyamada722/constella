@@ -61,7 +61,7 @@ interface DbApi {
   load: () => Promise<ArrayBuffer | Uint8Array | null>
   save: (bytes: Uint8Array) => Promise<void>
   reset?: () => Promise<void>
-  recoveryList?: () => Promise<{ name: string; size: number; mtime: number }[]>
+  recoveryList?: () => Promise<{ name: string; size: number; mtime: number; kind?: 'auto' | 'conflict' }[]>
   loadRecovery?: (name: string) => Promise<ArrayBuffer | Uint8Array | null>
 }
 function electronDb(): DbApi | null {
@@ -291,9 +291,12 @@ async function getDb(): Promise<Database> {
       // Electron: constella.db.bak → rolling daily backups. Browser: main.bak.
       const ed = electronDb()
       if (ed?.recoveryList && ed.loadRecovery) {
-        let candidates: { name: string }[] = []
+        let candidates: { name: string; kind?: 'auto' | 'conflict' }[] = []
         try { candidates = await ed.recoveryList() } catch { /* none */ }
-        for (const c of candidates) {
+        // 同期の競合でユーザーが「選ばなかった側」の退避(kind='conflict')は自動
+        // 復元の対象外。混ぜると、破損をきっかけに拒否したはずのデータへ黙って
+        // 巻き戻る(退避ファイル自体は残るので、明示的な復元操作からは辿れる)。
+        for (const c of candidates.filter(x => x.kind !== 'conflict')) {
           try {
             const b = await ed.loadRecovery(c.name)
             if (!b) continue

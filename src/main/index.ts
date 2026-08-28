@@ -59,7 +59,7 @@ async function dailyBackup(buf: Buffer): Promise<void> {
 // ATOMIC save: write to a temp file first, then rename over the target — a
 // crash/kill mid-write can no longer leave a truncated/corrupt constella.db.
 // Shared by db:save and the folder-sync pull (which replaces the DB the same way).
-async function writeDbAtomic(buf: Buffer): Promise<void> {
+async function writeDbAtomic(buf: Buffer, opts?: { fromRemote?: boolean }): Promise<void> {
   const p = dbPath()
   // 一意な tmp 名: この関数は db:save と同期フォルダの pull という2人の書き手から
   // 呼ばれる。固定名だと両者が同じ tmp に書き、片方の rename が相手の書きかけを
@@ -74,7 +74,12 @@ async function writeDbAtomic(buf: Buffer): Promise<void> {
     try { await unlink(tmp) } catch { /* 掃除は best-effort */ }
     throw e
   }
-  try { await dailyBackup(buf) } catch { /* backups are best-effort */ }
+  // 日次バックアップは「このマシンで作業した内容」の第2の防衛線。同期の pull で
+  // 取り込んだリモートのバイトでその日の枠を埋めてしまうと、その日のローカル作業は
+  // どの世代にも残らない(.bak は次の保存で即ローテートされる)。
+  if (!opts?.fromRemote) {
+    try { await dailyBackup(buf) } catch { /* backups are best-effort */ }
+  }
 }
 
 ipcMain.handle('db:save', async (_e, bytes: Uint8Array): Promise<void> => {
@@ -92,16 +97,22 @@ ipcMain.handle('db:reset', async (): Promise<void> => {
 
 // Recovery candidates, newest first: previous-good .bak, then the rolling daily
 // backups. The renderer walks these when the main DB fails to open.
-ipcMain.handle('db:recovery-list', async (): Promise<{ name: string; size: number; mtime: number }[]> => {
-  const out: { name: string; size: number; mtime: number }[] = []
-  try { const s = await stat(bakPath()); out.push({ name: 'constella.db.bak', size: s.size, mtime: s.mtimeMs }) } catch { /* none */ }
+// `kind`: 'auto' は破損時の自動復旧チェーンが辿ってよい候補(このマシンの正規の
+// スナップショット)。'conflict' は同期の競合でユーザーが**選ばなかった側**の退避で、
+// 自動復元に混ぜると「拒否したはずのデータで勝手に上書きされる」ため除外し、
+// 明示的な復元操作からのみ辿れるようにする。
+ipcMain.handle('db:recovery-list', async (): Promise<{ name: string; size: number; mtime: number; kind: 'auto' | 'conflict' }[]> => {
+  const out: { name: string; size: number; mtime: number; kind: 'auto' | 'conflict' }[] = []
+  try { const s = await stat(bakPath()); out.push({ name: 'constella.db.bak', size: s.size, mtime: s.mtimeMs, kind: 'auto' }) } catch { /* none */ }
   try {
     const dir = backupsDir()
-    // Daily backups + conflict backups (folder-sync の競合で退避した側) — 新しい順。
     const names = (await readdir(dir)).filter(n => /^constella-(?:\d{8}|conflict-\d{8}-\d{6})\.db$/.test(n))
-    const dated: { name: string; size: number; mtime: number }[] = []
+    const dated: { name: string; size: number; mtime: number; kind: 'auto' | 'conflict' }[] = []
     for (const n of names) {
-      try { const s = await stat(join(dir, n)); dated.push({ name: n, size: s.size, mtime: s.mtimeMs }) } catch { /* skip */ }
+      try {
+        const s = await stat(join(dir, n))
+        dated.push({ name: n, size: s.size, mtime: s.mtimeMs, kind: n.includes('conflict-') ? 'conflict' : 'auto' })
+      } catch { /* skip */ }
     }
     dated.sort((a, b) => b.mtime - a.mtime)
     out.push(...dated)

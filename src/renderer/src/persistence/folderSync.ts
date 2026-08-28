@@ -58,6 +58,7 @@ export interface SyncApi {
   readBase: () => Promise<Uint8Array | null>
   readFolderDb: () => Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }>
   listRemoteMedia: () => Promise<string[]>
+  backupMediaRefs: () => Promise<string[]>
   readRemoteMedia: (name: string) => Promise<{ bytes: Uint8Array; mime: string } | null>
   writeRemoteMedia: (id: string, bytes: Uint8Array, mime: string) => Promise<boolean>
   backupConflict: (source: 'local' | 'remote') => Promise<string | null>
@@ -149,6 +150,16 @@ async function settleLocalWrites(): Promise<boolean> {
 // push 完了時に「push 開始以降に新たな編集が無い」場合だけフラグを下ろす。
 let editSeq = 0
 let dirtyMarked = false
+
+/**
+ * 競合バックアップ(退避したDB)が参照しているメディアの idb: 参照。
+ * sweep の生存集合に足して、「退避したのに実体だけ7日後に消える」のを防ぐ。
+ */
+export async function backupMediaRefs(): Promise<string[]> {
+  const api = syncApi()
+  if (!api?.backupMediaRefs) return []
+  try { return (await api.backupMediaRefs()).map(id => MEDIA_PREFIX + id) } catch { return [] }
+}
 
 /** 状態への実編集(ユーザー操作)が起きたときに呼ぶ。 */
 export function markFolderSyncEdit(): void {

@@ -4,7 +4,7 @@ import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNot
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
-import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit } from './persistence/folderSync'
+import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs } from './persistence/folderSync'
 import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
 
@@ -1043,6 +1043,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const m = mt?.match(/idb:[A-Za-z0-9]+/g)
         if (m) refs.push(...m)
       } catch { /* ignore */ }
+      // 競合バックアップ(退避したDB)が参照する実体も生存扱いにする。退避は
+      // DBファイルだけをコピーするので、これを守らないと「バックアップは残るのに
+      // 中の画像/PDF/動画が全部読めない」状態になる。
+      if (!isRemote) refs.push(...(await backupMediaRefs()))
       if (!alive) return
       sweepMedia(refs).catch(() => { /* ignore */ })
       try { lastEtag.current = await dbEtag() } catch { /* ignore */ }
