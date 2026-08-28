@@ -52,7 +52,10 @@ export interface MergeStreamDef {
   /**
    * パックへの同梱が「参照されているか」で決まるコレクション。相手側に無い =
    * 削除の意思表示ではない(参照が外れただけでも落ちる)ので、削除は適用しない。
-   * 受け渡しでのみ意味を持つ(同期は DB 丸ごとなので該当しない)。
+   *
+   * **受け渡し(部分パック)専用のフラグ**。同期はDB丸ごとの比較なので、
+   * ここで削除を無視すると相手が本当に消したフォルダ/ファイルが復活してしまう。
+   * classifyStream の opts.partialPack が真のときだけ効く。
    */
   derivedByReference?: boolean
 }
@@ -122,6 +125,10 @@ export interface MergeEntry<T = Record<string, unknown>> {
 export function classifyStream<T extends { id: string }>(
   def: MergeStreamDef,
   baseArr: T[], mineArr: T[], theirsArr: T[],
+  // partialPack: 相手の版が「選ばれた一部だけ」の場合(=受け渡しの返却)。
+  // このときだけ derivedByReference の削除無視が働く。同期(DB丸ごと)では
+  // 効かせてはいけない — 相手が本当に消したものが復活する。
+  opts?: { partialPack?: boolean },
 ): MergeEntry<T>[] {
   const base = new Map(baseArr.map(x => [x.id, x]))
   const mine = new Map(mineArr.map(x => [x.id, x]))
@@ -136,7 +143,7 @@ export function classifyStream<T extends { id: string }>(
     const iChanged = sm !== sb
     if (!theyChanged && !iChanged) continue
     if (sm === st) continue
-    if (!t && def.derivedByReference) continue
+    if (!t && def.derivedByReference && opts?.partialPack) continue
     const side: MergeSide = theyChanged && iChanged ? 'both' : theyChanged ? 'theirs' : 'mine'
     const kind: MergeKind = side === 'both'
       ? (!m ? 'they-edited-i-deleted' : !t ? 'they-deleted-i-edited' : 'both-edited')

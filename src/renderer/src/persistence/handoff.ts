@@ -420,7 +420,7 @@ function applyIdMap(items: PackItems, map: Map<string, string>): PackItems {
  * 受け取った作業ファイルを「専用の新プロジェクト」として追加する。
  * 既存データには一切触れない。戻り値の patch を APPLY_STATE_PATCH で適用する。
  */
-export async function receiveHandoff(state: AppState, pack: HandoffPack): Promise<{ patch: Partial<AppState>; master: MasterProject }> {
+export async function receiveHandoff(state: AppState, pack: HandoffPack, getLatest?: () => AppState): Promise<{ patch: Partial<AppState>; master: MasterProject }> {
   const recv = await loadRecvIndex()
   // 取り込みは undo できるが台帳は履歴の外にあるため、「台帳にはあるがプロジェクトが
   // 無い」= 取り込みを取り消した/削除した状態になりうる。その場合は再取り込みを許す
@@ -434,14 +434,17 @@ export async function receiveHandoff(state: AppState, pack: HandoffPack): Promis
   const master: MasterProject = { id: generateId(), name: `📦 ${pack.name}`, createdAt: new Date().toISOString() }
   const remap = remapCollidingIds(state, pack.items)
   const items = reparentItems(remap.items, master.id)
+  // メディア取り込みは時間がかかる。この間に入った編集を消さないよう、連結の土台は
+  // await を終えた「今」の状態にする(getLatest が無ければ渡された state のまま)。
   await importMedia(pack.media)
+  const base = getLatest ? getLatest() : state
   const patch: Partial<AppState> = {
-    masterProjects: [...state.masterProjects, master],
+    masterProjects: [...base.masterProjects, master],
     activeMasterProjectId: master.id,
   }
   for (const key of Object.keys(EMPTY_ITEMS) as (keyof PackItems)[]) {
     // 既存配列の後ろに連結。id は元のまま維持する(返却マージの前提)。
-    ;(patch as Record<string, unknown[]>)[key] = [...(state[key] as unknown[]), ...(items[key] as unknown[])]
+    ;(patch as Record<string, unknown[]>)[key] = [...(base[key] as unknown[]), ...(items[key] as unknown[])]
   }
   // 逆引き(新 id → 元 id)を控える。返却時にこれで元の id へ戻さないと、貸出側の
   // マージが「元 id は削除・新 id は追加」と解釈してパック外の参照を壊す。
@@ -515,7 +518,7 @@ function mergeStream<T extends { id: string }>(
   out: { conflicts: MergeConflict[]; theirsByKey: Map<string, T | null>; applied: MergeResult['applied'] },
 ): T[] {
   const result = new Map(mineArr.map(x => [x.id, x])) // 自分の並び・自分だけの新規はそのまま生かす
-  for (const e of classifyStream(def, baseArr, mineArr, theirsArr)) {
+  for (const e of classifyStream(def, baseArr, mineArr, theirsArr, { partialPack: true })) {
     if (e.side === 'mine') continue // 相手は触っていない → 自分の状態を維持
     if (e.side === 'theirs') {
       if (e.theirs) { result.set(e.id, e.theirs); out.applied[e.base ? 'updated' : 'added']++ }
@@ -667,7 +670,11 @@ function rebasePatch(pending: PendingMerge, current: AppState, skipped: string[]
 }
 
 /** 競合の解決(theirs/mine)を patch に反映した最終形を返し、メディアも取り込む。 */
-export async function applyReturnMerge(pending: PendingMerge, resolutions: MergeConflict[], current: AppState): Promise<Partial<AppState>> {
+export async function applyReturnMerge(
+  pending: PendingMerge,
+  resolutions: MergeConflict[],
+  current: AppState,
+): Promise<{ patch: Partial<AppState>; skipped: number }> {
   // 差分の計算は取り込み時点で凍結してよいが、適用の土台は「今」の状態にする。
   // 競合の選択に時間をかけている間の編集(グローバル Ctrl+Z など)を巻き戻さない。
   const skipped: string[] = []
@@ -681,10 +688,22 @@ export async function applyReturnMerge(pending: PendingMerge, resolutions: Merge
     list.push({ id, item: pending.theirsByKey.get(c.key) ?? null })
     byStream.set(stream, list)
   }
+  // 競合解決の適用も、rebasePatch と同じく「画面を開いてから変わっていないか」を
+  // 見る。見ないと、選択中にこのPCで編集/削除した項目を選択どおりに上書き・削除して
+  // その編集を消してしまう。
+  const frozenOf = (stream: string, id: string): unknown =>
+    (pending.mineState[stream as keyof AppState] as unknown as { id: string }[] | undefined)?.find(x => x.id === id) ?? null
+  const untouchedSince = (stream: string, id: string, now: { id: string }[]): boolean => {
+    const same = compareKey(frozenOf(stream, id)) === compareKey(now.find(x => x.id === id) ?? null)
+    if (!same) skipped.push(id)
+    return same
+  }
   for (const [stream, changes] of byStream) {
     if (stream === 'projects' || stream === 'tasks') continue // 下でまとめて処理
+    const nowArr = current[stream as keyof AppState] as unknown as { id: string }[]
     const arr = [...((patch as Record<string, { id: string }[]>)[stream] ?? [])]
     for (const { id, item } of changes) {
+      if (!untouchedSince(stream, id, nowArr)) continue
       const i = arr.findIndex(x => x.id === id)
       if (item) { if (i >= 0) arr[i] = item; else arr.push(item) }
       else if (i >= 0) arr.splice(i, 1)
@@ -698,12 +717,23 @@ export async function applyReturnMerge(pending: PendingMerge, resolutions: Merge
     const cur = (patch.projects ?? current.projects) as Project[]
     let metas = stripTasks(cur)
     let flat = flattenTasks(cur)
+    const nowMetas = stripTasks(current.projects) as unknown as { id: string }[]
+    const nowFlat = flattenTasks(current.projects) as unknown as { id: string }[]
+    const frozenMetas = stripTasks(pending.mineState.projects) as unknown as { id: string }[]
+    const frozenFlat = flattenTasks(pending.mineState.projects) as unknown as { id: string }[]
+    const same = (frozenArr: { id: string }[], nowArr: { id: string }[], id: string): boolean => {
+      const ok = compareKey(frozenArr.find(x => x.id === id) ?? null) === compareKey(nowArr.find(x => x.id === id) ?? null)
+      if (!ok) skipped.push(id)
+      return ok
+    }
     for (const { id, item } of projChanges) {
+      if (!same(frozenMetas, nowMetas, id)) continue
       const i = metas.findIndex(x => x.id === id)
       if (item) { if (i >= 0) metas[i] = item as Omit<Project, 'tasks'>; else metas.push(item as Omit<Project, 'tasks'>) }
       else metas = metas.filter(x => x.id !== id)
     }
     for (const { id, item } of taskChanges) {
+      if (!same(frozenFlat, nowFlat, id)) continue
       const i = flat.findIndex(x => x.id === id)
       if (item) { if (i >= 0) flat[i] = item as FlatTask; else flat.push(item as FlatTask) }
       else flat = flat.filter(x => x.id !== id)
@@ -734,5 +764,5 @@ export async function applyReturnMerge(pending: PendingMerge, resolutions: Merge
   const index = await loadHandoffIndex()
   const e = index.find(x => x.id === pending.pack.handoffId)
   if (e) { e.returnedAt = new Date().toISOString(); await saveKv('handoff.index', JSON.stringify(index)) }
-  return patch
+  return { patch, skipped: new Set(skipped).size }
 }

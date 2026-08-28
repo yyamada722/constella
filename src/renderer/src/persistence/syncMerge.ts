@@ -173,6 +173,7 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
       theirsByKey: new Map<string, { id: string } | null>(),
       theirsOrder: {} as Record<string, string[]>,
     }
+    const plan_theirsKv = theirsParsed.kv
     const pick = (st: AppState, key: string): Row[] => (st[key as keyof AppState] ?? []) as unknown as Row[]
     for (const def of MERGE_STREAMS) {
       rowsForStream(def, pick(baseState, def.key), pick(state, def.key), pick(theirsState, def.key), out)
@@ -193,6 +194,23 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
       out,
     )
 
+    // 路線図(mindtrain)は app_kv の単一ブロブで項目分解できないが、黙って
+    // このPCの版を残すと相手の路線図編集が消える。ブロブ全体を1行として出す。
+    const myMindtrain = await loadKv('mindtrain')
+    const theirMindtrain = plan_theirsKv['mindtrain']
+    if ((theirMindtrain ?? null) !== (myMindtrain ?? null)) {
+      out.rows.push({
+        key: 'kv:mindtrain',
+        stream: 'kv:mindtrain',
+        typeLabel: '路線図',
+        label: '路線図データ全体',
+        side: 'both',
+        kindText: '内容が異なります(まとめて置き換え)',
+        fields: [{ label: '内容', mine: myMindtrain ? 'このPCの版' : '(なし)', theirs: theirMindtrain ? '相手の版' : '(なし)' }],
+        resolution: 'mine',
+      })
+    }
+
     // 表示順: 要選択(both) → 相手の変更 → 自分の変更
     const order = { both: 0, theirs: 1, mine: 2 }
     out.rows.sort((a, b2) => order[a.side] - order[b2.side] || a.typeLabel.localeCompare(b2.typeLabel))
@@ -211,10 +229,16 @@ function mergeLedger(mineRaw: string | undefined, theirsRaw: string, idKey: stri
     try { const v = JSON.parse(raw ?? '[]'); return Array.isArray(v) ? v : [] } catch { return [] }
   }
   const merged = parse(mineRaw)
-  const seen = new Set(merged.map(x => String(x[idKey])))
+  const byId = new Map(merged.map(x => [String(x[idKey]), x]))
   for (const e of parse(theirsRaw)) {
     const id = String(e[idKey])
-    if (!seen.has(id)) { merged.push(e); seen.add(id) }
+    const mine = byId.get(id)
+    if (!mine) { merged.push(e); byId.set(id, e); continue }
+    // 同じ記録でも、片方にしかないフィールド(返却済みの returnedAt など)がある。
+    // 相手側だけが持つキーを補って、情報を落とさずに統合する。
+    for (const [k, v] of Object.entries(e)) {
+      if (mine[k] === undefined && v !== undefined) mine[k] = v
+    }
   }
   return JSON.stringify(merged.slice(0, 60))
 }
@@ -252,7 +276,7 @@ export async function applySyncMerge(
   plan: Extract<SyncMergePlan, { ok: true }>,
   rows: SyncMergeRow[],
   current: AppState,
-): Promise<{ ok: true; patch: Partial<AppState>; skipped: number } | { ok: false; message: string; patch?: Partial<AppState> }> {
+): Promise<{ ok: true; patch: Partial<AppState>; skipped: number; needsReload: boolean } | { ok: false; message: string; patch?: Partial<AppState> }> {
   const api = syncApi()
   if (!api) return { ok: false, message: 'デスクトップ版でのみ利用できます' }
 
@@ -262,6 +286,7 @@ export async function applySyncMerge(
   for (const r of rows) {
     if (r.resolution !== 'theirs') continue
     if (r.stream.startsWith('order:')) { reorder.add(r.stream.slice('order:'.length)); continue }
+    if (r.stream.startsWith('kv:')) continue // app_kv は上で直接処理済み
     const list = byStream.get(r.stream) ?? []
     list.push({ id: r.key.slice(r.key.indexOf(':') + 1), item: plan.theirsByKey.get(r.key) ?? null })
     byStream.set(r.stream, list)
@@ -271,6 +296,12 @@ export async function applySyncMerge(
     reorder.has(stream) ? applyOrder(arr, plan.theirsOrder[stream] ?? []) : arr
 
   const patch: Partial<AppState> = {}
+  // 路線図は AppState 外なので、採用されたら app_kv を直接置き換える。
+  const takeMindtrain = rows.some(r => r.stream === 'kv:mindtrain' && r.resolution === 'theirs')
+  if (takeMindtrain) {
+    const v = plan.theirsKv['mindtrain']
+    try { await saveKv('mindtrain', v ?? null) } catch { /* 失敗しても他のマージは成立させる */ }
+  }
   // モーダルを開いてから今までに、その項目自体がこのPCで変わっていないか。
   // 変わっているのに差分表示時の決定(特に「相手が削除」)をそのまま当てると、
   // 選択中に入れた編集を無言で消してしまう。変わった項目は適用を見送る。
@@ -364,5 +395,7 @@ export async function applySyncMerge(
   }
   // dirty は必ずこの入口で落とす(main の永続フラグとレンダラー側フラグを揃える)。
   await clearFolderSyncDirty()
-  return { ok: true, patch, skipped: changedSinceOpen.length }
+  // 路線図ストアはメモリ上に別途保持されているため、app_kv を差し替えただけでは
+  // 画面に反映されず、次の保存で元に戻ってしまう。採用時はリロードが要る。
+  return { ok: true, patch, skipped: changedSinceOpen.length, needsReload: takeMindtrain }
 }

@@ -947,6 +947,13 @@ const AppContext = createContext<{
   undo: () => void
   redo: () => void
   syncNow: () => Promise<void>
+  /**
+   * 「今」の state。取り込み/マージのように await を挟んでから dispatch する処理は、
+   * レンダー時点のスナップショットを土台にすると、その待ち時間に入った編集
+   * (グローバル Ctrl+Z、LAN の focus-sync による再 hydrate 等)を全置換で消す。
+   * 適用の直前にこれで読み直すこと。
+   */
+  getLatestState: () => AppState
 } | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -1169,6 +1176,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     undo: () => dispatchTracked({ type: 'UNDO' }),
     redo: () => dispatchTracked({ type: 'REDO' }),
     syncNow: reloadFromServer,
+    getLatestState: () => latest.current,
   }), [history, reloadFromServer, dispatchTracked])
 
   if (!hydrated) {
@@ -1209,7 +1217,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       {folderSync.phase === 'conflict' && folderSync.conflict && (
         <div
           data-folder-sync-conflict-banner="1"
-          className="fixed top-3 left-1/2 -translate-x-1/2 z-[100] max-w-[620px] px-4 py-3 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-900 text-xs shadow-lg"
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-[70] max-w-[620px] px-4 py-3 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-900 text-xs shadow-lg"
         >
           <div className="flex items-start gap-2">
             <span className="font-semibold shrink-0">⇄ 同期</span>
@@ -1233,15 +1241,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
             )}
             <button
               onClick={() => { resolveFolderSyncConflict('remote').catch(() => { /* ignore */ }) }}
-              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px]"
-              title="同期フォルダの内容でこのPCのデータを置き換えます(現在の内容は退避されます)"
+              disabled={syncMergeOpen}
+              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
+              title={syncMergeOpen ? '項目ごとの選択画面を閉じてから操作してください' : '同期フォルダの内容でこのPCのデータを置き換えます(現在の内容は退避されます)'}
             >
               {folderSync.conflict.initial ? '同期フォルダの内容を取り込む(推奨)' : '同期フォルダを採用'}
             </button>
             <button
               onClick={() => { resolveFolderSyncConflict('local').catch(() => { /* ignore */ }) }}
-              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px]"
-              title="このPCの内容を同期フォルダへ送ります(フォルダ側は退避されます)"
+              disabled={syncMergeOpen}
+              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
+              title={syncMergeOpen ? '項目ごとの選択画面を閉じてから操作してください' : 'このPCの内容を同期フォルダへ送ります(フォルダ側は退避されます)'}
             >
               {folderSync.conflict.initial ? 'このPCの内容で開始' : 'このPCを採用'}
             </button>

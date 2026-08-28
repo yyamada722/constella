@@ -174,6 +174,15 @@ async function clearDirtyIfNoNewEdits(api: SyncApi, seqAtPush: number): Promise<
   await clearFolderSyncDirty()
 }
 
+/** 指定時点から編集が無ければ dirty を下ろす(あれば残す)。UI 側の適用後処理用。 */
+export async function clearFolderSyncDirtyIfUnchanged(seq: number): Promise<void> {
+  if (editSeq !== seq) return
+  await clearFolderSyncDirty()
+}
+
+/** 現在の編集シーケンス。適用処理の前後で挟んで「その間の編集」を検出する。 */
+export function currentEditSeq(): number { return editSeq }
+
 /**
  * dirty を下ろす唯一の入口。main の永続フラグとレンダラー側の dirtyMarked を
  * 必ず同時に落とす — 片方だけ落とすと markFolderSyncEdit が
@@ -529,16 +538,20 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
         setStatus({ phase: 'conflict', conflict: c, message: '保存に失敗したため中止しました' })
         return
       }
-      // 退避に失敗したら取り込まない。取り込むとこのPCの内容が復元不能に消える。
-      if (!(await api.backupConflict('local'))) {
-        await api.pullDiscard().catch(() => { /* 次の prepare で上書きされる */ })
-        setStatus({ phase: 'conflict', conflict: c, message: 'バックアップを作れなかったため中止しました(ディスクの空き容量をご確認ください)' })
-        return
-      }
+      // 凍結 → ドレイン → 退避 → 取り込み の順にする。退避してから凍結すると、
+      // その隙間に入った編集が「退避したDBにも、取り込み後のDBにも無い」状態になり
+      // 両方から失われる。凍結後は新たな保存が入らないので退避内容が確定する。
       freezeWrites()
       let r: { ok: boolean; error?: string }
       try {
-        await drainSaves() // 飛行中の保存が pull 後に着地して取り込みを潰すのを防ぐ
+        await drainSaves() // 飛行中の保存が退避/取り込みを跨がないよう待ち切る
+        // 退避に失敗したら取り込まない。取り込むとこのPCの内容が復元不能に消える。
+        if (!(await api.backupConflict('local'))) {
+          thawWrites()
+          await api.pullDiscard().catch(() => { /* 次の prepare で上書きされる */ })
+          setStatus({ phase: 'conflict', conflict: c, message: 'バックアップを作れなかったため中止しました(ディスクの空き容量をご確認ください)' })
+          return
+        }
         r = await api.pullCommit(c.remoteGen)
       } catch (e) {
         thawWrites() // 凍結したままだと以後の保存が無言で捨てられる

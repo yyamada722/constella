@@ -44,7 +44,7 @@ const CONFLICT_KIND_LABEL: Record<MergeConflict['kind'], string> = {
 }
 
 export function HandoffModal({ open, onClose }: Props) {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, getLatestState } = useApp()
   const active = state.activeMasterProjectId
   const [sel, setSel] = useState<HandoffSelection>(emptySelection)
   const [name, setName] = useState('')
@@ -131,11 +131,13 @@ export function HandoffModal({ open, onClose }: Props) {
         try {
           const p = await computeReturnMerge(state, pack)
           if (p.result.conflicts.length === 0) {
-            const patch = await applyReturnMerge(p, [], state)
+            // 土台は「今」の状態(ここまでの await 中に入った編集を巻き戻さない)。
+            const { patch, skipped } = await applyReturnMerge(p, [], getLatestState())
             dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
             const a = p.result.applied
             setLent(await loadHandoffIndex())
-            setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted})。Ctrl+Z で丸ごと取り消せます`)
+            setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted})。Ctrl+Z で丸ごと取り消せます${skipped > 0 ? `
+この画面を開いている間に変更された ${skipped} 件は、変更を失わないよう適用を見送りました` : ''}`)
           } else {
             setPending(p)
             setResolutions(p.result.conflicts.map(c => ({ ...c })))
@@ -147,7 +149,7 @@ export function HandoffModal({ open, onClose }: Props) {
         }
       }
       // 受領: 専用の新プロジェクトとして追加
-      const { patch, master } = await receiveHandoff(state, pack)
+      const { patch, master } = await receiveHandoff(getLatestState(), pack, getLatestState)
       dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
       setReceived(await loadRecvIndex())
       const omitted = pack.mediaOmitted?.length ? `(動画など ${pack.mediaOmitted.length} 件は同梱されていません)` : ''
@@ -165,11 +167,12 @@ export function HandoffModal({ open, onClose }: Props) {
     setBusy('マージ中…')
     try {
       // 適用の土台は「今」の状態(競合の選択中に進んだ編集を巻き戻さない)。
-      const patch = await applyReturnMerge(pending, resolutions, state)
+      const { patch, skipped } = await applyReturnMerge(pending, resolutions, getLatestState())
       dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
       const a = pending.result.applied
       setLent(await loadHandoffIndex())
-      setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted} + 競合 ${resolutions.length} 件を解決)。Ctrl+Z で丸ごと取り消せます`)
+      setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted} + 競合 ${resolutions.length} 件を解決)。Ctrl+Z で丸ごと取り消せます${skipped > 0 ? `
+この画面を開いている間に変更された ${skipped} 件は、変更を失わないよう適用を見送りました` : ''}`)
       setPending(null)
     } catch (e) {
       setNotice(String(e instanceof Error ? e.message : e))

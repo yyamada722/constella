@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import { X, GitMerge } from 'lucide-react'
 import { useApp } from '../store'
 import { prepareSyncMerge, applySyncMerge, type SyncMergePlan, type SyncMergeRow } from '../persistence/syncMerge'
-import { manualFolderSync, clearFolderSyncDirty } from '../persistence/folderSync'
+import { manualFolderSync, clearFolderSyncDirtyIfUnchanged, currentEditSeq } from '../persistence/folderSync'
 
 interface Props {
   open: boolean
@@ -61,7 +61,7 @@ function RowView({ row, deviceName, onSet }: { row: SyncMergeRow; deviceName: st
 }
 
 export function SyncMergeModal({ open, onClose }: Props) {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, getLatestState } = useApp()
   const [plan, setPlan] = useState<SyncMergePlan | null>(null)
   const [rows, setRows] = useState<SyncMergeRow[]>([])
   const [busy, setBusy] = useState(false)
@@ -93,7 +93,8 @@ export function SyncMergeModal({ open, onClose }: Props) {
     setError(null)
     try {
       // 適用の土台は「今」の状態を渡す(モーダル表示中に進んだ編集を巻き戻さない)。
-      const r = await applySyncMerge(plan, rows, state)
+      const seqBefore = currentEditSeq()
+      const r = await applySyncMerge(plan, rows, getLatestState())
       if (!r.ok) {
         // push に失敗してもディスクにはマージ結果が入っている。patch が返っていれば
         // 画面にも反映してディスクとメモリの乖離を残さない。
@@ -105,7 +106,15 @@ export function SyncMergeModal({ open, onClose }: Props) {
       // この dispatch は UI 経由なので編集としてマークされるが、いま push した内容
       // そのものなので送るべき差分は無い。ここで下ろさないと直後の同期チェックが
       // 同じ内容をもう1世代ぶん押してしまう。
-      await clearFolderSyncDirty()
+      // ただし保存/退避/push を待っている間に別の編集が入っていたら、それは未送信
+      // なので dirty を残す(seqBefore からの変化で判定。この dispatch 自身の +1 は
+      // patch 適用ぶんなので差し引く)。
+      await clearFolderSyncDirtyIfUnchanged(seqBefore + 1)
+      if (r.needsReload) {
+        // 路線図を相手の版にした場合、メモリ上のストアが古いままなので読み直す。
+        window.location.reload()
+        return
+      }
       if (r.skipped > 0) {
         // この画面を開いている間にこのPCで変わった項目は、選択をそのまま当てると
         // その編集を消してしまうため見送っている。黙って落とさず知らせる。
