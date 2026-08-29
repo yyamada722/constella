@@ -167,7 +167,9 @@ export function initSync(deps: SyncDeps): void {
     return await updateSettings(cur => {
     const next: SyncSettings = { ...cur }
     if (patch.folder !== undefined && patch.folder !== cur.folder) {
-      // フォルダが変わったら世代の対応関係もリセット(新フォルダとは未同期)。
+      // フォルダが変わったら世代の対応関係もリセットし、旧フォルダから
+      // prepare 済みの pull バッファも破棄する。
+      prepared = null
       next.folder = patch.folder
       next.lastGen = 0
       next.lastLocalEtag = ''
@@ -265,7 +267,7 @@ export function initSync(deps: SyncDeps): void {
   // その長い I/O(prepare)と、ローカルDBの差し替え(commit)を分ける。
   // レンダラーは prepare 完了後・commit 直前に「その間にユーザーが編集していないか」
   // を確認でき、編集があれば差し替えずに競合として扱える(黙って捨てない)。
-  let prepared: { gen: number; buf: Buffer; manifest: SyncManifest } | null = null
+  let prepared: { gen: number; buf: Buffer; manifest: SyncManifest; folder: string } | null = null
 
   ipcMain.handle('sync:pull-prepare', async (_e, expectedGen: number, deadlineMs?: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
     const s = await loadSettings()
@@ -279,7 +281,7 @@ export function initSync(deps: SyncDeps): void {
       const buf = await withDeadline(readFile(folderDbPath(s.folder)), readDeadline)
       if (buf.length !== manifest.dbSize || sha256(buf) !== manifest.dbSha256) return { ok: false, error: 'inconsistent' }
       if (!buf.subarray(0, 16).equals(Buffer.from('SQLite format 3\0'))) return { ok: false, error: 'inconsistent' }
-      prepared = { gen: manifest.gen, buf, manifest }
+      prepared = { gen: manifest.gen, buf, manifest, folder: s.folder }
       return { ok: true, manifest }
     } catch (e) {
       prepared = null
@@ -290,8 +292,10 @@ export function initSync(deps: SyncDeps): void {
   ipcMain.handle('sync:pull-commit', async (_e, expectedGen: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
     const s = await loadSettings()
     const p = prepared
-    if (!s.folder) return { ok: false, error: 'not-configured' }
-    if (!p || p.gen !== expectedGen) return { ok: false, error: 'not-prepared' }
+    if (!s.folder || !s.enabled) return { ok: false, error: 'not-configured' }
+    // prepare したフォルダと今のフォルダが違えば無効(prepare 中に設定を切り替えた
+    // 場合、旧フォルダのDBを新しい設定の下でローカルに書いてしまう)。
+    if (!p || p.gen !== expectedGen || p.folder !== s.folder) return { ok: false, error: 'not-prepared' }
     try {
       // リモート由来なので日次バックアップ枠は消費しない(その日のローカル作業の
       // バックアップが作られなくなるのを避ける)。

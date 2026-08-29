@@ -33,3 +33,4 @@ Thumbs.db
 
 # Docs media diagnostics
 docs/public/media/_survey/
+.e2e-*-tmp/

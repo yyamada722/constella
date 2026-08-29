@@ -14,7 +14,7 @@
 import type { AppState } from '../store'
 import type { Project } from '../types'
 import { parseDbBytes, saveKv, loadKv } from './db'
-import { syncApi, clearFolderSyncDirtyIfUnchanged, settleLocalWrites } from './folderSync'
+import { syncApi, clearFolderSyncDirtyIfUnchanged, settleLocalWrites, uploadMissingMedia } from './folderSync'
 import { flushMindtrainPending } from '../mindtrain/persist'
 import {
   stableStringify, compareKey, classifyStream, detectOrderChange, streamLabel,
@@ -304,28 +304,38 @@ export function buildSyncCommit(
 
 /**
  * 【commit 後・非同期】コミット済みのマージを永続化してフォルダへ送る。
- * 順序: 路線図kv(採用時) → 相手側台帳の復元 → 未確定保存の確定 → 相手側スナップ
- * ショットの退避 → push → dirty解除(コミット以降に編集が無い場合のみ)。
- * コミットは既に済んでいるので、ここで失敗しても「マージはこのPCに残り dirty の
- * まま」という一貫した状態に落ちる(ディスクとメモリの乖離クラスは存在しない)。
+ * 順序: 路線図kv(採用時) → 相手側台帳の復元 → 未確定保存の確定 → メディア送信 →
+ * 相手側スナップショットの退避 → push → dirty解除(コミット以降に編集が無い場合のみ)。
+ * push より前の永続化はどれか一つでも失敗したら中止する — 握り潰して push すると
+ * 「相手の路線図/台帳を含まない DB」でフォルダを上書きし、相手側にしか無い
+ * データが消える。中止時は「マージはこのPCに残り dirty のまま」に落ち、
+ * 競合バナーからやり直せる。
  */
 export async function finalizeSyncMerge(
   plan: Extract<SyncMergePlan, { ok: true }>,
   editSeqAfterCommit: number,
   takeMindtrain: boolean,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true } | { ok: false; message: string; mindtrainApplied?: boolean }> {
   const api = syncApi()
   if (!api) return { ok: false, message: 'デスクトップ版でのみ利用できます' }
 
+  // 中止時、路線図が既に SQLite へ書かれていればメモリ側のストアと食い違う。
+  // 呼び出し側はこのフラグを見て読み込み直し、乖離を残さない。
+  let mindtrainApplied = false
   if (takeMindtrain) {
     // 採用=このPCの版を捨てる選択。書き換え前に pending を確定させ、
     // 置き換え後に古い保存が着地して巻き戻るのを防ぐ。
     flushMindtrainPending()
-    try { await saveKv('mindtrain', plan.theirsKv['mindtrain'] ?? null) } catch { /* 失敗しても他のマージは成立させる */ }
+    try {
+      await saveKv('mindtrain', plan.theirsKv['mindtrain'] ?? null)
+      mindtrainApplied = true
+    } catch {
+      return { ok: false, message: '相手側の路線図を書き込めなかったため送信を中止しました。マージ結果はこのPCに残っています — もう一度お試しください' }
+    }
   }
 
   // 受け渡しの台帳(app_kv の handoff.*)は AppState の外にあるため、マージ結果を
-  // そのまま push すると相手側の台帳が消える。統合してから送る
+  // そのまま push すると相手側の台帳が消える。統合できるまで送らない
   // (貸出記録が消えると、その返却ファイルを取り込めなくなる)。
   try {
     const mine = await loadHandoffKeys()
@@ -337,18 +347,24 @@ export async function finalizeSyncMerge(
       }
       if (mine[k] === undefined) await saveKv(k, v)
     }
-  } catch { /* 台帳の復元は best-effort — 失敗してもマージ自体は成立する */ }
+  } catch {
+    return { ok: false, message: '受け渡し記録を統合できなかったため送信を中止しました。マージ結果はこのPCに残っています — もう一度お試しください', mindtrainApplied }
+  }
 
   // push はディスク上の DB を読む。コミット済みの state を確定させてから送る。
   if (!(await settleLocalWrites())) {
-    return { ok: false, message: '保存に失敗したため送信を見送りました。マージ結果はこのPCに残っています' }
+    return { ok: false, message: '保存に失敗したため送信を見送りました。マージ結果はこのPCに残っています', mindtrainApplied }
   }
+  // 「自分」を選んだ項目が新しいメディアを参照している場合、実体を先に
+  // フォルダへ置く(通常 push と同じ不変条件)。部分失敗は続行してよい —
+  // 受信側は不足 blob を pending として再試行で取り寄せる。
+  await uploadMissingMedia()
   // 相手側スナップショットを退避してから上書きする。項目単位で「自分」を選んだ行の
   // 相手の値は、この push で唯一の保管場所だったフォルダ側DBから消えるため、
   // 退避に失敗したら押さない(押すと復元不能に消える)。
   const backedUp = await api.backupConflict('remote').catch(() => null)
   if (!backedUp) {
-    return { ok: false, message: 'バックアップを作れなかったため送信を中止しました(ディスクの空き容量をご確認ください)。マージ結果はこのPCに保存済みです' }
+    return { ok: false, message: 'バックアップを作れなかったため送信を中止しました(ディスクの空き容量をご確認ください)。マージ結果はこのPCに保存済みです', mindtrainApplied }
   }
   const r = await api.push(plan.folderGen + 1, plan.folderGen)
   if (!r.ok) {
@@ -357,6 +373,7 @@ export async function finalizeSyncMerge(
       message: r.error === 'changed'
         ? '同期フォルダ側が更新されました。マージ結果はこのPCに保存済みです — もう一度開き直して送信してください'
         : `送信に失敗しました: ${r.error ?? ''}(マージ結果はこのPCに保存済みです)`,
+      mindtrainApplied,
     }
   }
   // コミットの dispatch ぶんは editSeqAfterCommit に織り込み済み。それ以降に

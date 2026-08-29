@@ -95,11 +95,16 @@ export interface RecvIndexEntry {
   idMap?: Record<string, string>
 }
 
+// 台帳の読み取り: DB エラー(読み取り自体の失敗)は投げる — 「空の台帳」と
+// 解釈すると、その後の保存が台帳ごと上書きして過去の記録を全て消してしまう。
+// 空扱いにしてよいのは、値が壊れた JSON だった場合だけ。
 export async function loadHandoffIndex(): Promise<HandoffIndexEntry[]> {
-  try { return JSON.parse((await loadKv('handoff.index')) || '[]') } catch { return [] }
+  const raw = await loadKv('handoff.index')
+  try { return JSON.parse(raw || '[]') } catch { return [] }
 }
 export async function loadRecvIndex(): Promise<RecvIndexEntry[]> {
-  try { return JSON.parse((await loadKv('handoff.recv.index')) || '[]') } catch { return [] }
+  const raw = await loadKv('handoff.recv.index')
+  try { return JSON.parse(raw || '[]') } catch { return [] }
 }
 
 // ── 選択 → サブセット抽出 ──
@@ -428,6 +433,31 @@ export async function prepareReceive(pack: HandoffPack): Promise<{ recv: RecvInd
 }
 
 /**
+ * 【prepare②・非同期】コミットの前に「仮の受領記録」を書く。台帳を書けない状態
+ * (DBエラー等)なら取り込み自体を始めない — コミット後に台帳だけ失敗すると、
+ * 記録の無いプロジェクトが残って返却を書き出せず、再取り込みで重複もする。
+ * 仮記録は idMap を持たないだけの有効な記録なので、後段(finalize)が失敗しても
+ * プロジェクトと記録の対応は保たれる。コミット前に中断した場合は「プロジェクトの
+ * 無い記録」となり、既存の stale 判定が次回の取り込みで自動的に掃除する。
+ */
+/** 仮受領記録を取り消す(コミットが中止されたとき用)。 */
+export async function rollbackProvisionalReceipt(recv: RecvIndexEntry[]): Promise<void> {
+  await saveKv('handoff.recv.index', JSON.stringify(recv))
+}
+
+export async function writeProvisionalReceipt(
+  pack: HandoffPack,
+  masterId: string,
+  recv: RecvIndexEntry[],
+): Promise<void> {
+  const ledger = [
+    { handoffId: pack.handoffId, masterId, name: pack.name, sourceMasterId: pack.sourceMasterId, receivedAt: new Date().toISOString() },
+    ...recv,
+  ].slice(0, 30)
+  await saveKv('handoff.recv.index', JSON.stringify(ledger))
+}
+
+/**
  * 【commit・同期】受領を「今」の状態に対して組み立てる。commitSync の同期ブロック
  * 内から呼ぶこと — 重複チェックも ID 衝突のリマップも now に対して行うので、
  * prepare の await 中に入った編集(Ctrl+Z による復活を含む)と矛盾しない。
@@ -437,6 +467,7 @@ export function buildReceiveCommit(
   now: AppState,
   pack: HandoffPack,
   recv: RecvIndexEntry[],
+  masterId: string,
 ): { patch: Partial<AppState>; result: { master: MasterProject; ledger: RecvIndexEntry[] } } {
   // 取り込みは undo できるが台帳は履歴の外にあるため、「台帳にはあるがプロジェクトが
   // 無い」= 取り込みを取り消した/削除した状態になりうる。その場合は再取り込みを許す
@@ -447,7 +478,7 @@ export function buildReceiveCommit(
     throw new Error(`この作業ファイル(${pack.name})は既に取り込み済みです。返却を受け取る側の場合は、元のマシンで取り込んでください`)
   }
   const kept = stale.length > 0 ? recv.filter(r => !stale.includes(r)) : recv
-  const master: MasterProject = { id: generateId(), name: `📦 ${pack.name}`, createdAt: new Date().toISOString() }
+  const master: MasterProject = { id: masterId, name: `📦 ${pack.name}`, createdAt: new Date().toISOString() }
   const remap = remapCollidingIds(now, pack.items)
   const items = reparentItems(remap.items, master.id)
   const patch: Partial<AppState> = {
@@ -538,6 +569,8 @@ export interface PendingMerge {
   // 競合の解決を ChangeOp 化するための素材(行 key → 相手の値 / 判断根拠)
   theirsByKey: Map<string, { id: string } | null>
   expectedByKey: Map<string, string>
+  /** prepare 時点で決めた帰属先マスター(コミット時に再検証する)。 */
+  targetMaster: string
 }
 
 /**
@@ -600,12 +633,34 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
     flattenTasks(theirs.projects) as { id: string }[],
   )
 
-  return { pack, autoOps, conflicts, theirsByKey, expectedByKey }
+  return { pack, autoOps, conflicts, theirsByKey, expectedByKey, targetMaster }
+}
+
+/**
+ * 【commit 内・純粋】帰属先マスターをコミット時点で再検証する。prepare の await 中に
+ * 元のマスターが削除されていた場合、決めておいた帰属先のまま適用すると、相手が
+ * 追加した項目(expectedBefore が「無し」なのでそのまま通る)が存在しないマスターに
+ * ぶら下がる「孤児」になる — 現在のアクティブマスターへ付け替える。
+ * commitSync の同期ブロック内で ops に対して呼ぶこと。
+ */
+export function retargetReturnOps(pending: PendingMerge, ops: ChangeOp[], now: AppState): ChangeOp[] {
+  const old = pending.targetMaster
+  if (now.masterProjects.some(m => m.id === old)) return ops
+  const next = now.activeMasterProjectId
+  return ops.map(op => {
+    if (!op.item) return op
+    const it = op.item as Record<string, unknown>
+    if (it.masterProjectId !== old && it.projectId !== old) return op
+    const copy: Record<string, unknown> = { ...it }
+    if (copy.masterProjectId === old) copy.masterProjectId = next
+    if (copy.projectId === old) copy.projectId = next
+    return { ...op, item: copy as { id: string } }
+  })
 }
 
 /**
  * 【commit 前・純粋】自動適用ぶんと競合の選択を1つのオペ集合にまとめる。
- * commitSync 内で buildPatchFromOps(now, ops) に渡す。
+ * commitSync 内で retargetReturnOps に通してから buildPatchFromOps(now, ops) に渡す。
  */
 export function buildReturnOps(pending: PendingMerge, resolutions: MergeConflict[]): ChangeOp[] {
   const ops = [...pending.autoOps]
@@ -629,7 +684,12 @@ export function buildReturnOps(pending: PendingMerge, resolutions: MergeConflict
  * (途中経過→最終版)で1回目に取り込んだ全項目が競合として並び、既定(相手)の
  * まま適用するとマージ済みの作業が旧版へ巻き戻る。
  */
-export async function finalizeReturnMerge(pending: PendingMerge, merged: AppState): Promise<void> {
+export async function finalizeReturnMerge(
+  pending: PendingMerge,
+  merged: AppState,
+  skipped: string[],
+): Promise<{ baseAdvanced: boolean }> {
+  let baseAdvanced = false
   try {
     const rawBase = await loadKv(`handoff.base.${pending.pack.handoffId}`)
     const sourceMasterId = rawBase
@@ -642,9 +702,48 @@ export async function finalizeReturnMerge(pending: PendingMerge, merged: AppStat
       ;(nextBase as unknown as Record<string, unknown[]>)[key] =
         (nextBase[key] as { id: string }[]).map(x => live.get(x.id) ?? x).filter(x => live.has(x.id))
     }
+    // 見送った「相手の削除」は base に手元の版を残す。パック(=nextBase の素)には
+    // 無い項目なので、そのまま進めると相手の削除意図が二度と現れず、こちらの版が
+    // 黙って生き続ける。base に残しておけば、次の返却取り込みで「相手が削除 /
+    // 自分は変更」の競合として再提示され、ユーザーが改めて選べる。
+    const skippedIds = new Set(skipped)
+    for (const op of pending.autoOps) {
+      if (op.item !== null || !skippedIds.has(op.id)) continue
+      keepInBase(nextBase, merged, op.stream, op.id)
+    }
     await saveKv(`handoff.base.${pending.pack.handoffId}`, JSON.stringify({ sourceMasterId, items: nextBase }))
-  } catch { /* base の更新は best-effort — 失敗しても今回のマージ自体は成立している */ }
-  const index = await loadHandoffIndex()
-  const e = index.find(x => x.id === pending.pack.handoffId)
-  if (e) { e.returnedAt = new Date().toISOString(); await saveKv('handoff.index', JSON.stringify(index)) }
+    baseAdvanced = true
+  } catch { /* 下で「返却済み」も付けずに中断 — 同じファイルの再取り込みでやり直せる */ }
+  if (baseAdvanced) {
+    // base を進められなかった場合は returnedAt も付けない。付けてしまうと UI 上は
+    // 完了に見えるのに base は旧いままで、2通目の返却が競合の山になる。
+    const index = await loadHandoffIndex()
+    const e = index.find(x => x.id === pending.pack.handoffId)
+    if (e) { e.returnedAt = new Date().toISOString(); await saveKv('handoff.index', JSON.stringify(index)) }
+  }
+  return { baseAdvanced }
+}
+
+// 見送った項目の手元の版を base に残す(タスクは入れ子の持ち主まで辿る)。
+function keepInBase(nextBase: PackItems, merged: AppState, stream: string, id: string): void {
+  if (stream === 'projects') {
+    const meta = merged.projects.find(x => x.id === id)
+    if (meta && !nextBase.projects.some(x => x.id === id)) nextBase.projects.push(meta)
+    return
+  }
+  if (stream === 'tasks') {
+    const t = flattenTasks(merged.projects).find(x => x.id === id)
+    if (!t) return
+    const host = nextBase.projects.find(p => p.id === t.__projectId)
+    if (host && !host.tasks.some(x => x.id === id)) {
+      const { __projectId: _pid, ...task } = t
+      host.tasks.push(task)
+    }
+    return
+  }
+  if (!(stream in EMPTY_ITEMS)) return
+  const key = stream as keyof PackItems
+  const item = (merged[key] as unknown as { id: string }[]).find(x => x.id === id)
+  const arr = nextBase[key] as { id: string }[]
+  if (item && !arr.some(x => x.id === id)) arr.push(item as never)
 }

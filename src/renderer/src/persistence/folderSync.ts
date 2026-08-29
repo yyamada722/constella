@@ -257,6 +257,18 @@ async function pullReferencedMedia(api: SyncApi, remote?: Map<string, string>): 
   return { pulled, pending }
 }
 
+/**
+ * ローカルにあってフォルダに無い blob をアップロードする(公開ラッパー)。
+ * 項目単位マージの push 前に呼ぶ — 「マニフェストが参照する実体が先に揃う」という
+ * 通常 push と同じ不変条件を守るため。失敗数を返す(呼び出し側は通常 push と同様、
+ * 部分失敗でも続行してよい — 受信側の pending 再試行が自己回復する)。
+ */
+export async function uploadMissingMedia(): Promise<number> {
+  const api = syncApi()
+  if (!api) return 0
+  try { return await pushMissingMedia(api) } catch { return 1 }
+}
+
 async function reconcileMedia(api: SyncApi, trigger: FolderSyncTrigger): Promise<void> {
   lastReconcileAt = Date.now()
   const map = await remoteMediaMap(api)

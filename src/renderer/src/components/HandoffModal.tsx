@@ -7,12 +7,13 @@ import { X, Package, Upload, Download, CornerUpLeft } from 'lucide-react'
 import { useApp } from '../store'
 import {
   emptySelection, buildPackItems, packItemCount, exportHandoff, parsePack,
-  prepareReceive, buildReceiveCommit, finalizeReceive,
-  exportReturn, computeReturnMerge, buildReturnOps, finalizeReturnMerge,
+  prepareReceive, writeProvisionalReceipt, rollbackProvisionalReceipt, buildReceiveCommit, finalizeReceive,
+  exportReturn, computeReturnMerge, buildReturnOps, retargetReturnOps, finalizeReturnMerge,
   loadHandoffIndex, loadRecvIndex,
   type HandoffSelection, type HandoffIndexEntry, type RecvIndexEntry, type PendingMerge, type MergeConflict,
 } from '../persistence/handoff'
 import { buildPatchFromOps } from '../persistence/merge'
+import { generateId } from '../utils'
 import type { AppState } from '../store'
 
 interface Props {
@@ -136,14 +137,15 @@ export function HandoffModal({ open, onClose }: Props) {
           if (p.conflicts.length === 0) {
             // 【同期コミット】最新 state への検証と dispatch を1ブロックで。
             const { result } = commitSync(now => {
-              const o = buildPatchFromOps(now, buildReturnOps(p, []))
+              const o = buildPatchFromOps(now, retargetReturnOps(p, buildReturnOps(p, []), now))
               return { patch: o.patch, result: { o, merged: { ...now, ...o.patch } as AppState } }
             })
-            await finalizeReturnMerge(p, result.merged)
+            const fin = await finalizeReturnMerge(p, result.merged, result.o.skipped)
             const a = result.o.applied
-            setLent(await loadHandoffIndex())
+            setLent(await loadHandoffIndex().catch(() => []))
             setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted})。Ctrl+Z で丸ごと取り消せます${result.o.skipped.length > 0 ? `
-この画面を開いている間に変更された ${result.o.skipped.length} 件は、変更を失わないよう適用を見送りました` : ''}`)
+この画面を開いている間に変更された ${result.o.skipped.length} 件は、変更を失わないよう適用を見送りました` : ''}${fin.baseAdvanced ? '' : `
+記録の更新に失敗したため「返却済み」の印は付けていません。同じファイルをもう一度取り込むと記録だけやり直せます(内容が二重に適用されることはありません)`}`)
           } else {
             setPending(p)
             setResolutions(p.conflicts.map(c => ({ ...c })))
@@ -158,15 +160,31 @@ export function HandoffModal({ open, onClose }: Props) {
       // prepare(台帳読み+メディア取り込み) → 同期コミット(重複チェック・リマップは
       // 最新 state に対して行う) → 台帳の永続化。
       const prep = await prepareReceive(pack)
-      const { result: recvResult } = commitSync(now => {
-        const r = buildReceiveCommit(now, pack, prep.recv)
-        return { patch: r.patch, result: r.result }
-      })
+      // コミットの前に仮の受領記録を書く。台帳を書けない状態なら取り込み自体を
+      // 始めない — コミット後に台帳だけ失敗すると、記録の無いプロジェクトが残って
+      // 返却を書き出せず、再取り込みで重複するため。
+      const masterId = generateId()
+      await writeProvisionalReceipt(pack, masterId, prep.recv)
+      let recvResult: ReturnType<typeof buildReceiveCommit>['result']
+      try {
+        ;({ result: recvResult } = commitSync(now => {
+          const r = buildReceiveCommit(now, pack, prep.recv, masterId)
+          return { patch: r.patch, result: r.result }
+        }))
+      } catch (e) {
+        // 取り込みが成立しなかった(重複など) → 仮記録を戻しておく(失敗しても
+        // 「プロジェクトの無い記録」は次回取り込み時の stale 判定が掃除する)。
+        await rollbackProvisionalReceipt(prep.recv).catch(() => { /* best-effort */ })
+        throw e
+      }
       const master = recvResult.master
-      await finalizeReceive(recvResult.ledger)
-      setReceived(await loadRecvIndex())
+      // 本記録(idMap 付き)へ差し替え。失敗しても仮記録が有効なので取り込みは成立
+      // している(返却時の ID 復元だけが効かなくなる)。
+      const ledgerOk = await finalizeReceive(recvResult.ledger).then(() => true).catch(() => false)
+      setReceived(await loadRecvIndex().catch(() => []))
       const omitted = pack.mediaOmitted?.length ? `(動画など ${pack.mediaOmitted.length} 件は同梱されていません)` : ''
-      setNotice(`「${master.name}」として取り込みました${omitted}。作業後はこの画面から返却ファイルを書き出せます`)
+      setNotice(`「${master.name}」として取り込みました${omitted}。作業後はこの画面から返却ファイルを書き出せます${ledgerOk ? '' : `
+取り込み記録の一部を書き込めませんでした(取り込み自体は完了しています)`}`)
     } catch (e) {
       setNotice(String(e instanceof Error ? e.message : e))
     } finally {
@@ -182,14 +200,15 @@ export function HandoffModal({ open, onClose }: Props) {
       // 【同期コミット】自動適用ぶん+競合の選択を1つのオペ集合にして、
       // 最新 state への検証と dispatch を await を挟まず行う。
       const { result } = commitSync(now => {
-        const o = buildPatchFromOps(now, buildReturnOps(pending, resolutions))
+        const o = buildPatchFromOps(now, retargetReturnOps(pending, buildReturnOps(pending, resolutions), now))
         return { patch: o.patch, result: { o, merged: { ...now, ...o.patch } as AppState } }
       })
-      await finalizeReturnMerge(pending, result.merged)
+      const fin = await finalizeReturnMerge(pending, result.merged, result.o.skipped)
       const a = result.o.applied
-      setLent(await loadHandoffIndex())
+      setLent(await loadHandoffIndex().catch(() => []))
       setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted} + 競合 ${resolutions.length} 件を解決)。Ctrl+Z で丸ごと取り消せます${result.o.skipped.length > 0 ? `
-この画面を開いている間に変更された ${result.o.skipped.length} 件は、変更を失わないよう適用を見送りました` : ''}`)
+この画面を開いている間に変更された ${result.o.skipped.length} 件は、変更を失わないよう適用を見送りました` : ''}${fin.baseAdvanced ? '' : `
+記録の更新に失敗したため「返却済み」の印は付けていません。同じファイルをもう一度取り込むと記録だけやり直せます(内容が二重に適用されることはありません)`}`)
       setPending(null)
     } catch (e) {
       setNotice(String(e instanceof Error ? e.message : e))
