@@ -96,9 +96,7 @@ export function initSync(deps: SyncDeps): void {
   // 最後に push/pull した世代の DB スナップショット。競合時の「項目単位マージ」の
   // 共通祖先(base)になる — これがあると 相手だけ/自分だけ/両方 の変更を分類できる。
   const basePath = (): string => join(app.getPath('userData'), 'sync-base.db')
-  async function writeBase(buf: Buffer): Promise<void> {
-    try { await writeAtomic(basePath(), buf) } catch { /* base は best-effort(無ければ全体択一にフォールバック) */ }
-  }
+
 
   async function loadSettings(): Promise<SyncSettings> {
     let raw: Partial<SyncSettings> = {}
@@ -128,15 +126,36 @@ export function initSync(deps: SyncDeps): void {
   // 変更(dirty=true やフォルダ切替)を古いスナップショットで塗り潰してしまう。
   // 読み出しと書き込みをひと続きにして到着順に直列化する。
   let settingsLock: Promise<unknown> = Promise.resolve()
+  function locked<T>(fn: () => Promise<T>): Promise<T> {
+    const run = settingsLock.then(fn)
+    settingsLock = run.then(() => undefined, () => undefined)
+    return run
+  }
   function updateSettings(mutate: (s: SyncSettings) => SyncSettings): Promise<SyncSettings> {
-    const run = settingsLock.then(async () => {
+    return locked(async () => {
       const cur = await loadSettings()
       const next = mutate(cur)
       await saveSettings(next)
       return next
     })
-    settingsLock = run.then(() => undefined, () => undefined)
-    return run
+  }
+
+  // sync-base.db の書き込み/削除も同じキューで直列化する。ロック外で書くと、
+  // configure の base 削除と旧操作の rename が競合し、フォルダ変更後に旧フォルダの
+  // base が復活する(新フォルダは lastSha が空で read-base の SHA 照合が働かず、
+  // 旧フォルダの DB が共通祖先に化ける)。書く直前にキュー内でフォルダを再確認
+  // するので、削除より後に並んだ旧フォルダ向けの書き込みは静かに見送られる。
+  function writeBaseFor(buf: Buffer, folder: string): Promise<void> {
+    return locked(async () => {
+      const s = await loadSettings()
+      if (!sameFolder(s.folder, folder)) return
+      try { await writeAtomic(basePath(), buf) } catch { /* best-effort(無ければ全体択一にフォールバック) */ }
+    })
+  }
+  function removeBase(): Promise<void> {
+    return locked(async () => {
+      await unlink(basePath()).catch(() => { /* 無ければそれでよい */ })
+    })
   }
 
   // フォルダ設定の同一性判定。大文字小文字(Windows)・区切り・末尾スラッシュ等の
@@ -207,8 +226,9 @@ export function initSync(deps: SyncDeps): void {
     if (folderChanged) {
       // 旧フォルダの共通祖先(sync-base)を残さない。lastSha を空にした状態では
       // read-base が SHA 照合をしないため、残すと新フォルダの競合で旧フォルダの
-      // DB が3方向マージの祖先として使われてしまう。
-      await unlink(basePath()).catch(() => { /* 無ければそれでよい */ })
+      // DB が3方向マージの祖先として使われてしまう。削除もロックのキューを通す —
+      // 実行中の旧 base 書き込み(rename)がこの削除の後に着地して復活しないように。
+      await removeBase()
     }
     return next
   })
@@ -275,7 +295,7 @@ export function initSync(deps: SyncDeps): void {
         if (!sameFolder(rec.folder, s.folder)) return { ok: false, error: 'changed' }
         // base も揃えておく。ここを飛ばすと lastSha と sync-base.db が食い違い、
         // 以後の競合で項目単位マージが使えなくなる(全体択一に劣化する)。
-        await writeBase(buf)
+        await writeBaseFor(buf, s.folder)
         return { ok: true, manifest: prev.manifest }
       }
       await mkdir(s.folder, { recursive: true })
@@ -291,7 +311,7 @@ export function initSync(deps: SyncDeps): void {
       // 書き込むと、以後の判定と sync-base.db が全部ずれる)。
       const rec = await updateSettings(c => (sameFolder(c.folder, s.folder) ? { ...c, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt } : c))
       if (!sameFolder(rec.folder, s.folder)) return { ok: false, error: 'changed' }
-      await writeBase(buf)
+      await writeBaseFor(buf, s.folder)
       return { ok: true, manifest }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -379,7 +399,7 @@ export function initSync(deps: SyncDeps): void {
         // undo 用に、上書き前の sync-base も控える(戻さないと lastSha と食い違い、
         // undo が作る競合で項目単位マージが使えなくなる)。
         const prevBase = await readFile(basePath()).catch(() => null)
-        await writeBase(p.buf)
+        await writeBaseFor(p.buf, p.folder)
         // base の読み書きも await なので、その間のフォルダ切替を最後にもう一度
         // 確認してから成功を報告する。切り替わっていたら throw して DB を巻き戻す
         // (configure 側が新フォルダ用に設定をリセット済みなので、設定はそのまま)。
@@ -425,15 +445,13 @@ export function initSync(deps: SyncDeps): void {
       else if (!u.hadDb) await unlink(deps.dbPath()).catch(() => { /* 元々無かった */ })
       dbRestored = true
       // base 復元の前にもフォルダを再確認する。DB 復元の await 中に切り替わって
-      // いた場合、旧フォルダの base を共有の sync-base.db へ書くと、新フォルダの
-      // 競合で旧フォルダの DB が共通祖先に化ける(configure 側の base 削除とも
-      // 競合しない — 不一致ならここで書かない)。
+      // いた場合、旧フォルダの base を共有の sync-base.db へ書かない。書き込み自体は
+      // writeBaseFor(ロックのキュー内で再確認)を通るので、この検査後の configure
+      // とも競合しない。
       const sMid = await updateSettings(c => c)
       if (!sameFolder(sMid.folder, u.folder)) return { ok: false, dbRestored }
-      try {
-        if (u.prevBase) await writeAtomic(basePath(), u.prevBase)
-        else await unlink(basePath()).catch(() => { /* 元々無かった */ })
-      } catch { /* base は best-effort(無ければ全体択一へ劣化するだけ) */ }
+      if (u.prevBase) await writeBaseFor(u.prevBase, u.folder)
+      else await removeBase().catch(() => { /* 元々無かった */ })
       const restore = (c: SyncSettings): SyncSettings => (sameFolder(c.folder, u.folder)
         ? { ...c, lastGen: u.prev.lastGen, lastLocalEtag: u.prev.lastLocalEtag, lastSha: u.prev.lastSha, lastSyncAt: u.prev.lastSyncAt, dirty: true }
         : c)

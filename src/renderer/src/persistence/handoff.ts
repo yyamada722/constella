@@ -630,14 +630,6 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
   // 貸出時の base の値)を theirs へ写してから比較する — 差分にならず、適用
   // されても値が保たれる。base は reparent 前の生値を使う(reparent も剥がすため)。
   restoreOwnedFields(theirs, state, base)
-  // 共有・他プロジェクト参照のメタデータ(shared/sharedAlias/refByMasterIds/
-  // linkedMasterIds)は貸出側の所有物で、受領時に相手側で剥がしている。返却
-  // パックには常に無いため、そのまま比較すると「相手が解除した」ように見えて
-  // 自動適用され、貸出側の共有設定と参照リンクが黙って消える。相手には編集
-  // 手段の無いフィールドなので、このPCの現在値(項目をこちらで消していた場合は
-  // 貸出時の base の値)を theirs へ写してから比較する — 差分にならず、適用
-  // されても値が保たれる。base は reparent 前の生値を使う(reparent も剥がすため)。
-  restoreOwnedFields(theirs, state, base)
 
   await importMedia(pack.media)
 

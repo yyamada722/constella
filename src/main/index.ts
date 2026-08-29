@@ -125,7 +125,7 @@ ipcMain.handle('db:recovery-list', async (): Promise<{ name: string; size: numbe
 ipcMain.handle('db:load-recovery', async (_e, name: string): Promise<Buffer | null> => {
   let p: string | null = null
   if (name === 'constella.db.bak') p = bakPath()
-  else if (/^constella-(?:\d{8}|conflict-\d{8}-\d{6})\.db$/.test(name)) p = join(backupsDir(), name)
+  else if (/^constella-(?:\d{8}|conflict-\d{8}-\d{6}(?:-[0-9a-f]{6})?)\.db$/.test(name)) p = join(backupsDir(), name)
   if (!p) return null
   try { return await readFile(p) } catch { return null }
 })
