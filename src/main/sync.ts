@@ -11,7 +11,7 @@
 // 届いて DB がまだ古い」瞬間がある。マニフェストに DB の SHA-256 を焼き込み、
 // pull 時に実ファイルと照合することで、不整合スナップショットを取り込まない。
 import { app, ipcMain, dialog, BrowserWindow } from 'electron'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { readFile, writeFile, mkdir, rename, readdir, stat, copyFile, unlink } from 'fs/promises'
 import { createHash, randomBytes } from 'crypto'
 import { hostname } from 'os'
@@ -139,6 +139,16 @@ export function initSync(deps: SyncDeps): void {
     return run
   }
 
+  // フォルダ設定の同一性判定。大文字小文字(Windows)・区切り・末尾スラッシュ等の
+  // 表記ゆれで「変わった」と誤判定すると、push/pull の完了記録が不必要に破棄され、
+  // 成功した push が記録されずニセ競合になる。正規化して比べる。
+  const sameFolder = (a: string | null, b: string | null): boolean => {
+    if (!a || !b) return a === b
+    const na = resolve(a)
+    const nb = resolve(b)
+    return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb
+  }
+
   const folderDbPath = (folder: string): string => join(folder, DB_NAME)
   const mediaDirPath = (folder: string): string => join(folder, MEDIA_DIR)
 
@@ -170,7 +180,7 @@ export function initSync(deps: SyncDeps): void {
   ipcMain.handle('sync:configure', async (_e, patch: { folder?: string | null; enabled?: boolean; deviceName?: string }) => {
     return await updateSettings(cur => {
     const next: SyncSettings = { ...cur }
-    if (patch.folder !== undefined && patch.folder !== cur.folder) {
+    if (patch.folder !== undefined && !sameFolder(patch.folder, cur.folder)) {
       // フォルダが変わったら世代の対応関係もリセットし、旧フォルダから
       // prepare 済みの pull バッファも破棄する。
       prepared = null
@@ -245,8 +255,8 @@ export function initSync(deps: SyncDeps): void {
       if (prev.manifest && prev.manifest.dbSha256 === sha) {
         // 待っている間にフォルダが切り替えられていたら、旧フォルダの世代を
         // 新しい設定へ記録しない(configure がリセットした対応関係を汚すため)。
-        const rec = await updateSettings(c => (c.folder === s.folder ? { ...c, lastGen: prev.manifest!.gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: new Date().toISOString() } : c))
-        if (rec.folder !== s.folder) return { ok: false, error: 'changed' }
+        const rec = await updateSettings(c => (sameFolder(c.folder, s.folder) ? { ...c, lastGen: prev.manifest!.gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: new Date().toISOString() } : c))
+        if (!sameFolder(rec.folder, s.folder)) return { ok: false, error: 'changed' }
         // base も揃えておく。ここを飛ばすと lastSha と sync-base.db が食い違い、
         // 以後の競合で項目単位マージが使えなくなる(全体択一に劣化する)。
         await writeBase(buf)
@@ -263,8 +273,8 @@ export function initSync(deps: SyncDeps): void {
       // 押している間にフォルダが切り替えられていたら記録しない(この push 自体は
       // 旧フォルダに残るだけで無害。新フォルダの設定に旧フォルダの世代/SHA を
       // 書き込むと、以後の判定と sync-base.db が全部ずれる)。
-      const rec = await updateSettings(c => (c.folder === s.folder ? { ...c, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt } : c))
-      if (rec.folder !== s.folder) return { ok: false, error: 'changed' }
+      const rec = await updateSettings(c => (sameFolder(c.folder, s.folder) ? { ...c, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt } : c))
+      if (!sameFolder(rec.folder, s.folder)) return { ok: false, error: 'changed' }
       await writeBase(buf)
       return { ok: true, manifest }
     } catch (e) {
@@ -311,22 +321,28 @@ export function initSync(deps: SyncDeps): void {
       // 後に設定が切り替わっていない」ことも保証できる — ここから writeDbAtomic の
       // 呼び出しまで await が無いため、シングルスレッドの main では configure が
       // 割り込む余地がない(割り込めるのは await 境界だけ)。
-      if (!p || p.gen !== expectedGen || p.folder !== s.folder || prepared !== p) {
+      if (!p || p.gen !== expectedGen || !sameFolder(p.folder, s.folder) || prepared !== p) {
         return { ok: false, error: 'not-prepared' }
       }
+      // 差し替え前のローカル DB を控える。差し替え後に完了記録を書けなかった場合
+      // (sync.json の書き込み失敗・フォルダ切替)、レンダラーは旧 state のまま
+      // なので、次の autosave が pull 結果を上書きして「半分だけ pull」の不整合に
+      // なる — その場合は DB ごと元に戻して、なかったことにする。
+      const before = await readFile(deps.dbPath()).catch(() => null)
       // リモート由来なので日次バックアップ枠は消費しない(その日のローカル作業の
       // バックアップが作られなくなるのを避ける)。
       await deps.writeDbAtomic(p.buf, { fromRemote: true })
-      const etag = await etagOf(deps.dbPath())
-      // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
-      // writeDbAtomic の間にフォルダが切り替えられていたら記録しない(新しい設定に
-      // 旧フォルダの世代を書かない)。この場合ローカル DB は旧フォルダの内容に
-      // なっているが、configure が対応関係をリセット済みなので、次の同期チェックが
-      // 新フォルダから引き直して自己回復する。
-      const rec = await updateSettings(c => (c.folder === p.folder ? { ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false } : c))
-      if (rec.folder !== p.folder) return { ok: false, error: 'changed' }
-      await writeBase(p.buf)
-      return { ok: true, manifest: p.manifest }
+      try {
+        const etag = await etagOf(deps.dbPath())
+        // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
+        const rec = await updateSettings(c => (sameFolder(c.folder, p.folder) ? { ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false } : c))
+        if (!sameFolder(rec.folder, p.folder)) throw new Error('changed')
+        await writeBase(p.buf)
+        return { ok: true, manifest: p.manifest }
+      } catch (e) {
+        if (before) await deps.writeDbAtomic(before, { fromRemote: true }).catch(() => { /* 復旧チェーンに任せる */ })
+        throw e
+      }
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     } finally {

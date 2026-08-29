@@ -302,12 +302,15 @@ export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: Orde
   }
   const orderByStream = new Map(orderOps.map(o => [o.stream, o]))
 
-  const applyToArr = (arr: { id: string }[], streamOps: ChangeOp[]): { id: string }[] => {
+  // 見送りの記録は stream 修飾付き(`stream:id`)。素の id だけだと、初期データの
+  // ように別コレクション間で id('1' など)が重複した場合、無関係な項目まで
+  // 「見送られた」と誤判定される(finalizeReturnMerge の base 据え置きが誤爆する)。
+  const applyToArr = (arr: { id: string }[], streamOps: ChangeOp[], streamName: string): { id: string }[] => {
     const next = [...arr]
     for (const op of streamOps) {
       const i = next.findIndex(x => x.id === op.id)
       const current = i >= 0 ? next[i] : null
-      if (compareKey(current) !== op.expectedBefore) { skipped.add(op.id); continue }
+      if (compareKey(current) !== op.expectedBefore) { skipped.add(`${streamName}:${op.id}`); continue }
       if (op.item) {
         if (i >= 0) { next[i] = op.item; applied.updated++ }
         else { next.push(op.item); applied.added++ }
@@ -334,18 +337,32 @@ export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: Orde
   for (const stream of streams) {
     if (stream === 'projects' || stream === 'tasks') continue // 下でまとめて処理
     const arr = (now[stream as keyof AppState] ?? []) as unknown as { id: string }[]
-    ;(patch as Record<string, unknown>)[stream] = applyOrderIfValid(applyToArr(arr, byStream.get(stream) ?? []), orderByStream.get(stream))
+    ;(patch as Record<string, unknown>)[stream] = applyOrderIfValid(applyToArr(arr, byStream.get(stream) ?? [], stream), orderByStream.get(stream))
   }
   if (hasTaskWork) {
-    const metas = applyOrderIfValid(
-      applyToArr(stripTasks(now.projects) as unknown as { id: string }[], byStream.get('projects') ?? []),
-      orderByStream.get('projects'),
-    ) as unknown as Omit<Project, 'tasks'>[]
+    // タスクを先に適用して見送りを確定させる。見送られたタスクの持ち主ボードの
+    // 「削除」は連動して見送る — メタ削除だけ通ると rebuildProjects が親を失った
+    // タスクを黙って落とし、「見送った(=守った)」はずの編集がそのまま消える。
+    const flatNow = flattenTasks(now.projects)
     const taskOrder = orderByStream.get('tasks')
     const flat = applyOrderIfValid(
-      applyToArr(flattenTasks(now.projects) as unknown as { id: string }[], byStream.get('tasks') ?? []),
+      applyToArr(flatNow as unknown as { id: string }[], byStream.get('tasks') ?? [], 'tasks'),
       taskOrder,
     ) as unknown as FlatTask[]
+    const skippedTaskProjects = new Set(
+      (byStream.get('tasks') ?? [])
+        .filter(op => skipped.has(`tasks:${op.id}`))
+        .map(op => flatNow.find(t => t.id === op.id)?.__projectId)
+        .filter((x): x is string => !!x),
+    )
+    const projOps = (byStream.get('projects') ?? []).filter(op => {
+      if (op.item === null && skippedTaskProjects.has(op.id)) { skipped.add(`projects:${op.id}`); return false }
+      return true
+    })
+    const metas = applyOrderIfValid(
+      applyToArr(stripTasks(now.projects) as unknown as { id: string }[], projOps, 'projects'),
+      orderByStream.get('projects'),
+    ) as unknown as Omit<Project, 'tasks'>[]
     // 相手の並びを採用できた場合、flat は既にその順なので再ソートさせない。
     const taskOrderApplied = !!taskOrder && !skipped.has('order:tasks')
     patch.projects = rebuildProjects(metas, flat, now.projects, taskOrderApplied)

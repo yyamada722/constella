@@ -339,13 +339,30 @@ export async function finalizeSyncMerge(
   // (貸出記録が消えると、その返却ファイルを取り込めなくなる)。
   try {
     const mine = await loadHandoffKeys()
+    // handoff.base.* は返却を処理するたびに前進するブロブ。両方に存在して内容が
+    // 違う場合は「返却を後に処理した側(returnedAt が新しい側)」が新しい祖先 —
+    // 古い側を残すと、台帳(returnedAt)だけ新しく base だけ古い食い違いが
+    // フォルダへ push され、以後の返却が古い祖先で誤分類される。
+    const parseIdx = (raw?: string): { id: string; returnedAt?: string }[] => {
+      try { return JSON.parse(raw || '[]') } catch { return [] }
+    }
+    const mineIdx = parseIdx(mine['handoff.index'])
+    const theirsIdx = parseIdx(plan.theirsKv['handoff.index'])
+    const theirsReturnedLater = (id: string): boolean => {
+      const t = theirsIdx.find(x => x.id === id)?.returnedAt
+      const m = mineIdx.find(x => x.id === id)?.returnedAt
+      return !!t && (!m || t > m)
+    }
     for (const [k, v] of Object.entries(plan.theirsKv)) {
       if (!k.startsWith('handoff.')) continue
       if (k === 'handoff.index' || k === 'handoff.recv.index') {
         await saveKv(k, mergeLedger(mine[k], v, k === 'handoff.index' ? 'id' : 'handoffId'))
         continue
       }
-      if (mine[k] === undefined) await saveKv(k, v)
+      if (mine[k] === undefined) { await saveKv(k, v); continue }
+      if (k.startsWith('handoff.base.') && mine[k] !== v && theirsReturnedLater(k.slice('handoff.base.'.length))) {
+        await saveKv(k, v)
+      }
     }
   } catch {
     return { ok: false, message: '受け渡し記録を統合できなかったため送信を中止しました。マージ結果はこのPCに残っています — もう一度お試しください', mindtrainApplied }

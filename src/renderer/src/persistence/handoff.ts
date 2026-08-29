@@ -20,6 +20,7 @@ import type {
   CanvasBoard, CanvasTab, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation,
 } from '../types'
 import { loadKv, saveKv } from './db'
+import { settleLocalWrites } from './folderSync'
 import {
   stableStringify, compareKey, classifyStream, streamLabel,
   flattenTasks, stripTasks, rebuildProjects,
@@ -484,7 +485,12 @@ export function buildReceiveCommit(
   const stale = recv.filter(r => r.handoffId === pack.handoffId && !now.masterProjects.some(m => m.id === r.masterId))
   const live = recv.filter(r => r.handoffId === pack.handoffId && now.masterProjects.some(m => m.id === r.masterId))
   if (live.length > 0) {
-    throw new Error(`この作業ファイル(${pack.name})は既に取り込み済みです。返却を受け取る側の場合は、元のマシンで取り込んでください`)
+    // 仮記録のまま残っている場合は前回の取り込みが記録を確定できなかったケース。
+    // 再起動後は Ctrl+Z で戻せないので、プロジェクトの削除→再取り込みの
+    // 回復手順を具体的に案内する(削除すれば stale 判定が記録を掃除して通る)。
+    throw new Error(live.some(r => r.provisional)
+      ? `この作業ファイル(${pack.name})は前回の取り込みで記録を確定できていません。取り込まれたプロジェクト(📦 ${pack.name})を削除してから、もう一度取り込んでください`
+      : `この作業ファイル(${pack.name})は既に取り込み済みです。返却を受け取る側の場合は、元のマシンで取り込んでください`)
   }
   const kept = stale.length > 0 ? recv.filter(r => !stale.includes(r)) : recv
   const master: MasterProject = { id: masterId, name: `📦 ${pack.name}`, createdAt: new Date().toISOString() }
@@ -515,6 +521,11 @@ export function buildReceiveCommit(
 
 /** 【finalize・非同期】受領台帳を書く(コミット済みの結果を永続化するだけ)。 */
 export async function finalizeReceive(ledger: RecvIndexEntry[]): Promise<void> {
+  // 本記録を書く前に、コミット済みの state(取り込んだプロジェクト)をディスクへ
+  // 確定させる。逆順だと、ここでクラッシュした場合に「本記録あり・プロジェクト
+  // なし」になる(stale 掃除で直るが、常に安全な順にしておく)。確定できなければ
+  // 本記録も見送る — 仮記録が生きているので取り込み自体は成立している。
+  if (!(await settleLocalWrites())) throw new Error('保存に失敗しました')
   await saveKv('handoff.recv.index', JSON.stringify(ledger))
 }
 
@@ -523,7 +534,7 @@ export async function exportReturn(state: AppState, entry: RecvIndexEntry, exclu
   if (entry.provisional) {
     // 本記録(idMap)を書けないまま終わった受け取り。ID を振り直していた場合、
     // このまま返すと貸出側のマージが「元は削除・別物を追加」と解釈して壊れる。
-    throw new Error('この受け取りは取り込み記録を確定できていません。Ctrl+Z で取り込みを取り消してから、作業ファイルをもう一度取り込んでください')
+    throw new Error('この受け取りは取り込み記録を確定できていません。Ctrl+Z で取り込みを取り消してから、作業ファイルをもう一度取り込んでください(再起動後などで Ctrl+Z が使えない場合は、このプロジェクトを削除してから取り込み直してください)')
   }
   // 受け取ったプロジェクト配下の全ユニットを選択したのと同じ扱いで抽出する。
   const sel = emptySelection()
@@ -703,6 +714,12 @@ export async function finalizeReturnMerge(
   skipped: string[],
   ops: ChangeOp[],
 ): Promise<{ baseAdvanced: boolean }> {
+  // base を進める前に、コミット済みのマージ結果をディスクへ確定させる。メモリ
+  // だけの状態で base を先に進めると、ここでクラッシュした場合に「旧項目+
+  // 新 base」で再起動し、同じ返却の再取り込みが誤分類される(自分の項目が
+  // 「削除した」扱いになる等)。確定できなければ base も返却済み印も見送る —
+  // 再取り込みでやり直せる。
+  if (!(await settleLocalWrites())) return { baseAdvanced: false }
   let baseAdvanced = false
   try {
     const rawBase = await loadKv(`handoff.base.${pending.pack.handoffId}`)
@@ -721,7 +738,7 @@ export async function finalizeReturnMerge(
     const prevItems: PackItems = { ...EMPTY_ITEMS, ...(prev?.items ?? {}) }
     const skippedIds = new Set(skipped)
     for (const op of ops) {
-      if (skippedIds.has(op.id)) restoreBaseItem(nextBase, prevItems, op.stream, op.id)
+      if (skippedIds.has(`${op.stream}:${op.id}`)) restoreBaseItem(nextBase, prevItems, op.stream, op.id)
     }
     await saveKv(`handoff.base.${pending.pack.handoffId}`, JSON.stringify({ sourceMasterId, items: nextBase }))
     baseAdvanced = true
