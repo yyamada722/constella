@@ -143,7 +143,14 @@ export function SyncMergeModal({ open, onClose }: Props) {
         window.location.reload()
         return
       }
-      if (skipMsg) { setError(skipMsg); return }
+      if (skipMsg) {
+        setError(skipMsg)
+        // メッセージで留まる場合も差分転送は走らせる。finalize のメディア送信が
+        // 部分失敗していた場合、ここを飛ばすと reconcile の再試行予約が行われず、
+        // 不足 blob の参照だけが公開されたまま自動回復しない。
+        manualFolderSync().catch(() => { /* ignore */ })
+        return
+      }
       onClose()
       // 状態表示を「同期済み」に更新し、メディアの差分転送も走らせる。
       manualFolderSync().catch(() => { /* ignore */ })
