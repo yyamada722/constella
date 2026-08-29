@@ -288,6 +288,7 @@
 :where(.dark) .text-indigo-600 { color: rgb(129 140 248); }
 :where(.dark) .text-indigo-700 { color: rgb(165 180 252); }
 :where(.dark) .text-indigo-800 { color: rgb(199 210 254); }
+:where(.dark) .text-indigo-900 { color: rgb(199 210 254); }
 :where(.dark) .text-orange-500 { color: rgb(251 146 60); }
 :where(.dark) .text-orange-600 { color: rgb(251 146 60); }
 :where(.dark) .text-orange-700 { color: rgb(253 186 116); }

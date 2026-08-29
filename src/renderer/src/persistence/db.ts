@@ -61,7 +61,7 @@ interface DbApi {
   load: () => Promise<ArrayBuffer | Uint8Array | null>
   save: (bytes: Uint8Array) => Promise<void>
   reset?: () => Promise<void>
-  recoveryList?: () => Promise<{ name: string; size: number; mtime: number }[]>
+  recoveryList?: () => Promise<{ name: string; size: number; mtime: number; kind?: 'auto' | 'conflict' }[]>
   loadRecovery?: (name: string) => Promise<ArrayBuffer | Uint8Array | null>
 }
 function electronDb(): DbApi | null {
@@ -192,6 +192,93 @@ function openVerified(SQL: NonNullable<typeof sqlModule>, bytes: Uint8Array | nu
   return db
 }
 
+// Bring any DB image up to the current schema: create missing tables, add columns
+// that older versions lack, and run the one-time data migrations.
+//
+// Shared by getDb (the live database) and parseDbBytes (a throwaway instance used to
+// read a peer's / a base snapshot's DB for the sync merge). Running only CREATE TABLE
+// IF NOT EXISTS there was a real bug: SELECT * against a table missing a newer column
+// silently yields undefined, so an older peer's DB produced phantom "they cleared this
+// field" diffs, and accepting them erased the local values.
+function applySchemaAndMigrations(db: Database): void {
+  db.run(SCHEMA)
+  // Migrations for DBs created before a column existed (ALTER throws if it already exists).
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN crop TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN bookmarks TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN pdf TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN frames TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_tabs ADD COLUMN projectId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_tabs ADD COLUMN boardId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN refTabId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN refPlanId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN doingMs REAL') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN doingSince TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN draftMonth REAL') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN draftYear REAL') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_arrows ADD COLUMN color TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_arrows ADD COLUMN width REAL') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN stationId TEXT') } catch { /* column already present */ }
+  // Global master-project layer: add the scoping FK columns to existing DBs.
+  try { db.run('ALTER TABLE notes ADD COLUMN masterProjectId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE projects ADD COLUMN masterProjectId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE research ADD COLUMN masterProjectId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN startDate TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN endDate TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN parentId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE projects ADD COLUMN color TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN linkedNoteIds TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN refNoteId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN refTaskId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN refSketchId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN draftWhen TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE flows ADD COLUMN groups TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE research ADD COLUMN folderId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE research_folders ADD COLUMN parentId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE notes ADD COLUMN folderId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE note_folders ADD COLUMN color TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE research_folders ADD COLUMN color TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE notes ADD COLUMN pinned INTEGER') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE notes ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE notes ADD COLUMN shared INTEGER') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE notes ADD COLUMN refByMasterIds TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE notes ADD COLUMN attachments TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE files ADD COLUMN comment TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN fileIds TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE files ADD COLUMN versions TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN refFileId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN priority INTEGER') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN completedAt TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE tasks ADD COLUMN sharedAlias TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE research ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN shape TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_arrows ADD COLUMN fromPort TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_arrows ADD COLUMN toPort TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_arrows ADD COLUMN points TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE plans ADD COLUMN folder TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE plans ADD COLUMN folderId TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE master_projects ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE master_projects ADD COLUMN folder TEXT') } catch { /* column already present */ }
+  // One-time migration: collapse all pre-existing data under a single default
+  // master project ('メイン'). Runs once (meta-gated); the in-memory
+  // normalizeMasterProjects in store.tsx is the comprehensive safety net for any
+  // other path (legacy localStorage, backup import). Canvas categories (tabs)
+  // previously pointed at per-canvas project ids — re-parent them all to the
+  // default master so no category/card is orphaned out of view.
+  const migratedMaster = rows(db, "SELECT value FROM meta WHERE key='migrated_master_project'")[0]
+  if (!migratedMaster) {
+    const isoNow = new Date().toISOString()
+    db.run("INSERT OR IGNORE INTO master_projects (ord,id,name,createdAt) VALUES (0,'master-default','メイン',?)", [isoNow])
+    db.run("UPDATE notes SET masterProjectId='master-default' WHERE masterProjectId IS NULL OR masterProjectId=''")
+    db.run("UPDATE projects SET masterProjectId='master-default' WHERE masterProjectId IS NULL OR masterProjectId=''")
+    db.run("UPDATE research SET masterProjectId='master-default' WHERE masterProjectId IS NULL OR masterProjectId=''")
+    db.run("UPDATE canvas_tabs SET projectId='master-default'")
+    // The per-canvas project layer was collapsed into master projects — retire its table.
+    db.run('DROP TABLE IF EXISTS canvas_projects')
+    db.run("INSERT OR REPLACE INTO meta (key,value) VALUES ('migrated_master_project','1')")
+  }
+}
+
 async function getDb(): Promise<Database> {
   if (dbInstance) return dbInstance
   if (initPromise) return initPromise
@@ -208,9 +295,12 @@ async function getDb(): Promise<Database> {
       // Electron: constella.db.bak → rolling daily backups. Browser: main.bak.
       const ed = electronDb()
       if (ed?.recoveryList && ed.loadRecovery) {
-        let candidates: { name: string }[] = []
+        let candidates: { name: string; kind?: 'auto' | 'conflict' }[] = []
         try { candidates = await ed.recoveryList() } catch { /* none */ }
-        for (const c of candidates) {
+        // 同期の競合でユーザーが「選ばなかった側」の退避(kind='conflict')は自動
+        // 復元の対象外。混ぜると、破損をきっかけに拒否したはずのデータへ黙って
+        // 巻き戻る(退避ファイル自体は残るので、明示的な復元操作からは辿れる)。
+        for (const c of candidates.filter(x => x.kind !== 'conflict')) {
           try {
             const b = await ed.loadRecovery(c.name)
             if (!b) continue
@@ -227,82 +317,7 @@ async function getDb(): Promise<Database> {
       }
       if (!db) throw mainErr // nothing recoverable — store falls back to loadFailed (read-only sample)
     }
-    db.run(SCHEMA)
-    // Migrations for DBs created before a column existed (ALTER throws if it already exists).
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN crop TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN bookmarks TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN pdf TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN frames TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_tabs ADD COLUMN projectId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_tabs ADD COLUMN boardId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refTabId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refPlanId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN color TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN width REAL') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN stationId TEXT') } catch { /* column already present */ }
-    // Global master-project layer: add the scoping FK columns to existing DBs.
-    try { db.run('ALTER TABLE notes ADD COLUMN masterProjectId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE projects ADD COLUMN masterProjectId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE research ADD COLUMN masterProjectId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN startDate TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN endDate TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN parentId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE projects ADD COLUMN color TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN linkedNoteIds TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refNoteId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refTaskId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refSketchId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN draftWhen TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE flows ADD COLUMN groups TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE research ADD COLUMN folderId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE research_folders ADD COLUMN parentId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE notes ADD COLUMN folderId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE note_folders ADD COLUMN color TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE research_folders ADD COLUMN color TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE notes ADD COLUMN pinned INTEGER') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE notes ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE notes ADD COLUMN shared INTEGER') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE notes ADD COLUMN refByMasterIds TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE notes ADD COLUMN attachments TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE files ADD COLUMN comment TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN fileIds TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE files ADD COLUMN versions TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN refFileId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN priority INTEGER') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN completedAt TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN sharedAlias TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE research ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN shape TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN fromPort TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN toPort TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_arrows ADD COLUMN points TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE plans ADD COLUMN folder TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE plans ADD COLUMN folderId TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE master_projects ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE master_projects ADD COLUMN folder TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN doingMs REAL') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE tasks ADD COLUMN doingSince TEXT') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN draftMonth REAL') } catch { /* column already present */ }
-    try { db.run('ALTER TABLE canvas_cards ADD COLUMN draftYear REAL') } catch { /* column already present */ }
-    // One-time migration: collapse all pre-existing data under a single default
-    // master project ('メイン'). Runs once (meta-gated); the in-memory
-    // normalizeMasterProjects in store.tsx is the comprehensive safety net for any
-    // other path (legacy localStorage, backup import). Canvas categories (tabs)
-    // previously pointed at per-canvas project ids — re-parent them all to the
-    // default master so no category/card is orphaned out of view.
-    const migratedMaster = rows(db, "SELECT value FROM meta WHERE key='migrated_master_project'")[0]
-    if (!migratedMaster) {
-      const isoNow = new Date().toISOString()
-      db.run("INSERT OR IGNORE INTO master_projects (ord,id,name,createdAt) VALUES (0,'master-default','メイン',?)", [isoNow])
-      db.run("UPDATE notes SET masterProjectId='master-default' WHERE masterProjectId IS NULL OR masterProjectId=''")
-      db.run("UPDATE projects SET masterProjectId='master-default' WHERE masterProjectId IS NULL OR masterProjectId=''")
-      db.run("UPDATE research SET masterProjectId='master-default' WHERE masterProjectId IS NULL OR masterProjectId=''")
-      db.run("UPDATE canvas_tabs SET projectId='master-default'")
-      // The per-canvas project layer was collapsed into master projects — retire its table.
-      db.run('DROP TABLE IF EXISTS canvas_projects')
-      db.run("INSERT OR REPLACE INTO meta (key,value) VALUES ('migrated_master_project','1')")
-    }
+    applySchemaAndMigrations(db)
     dbInstance = db
     if (healedFrom) {
       // Heal the main store immediately so the next boot doesn't repeat recovery,
@@ -337,7 +352,40 @@ const B = (v: unknown): string | number | null => (v == null ? null : typeof v =
 
 /** Returns the persisted AppState, or null if the database has never been initialized. */
 export async function loadState(): Promise<AppState | null> {
-  const db = await getDb()
+  return readState(await getDb())
+}
+
+/**
+ * 任意の DB バイト列を AppState に読み出す(本体の DB は触らない)。
+ * 同期フォルダ側 DB / 最終同期時点の base スナップショットの解析に使う
+ * (競合の項目単位マージ)。壊れたバイト列は null。
+ */
+export async function parseDbBytes(bytes: Uint8Array): Promise<{ state: AppState; kv: Record<string, string> } | null> {
+  if (!sqlModule) sqlModule = await initSqlJs({ locateFile: () => wasmUrl })
+  let db: Database
+  try {
+    db = openVerified(sqlModule, bytes)
+  } catch { return null }
+  try {
+    // 本体と同じスキーマ整備を通す。使い捨てインスタンス上の操作なので相手の
+    // ファイルには影響しない。CREATE IF NOT EXISTS だけでは新しい列が追加されず、
+    // 旧バージョンのDBを SELECT * で読むと値が黙って undefined になり、
+    // 「相手がこのフィールドを消した」という幻の差分を生む。
+    applySchemaAndMigrations(db)
+    const state = readState(db)
+    if (!state) return null
+    // app_kv も返す: 受け渡しの台帳(handoff.*)はここに載るため、AppState だけを
+    // マージして push すると相手側の台帳を取りこぼす。
+    const kv: Record<string, string> = {}
+    for (const r of rows(db, 'SELECT key, value FROM app_kv')) kv[str(r.key)] = str(r.value)
+    return { state, kv }
+  } catch { return null } finally {
+    try { db.close() } catch { /* ignore */ }
+  }
+}
+
+// 与えられた DB インスタンスから AppState を組み立てる(loadState / parseDbBytes 共用)。
+function readState(db: Database): AppState | null {
   const initialized = rows(db, "SELECT value FROM meta WHERE key='initialized'")[0]
   if (!initialized) return null
 
@@ -590,6 +638,14 @@ export function saveState(state: AppState): Promise<void> {
 /** Import-only variant of saveState: writes even while writes are frozen. */
 export function restoreState(state: AppState): Promise<void> {
   return enqueueSaveState(state)
+}
+
+/**
+ * Wait until every queued save has been flushed to storage. The folder-sync
+ * push reads the on-disk DB file, so it must not run while a save is in flight.
+ */
+export function drainSaves(): Promise<void> {
+  return saveChain.then(() => undefined, () => undefined)
 }
 
 async function doSaveState(state: AppState): Promise<void> {

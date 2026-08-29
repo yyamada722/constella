@@ -11,6 +11,7 @@ const guide = [
   { text: 'その他のページ', link: '/guide/pages' },
   { text: 'ショートカット', link: '/guide/shortcuts' },
   { text: 'データとバックアップ', link: '/guide/data' },
+  { text: '同期と受け渡し', link: '/guide/sync' },
 ]
 
 // Per-feature deep dives with screenshots / GIFs (docs/features/**, media from
@@ -127,7 +128,7 @@ export default defineConfig({
         if (filePath.startsWith('guide/')) {
           // Generated pages map back to their numbered source chapter
           // (src/renderer/src/help/NN-<id>.md, numbering = sidebar order).
-          const ids = ['intro', 'notes', 'tasks', 'canvas', 'plan', 'pages', 'shortcuts', 'data']
+          const ids = ['intro', 'notes', 'tasks', 'canvas', 'plan', 'pages', 'shortcuts', 'data', 'sync']
           const id = filePath.slice('guide/'.length).replace(/\.md$/, '')
           const i = ids.indexOf(id)
           if (i >= 0) return `https://github.com/yyamada722/constella/edit/main/src/renderer/src/help/${String(i + 1).padStart(2, '0')}-${id}.md`

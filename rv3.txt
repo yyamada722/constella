@@ -1,0 +1,27 @@
+=== coderabbitai components/HandoffModal.tsx:136 ===
+_️ Data Integrity & Integration_ | _ Major_ | _️ Heavy lift_ **適用時点の最新 `state` を `applyReturnMerge` に渡してください。**
+
+=== coderabbitai persistence/folderSync.ts:555 ===
+_️ Data Integrity & Integration_ | _ Major_ | _⚡ Quick win_ **フォルダ側採用の経路で、退避後から凍結までの編集が両方から失われます。**
+
+=== coderabbitai persistence/handoff.ts:674 ===
+_ Functional Correctness_ | _ Minor_ | _⚡ Quick win_ **返却マージの見送り件数を利用者へ返してください。**
+
+=== coderabbitai persistence/handoff.ts:742 ===
+_️ Data Integrity & Integration_ | _ Major_ | _️ Heavy lift_ **競合解決の適用にも「表示後に変わっていないか」の検査を入れてください。**
+
+=== chatgpt-codex-connector persistence/syncMerge.ts:303 ===
+**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Flush pending mindtrain state before applying its resolution** If a route-map edit is still in `mindtrain/persist.ts`'s 500 ms debounce when this modal reads or applies the row, `loadKv` obser
+
+=== chatgpt-codex-connector persistence/syncMerge.ts:328 ===
+**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Revalidate order rows against the current order** When the collection is reordered locally while the merge modal is open—for example by the global undo handler—this branch always applies the f
+
+=== chatgpt-codex-connector persistence/handoff.ts:436 ===
+**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Recompute collision remapping after media import** If the latest state gains an entity with an incoming ID while `importMedia` is awaited—for example Ctrl+Z restores a previously deleted fixed
+
+=== chatgpt-codex-connector components/SyncMergeModal.tsx:105 ===
+**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Rebase the sync patch again after the push completes** If an edit or global undo occurs after `getLatestState()` is passed into `applySyncMerge` but while its save, backup, or push awaits are 
+
+=== chatgpt-codex-connector persistence/handoff.ts:743 ===
+**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Rebase return patches after asynchronous media and ledger work** If the user invokes a global edit or undo while `importMedia` or the subsequent `app_kv` writes are pending, the patch was alre
+

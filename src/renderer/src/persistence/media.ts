@@ -143,6 +143,32 @@ export async function importMedia(map: Record<string, string>): Promise<void> {
   })
 }
 
+/** All stored blob ids (for the folder-sync media diff). */
+export async function listAllMediaIds(): Promise<string[]> {
+  const db = await openDB()
+  return new Promise((resolve) => {
+    const tx = db.transaction(STORE, 'readonly')
+    const req = tx.objectStore(STORE).getAllKeys()
+    req.onsuccess = () => resolve(req.result.filter((k): k is string => typeof k === 'string'))
+    req.onerror = () => resolve([])
+  })
+}
+
+/**
+ * Store a blob under a KNOWN id (folder-sync pull: the id must match the `idb:`
+ * refs inside the pulled DB, so a fresh generateId would orphan them).
+ */
+export async function putMediaWithId(id: string, blob: Blob): Promise<void> {
+  if (isRemote) return // the desktop renderer owns the media store
+  const db = await openDB()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite')
+    tx.objectStore(STORE).put(blob, id)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
 export async function deleteMedia(ref: string): Promise<void> {
   if (!isMediaRef(ref)) return
   if (isRemote) return // remote clients never delete the desktop's media store

@@ -3,8 +3,10 @@ import { join, dirname, normalize, extname } from 'path'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
 import { createServer, Server } from 'http'
 import { networkInterfaces } from 'os'
+import { randomBytes } from 'crypto'
 import Anthropic from '@anthropic-ai/sdk'
 import { initUpdater } from './updater'
+import { initSync } from './sync'
 
 // E2E hook: isolate userData (and the single-instance lock derived from it) so an
 // automated run never collides with — or writes into — the real installation.
@@ -54,21 +56,39 @@ async function dailyBackup(buf: Buffer): Promise<void> {
   }
 }
 
+// ATOMIC save: write to a temp file first, then rename over the target — a
+// crash/kill mid-write can no longer leave a truncated/corrupt constella.db.
+// Shared by db:save and the folder-sync pull (which replaces the DB the same way).
+async function writeDbAtomic(buf: Buffer, opts?: { fromRemote?: boolean }): Promise<void> {
+  const p = dbPath()
+  // 一意な tmp 名: この関数は db:save と同期フォルダの pull という2人の書き手から
+  // 呼ばれる。固定名だと両者が同じ tmp に書き、片方の rename が相手の書きかけを
+  // 本体に載せて切り詰め DB を生む(旧実装は db:save 単独前提だった)。
+  const tmp = `${p}.tmp-${randomBytes(4).toString('hex')}`
+  await mkdir(dirname(p), { recursive: true })
+  await writeFile(tmp, buf)
+  try { await copyFile(p, bakPath()) } catch { /* no previous file yet */ }
+  try {
+    await rename(tmp, p)
+  } catch (e) {
+    try { await unlink(tmp) } catch { /* 掃除は best-effort */ }
+    throw e
+  }
+  // 日次バックアップは「このマシンで作業した内容」の第2の防衛線。同期の pull で
+  // 取り込んだリモートのバイトでその日の枠を埋めてしまうと、その日のローカル作業は
+  // どの世代にも残らない(.bak は次の保存で即ローテートされる)。
+  if (!opts?.fromRemote) {
+    try { await dailyBackup(buf) } catch { /* backups are best-effort */ }
+  }
+}
+
 ipcMain.handle('db:save', async (_e, bytes: Uint8Array): Promise<void> => {
   const buf = Buffer.from(bytes)
   // An empty payload is never a legitimate save — historically it meant "reset",
   // which made a single buggy call destroy the database. Resets now go through
   // the explicit db:reset channel; empty saves are ignored.
   if (buf.length === 0) return
-  const p = dbPath()
-  const tmp = p + '.tmp'
-  // ATOMIC save: write to a temp file first, then rename over the target — a
-  // crash/kill mid-write can no longer leave a truncated/corrupt constella.db.
-  await mkdir(dirname(p), { recursive: true })
-  await writeFile(tmp, buf)
-  try { await copyFile(p, bakPath()) } catch { /* no previous file yet */ }
-  await rename(tmp, p)
-  try { await dailyBackup(buf) } catch { /* backups are best-effort */ }
+  await writeDbAtomic(buf)
 })
 
 ipcMain.handle('db:reset', async (): Promise<void> => {
@@ -77,15 +97,25 @@ ipcMain.handle('db:reset', async (): Promise<void> => {
 
 // Recovery candidates, newest first: previous-good .bak, then the rolling daily
 // backups. The renderer walks these when the main DB fails to open.
-ipcMain.handle('db:recovery-list', async (): Promise<{ name: string; size: number; mtime: number }[]> => {
-  const out: { name: string; size: number; mtime: number }[] = []
-  try { const s = await stat(bakPath()); out.push({ name: 'constella.db.bak', size: s.size, mtime: s.mtimeMs }) } catch { /* none */ }
+// `kind`: 'auto' は破損時の自動復旧チェーンが辿ってよい候補(このマシンの正規の
+// スナップショット)。'conflict' は同期の競合でユーザーが**選ばなかった側**の退避で、
+// 自動復元に混ぜると「拒否したはずのデータで勝手に上書きされる」ため除外し、
+// 明示的な復元操作からのみ辿れるようにする。
+ipcMain.handle('db:recovery-list', async (): Promise<{ name: string; size: number; mtime: number; kind: 'auto' | 'conflict' }[]> => {
+  const out: { name: string; size: number; mtime: number; kind: 'auto' | 'conflict' }[] = []
+  try { const s = await stat(bakPath()); out.push({ name: 'constella.db.bak', size: s.size, mtime: s.mtimeMs, kind: 'auto' }) } catch { /* none */ }
   try {
     const dir = backupsDir()
-    const names = (await readdir(dir)).filter(n => /^constella-\d{8}\.db$/.test(n)).sort().reverse()
+    const names = (await readdir(dir)).filter(n => /^constella-(?:\d{8}|conflict-\d{8}-\d{6}(?:-[0-9a-f]{6})?)\.db$/.test(n))
+    const dated: { name: string; size: number; mtime: number; kind: 'auto' | 'conflict' }[] = []
     for (const n of names) {
-      try { const s = await stat(join(dir, n)); out.push({ name: n, size: s.size, mtime: s.mtimeMs }) } catch { /* skip */ }
+      try {
+        const s = await stat(join(dir, n))
+        dated.push({ name: n, size: s.size, mtime: s.mtimeMs, kind: n.includes('conflict-') ? 'conflict' : 'auto' })
+      } catch { /* skip */ }
     }
+    dated.sort((a, b) => b.mtime - a.mtime)
+    out.push(...dated)
   } catch { /* no backups dir yet */ }
   return out
 })
@@ -95,7 +125,7 @@ ipcMain.handle('db:recovery-list', async (): Promise<{ name: string; size: numbe
 ipcMain.handle('db:load-recovery', async (_e, name: string): Promise<Buffer | null> => {
   let p: string | null = null
   if (name === 'constella.db.bak') p = bakPath()
-  else if (/^constella-\d{8}\.db$/.test(name)) p = join(backupsDir(), name)
+  else if (/^constella-(?:\d{8}|conflict-\d{8}-\d{6}(?:-[0-9a-f]{6})?)\.db$/.test(name)) p = join(backupsDir(), name)
   if (!p) return null
   try { return await readFile(p) } catch { return null }
 })
@@ -514,6 +544,9 @@ ipcMain.handle('remote:set', async (_e, on: boolean) => {
 ipcMain.handle('db:etag', async () => {
   try { const s = await stat(dbPath()); return `${Math.floor(s.mtimeMs)}-${s.size}` } catch { return 'none' }
 })
+
+// 他マシンとの同期(同期フォルダ方式) — フォルダ側のファイル入出力一式。
+initSync({ dbPath, backupsDir, writeDbAtomic, getMainWindow: () => mainWindow })
 
 // ── AI assistant (Claude API) ──
 // Settings (API key, default model) live in a small JSON file under userData so they
