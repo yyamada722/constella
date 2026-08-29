@@ -190,6 +190,7 @@ export function initSync(deps: SyncDeps): void {
       // フォルダが変わったら世代の対応関係もリセットし、旧フォルダから
       // prepare 済みの pull バッファも破棄する。
       prepared = null
+      lastPullUndo = null
       next.folder = patch.folder
       next.lastGen = 0
       next.lastLocalEtag = ''
@@ -295,6 +296,10 @@ export function initSync(deps: SyncDeps): void {
   // レンダラーは prepare 完了後・commit 直前に「その間にユーザーが編集していないか」
   // を確認でき、編集があれば差し替えずに競合として扱える(黙って捨てない)。
   let prepared: { gen: number; buf: Buffer; manifest: SyncManifest; folder: string } | null = null
+  // 直近の pull-commit を巻き戻すための控え。レンダラーが commit 完了直後に
+  // 「commit の最中に編集が入っていた」と判明した場合にだけ使う(リロードすると
+  // React メモリ上にしか無いその編集が消えるため、差し替え前へ戻して競合にする)。
+  let lastPullUndo: { folder: string; before: Buffer | null; hadDb: boolean; prev: SyncSettings } | null = null
 
   ipcMain.handle('sync:pull-prepare', async (_e, expectedGen: number, deadlineMs?: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
     const s = await loadSettings()
@@ -363,6 +368,7 @@ export function initSync(deps: SyncDeps): void {
         const rec = await updateSettings(c => (sameFolder(c.folder, p.folder) ? { ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false } : c))
         if (!sameFolder(rec.folder, p.folder)) throw new Error('changed')
         await writeBase(p.buf)
+        lastPullUndo = { folder: p.folder, before, hadDb, prev: s2 }
         return { ok: true, manifest: p.manifest }
       } catch (e) {
         // 元に戻す: DB があったならそのバイト列へ、無かったなら削除して未作成状態へ。
@@ -378,6 +384,25 @@ export function initSync(deps: SyncDeps): void {
   })
 
   ipcMain.handle('sync:pull-discard', async () => { prepared = null })
+
+  // pull-commit の巻き戻し(直後にのみ有効)。DB と sync.json を差し替え前へ戻す。
+  // dirty は true に立てる — 巻き戻す理由は「未保存の編集が居る」ことなので、
+  // 復帰後の autosave と競合判定がその編集を確実に拾うようにする。
+  ipcMain.handle('sync:pull-undo', async (): Promise<{ ok: boolean }> => {
+    const u = lastPullUndo
+    lastPullUndo = null
+    if (!u) return { ok: false }
+    try {
+      if (u.before) await deps.writeDbAtomic(u.before, { fromRemote: true })
+      else if (!u.hadDb) await unlink(deps.dbPath()).catch(() => { /* 元々無かった */ })
+      await updateSettings(c => (sameFolder(c.folder, u.folder)
+        ? { ...c, lastGen: u.prev.lastGen, lastLocalEtag: u.prev.lastLocalEtag, lastSha: u.prev.lastSha, lastSyncAt: u.prev.lastSyncAt, dirty: true }
+        : c))
+      return { ok: true }
+    } catch {
+      return { ok: false }
+    }
+  })
 
   // 項目単位マージ用: base スナップショットと、フォルダ側 DB の生バイト読み出し。
   ipcMain.handle('sync:read-base', async (): Promise<Buffer | null> => {

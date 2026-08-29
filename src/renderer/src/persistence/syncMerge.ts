@@ -252,6 +252,9 @@ function mergeLedger(mineRaw: string | undefined, theirsRaw: string, idKey: stri
     if (typeof e.returnedAt === 'string' && (typeof mine.returnedAt !== 'string' || e.returnedAt > (mine.returnedAt as string))) {
       mine.returnedAt = e.returnedAt
     }
+    if (typeof e.returnSeq === 'number' && (typeof mine.returnSeq !== 'number' || e.returnSeq > (mine.returnSeq as number))) {
+      mine.returnSeq = e.returnSeq
+    }
     // provisional(仮受領の印)は両側とも仮のときだけ残す。片方で確定済みなら
     // 確定が正 — 印が残ると返却の書き出しが拒否され続け、確定済みの記録を
     // 仮の印付きで上書き push してしまう。
@@ -353,15 +356,21 @@ export async function finalizeSyncMerge(
     // 違う場合は「返却を後に処理した側(returnedAt が新しい側)」が新しい祖先 —
     // 古い側を残すと、台帳(returnedAt)だけ新しく base だけ古い食い違いが
     // フォルダへ push され、以後の返却が古い祖先で誤分類される。
-    const parseIdx = (raw?: string): { id: string; returnedAt?: string }[] => {
+    const parseIdx = (raw?: string): { id: string; returnedAt?: string; returnSeq?: number }[] => {
       try { return JSON.parse(raw || '[]') } catch { return [] }
     }
     const mineIdx = parseIdx(mine['handoff.index'])
     const theirsIdx = parseIdx(plan.theirsKv['handoff.index'])
     const theirsReturnedLater = (id: string): boolean => {
-      const t = theirsIdx.find(x => x.id === id)?.returnedAt
-      const m = mineIdx.find(x => x.id === id)?.returnedAt
-      return !!t && (!m || t > m)
+      const t = theirsIdx.find(x => x.id === id)
+      const m = mineIdx.find(x => x.id === id)
+      if (!t?.returnedAt) return false
+      // 論理カウンタ(returnSeq=返却取り込み回数)があれば優先する。実時刻の
+      // 辞書順比較は端末間の時計ずれで「実際には古い base」を選びうる。
+      if (typeof t.returnSeq === 'number' || typeof m?.returnSeq === 'number') {
+        return (t.returnSeq ?? 0) > (m?.returnSeq ?? 0)
+      }
+      return !m?.returnedAt || t.returnedAt > m.returnedAt
     }
     // base ブロブを先に、台帳(returnedAt を含む)を後に書く。逆順だと、2つの
     // 書き込みの間で落ちた場合に「新しい returnedAt+古い base」が残り、再試行が

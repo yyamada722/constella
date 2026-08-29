@@ -183,10 +183,19 @@ export function detectOrderChange<T extends { id: string }>(
   return { side: m === b ? 'theirs' : 'both', theirsIds: theirsArr.map(x => x.id), count: common(theirsArr).length }
 }
 
-/** 相手の並びへ寄せる。相手に無い id(こちらだけの新規)は現在の相対順で末尾に残す。 */
+/**
+ * 相手の並びへ寄せる。theirsIds に載っている項目だけを、その項目たちが現在
+ * 占めている位置の中で並べ替える。載っていない項目(こちらだけの新規や、
+ * 部分パックに含まれなかった項目)は今の位置に留まる — 全件が載っている
+ * 同期マージでは完全な並び替えと同じ結果になり、返却(部分パック)では
+ * 未収録の項目の並びを壊さない(末尾送りにしない)。
+ */
 export function applyOrder<T extends { id: string }>(arr: T[], theirsIds: string[]): T[] {
-  const rank = new Map(theirsIds.map((id, i) => [id, i]))
-  return [...arr].sort((x, y) => (rank.get(x.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(y.id) ?? Number.MAX_SAFE_INTEGER))
+  const byId = new Map(arr.map(x => [x.id, x]))
+  const listed = new Set(theirsIds.filter(id => byId.has(id)))
+  const queue = theirsIds.filter(id => listed.has(id))
+  let qi = 0
+  return arr.map(x => (listed.has(x.id) ? byId.get(queue[qi++])! : x))
 }
 
 // ── 適用 ──
@@ -380,6 +389,9 @@ export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: Orde
       const hasChild = (masterId: string): boolean => {
         for (const def of MERGE_STREAMS) {
           if (def.key === 'masterProjects') continue
+          // 期間帯はグローバルな個人予定で、DELETE_MASTER_PROJECT も意図的に残す
+          // (store.tsx)。子と数えると、正当なマスター削除が毎回復活してしまう。
+          if (def.key === 'timelineBands') continue
           for (const item of effective(def.key) as unknown as Record<string, unknown>[]) {
             if (item.masterProjectId === masterId || item.projectId === masterId) return true
           }
@@ -397,6 +409,38 @@ export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: Orde
           if (m && !patch.masterProjects.some(x => x.id === id)) patch.masterProjects.push(m)
           skipped.add(`masterProjects:${id}`)
         }
+      }
+      // 両側が別々のマスターを消し合った場合(それぞれ相手側だけの変更として適用
+      // される)、全滅しうる。UI は「最後のマスターは消せない」不変条件で動いて
+      // いるため、最低1つ — 現在アクティブなもの、無ければ先頭 — を残す。
+      if (patch.masterProjects && patch.masterProjects.length === 0) {
+        const keep = now.masterProjects.find(m => m.id === now.activeMasterProjectId) ?? now.masterProjects[0]
+        if (keep) {
+          patch.masterProjects.push(keep)
+          skipped.add(`masterProjects:${keep.id}`)
+        }
+      }
+    }
+  }
+
+  // キャンバスタブの削除も親子カスケードの対象: モーダル表示中にそのタブへ作られた
+  // カード・矢印・線路等(オペが無い)が適用後も残るなら、タブ削除を見送る。
+  // タブ配下は tabId でしか辿れず、タブが消えると不可視の孤児になる
+  // (store の DELETE_CANVAS_TAB は配下も一緒に消すが、この汎用適用は消さない)。
+  {
+    const tabOps = byStream.get('canvasTabs') ?? []
+    const deletedTabs = tabOps.filter(op => op.item === null && !skipped.has(`canvasTabs:${op.id}`)).map(op => op.id)
+    if (deletedTabs.length > 0 && patch.canvasTabs) {
+      const effective = (key: string): unknown[] =>
+        ((patch as Record<string, unknown>)[key] ?? now[key as keyof AppState] ?? []) as unknown[]
+      const TAB_CHILDREN = ['canvasCards', 'canvasArrows', 'canvasGroups', 'canvasStrokes', 'canvasLabels', 'canvasRails', 'canvasStations']
+      const hasContent = (tabId: string): boolean =>
+        TAB_CHILDREN.some(key => (effective(key) as { tabId?: string }[]).some(x => x.tabId === tabId))
+      const byId = new Map(now.canvasTabs.map(t => [t.id, t]))
+      for (const id of deletedTabs.filter(hasContent)) {
+        const t = byId.get(id)
+        if (t && !patch.canvasTabs.some(x => x.id === id)) patch.canvasTabs.push(t)
+        skipped.add(`canvasTabs:${id}`)
       }
     }
   }

@@ -81,7 +81,15 @@ export interface HandoffPack {
 // handoff.base.<id>     … 貸出時スナップショット {sourceMasterId, items}
 // handoff.recv.index    … 受け取った一覧 [{handoffId,masterId,name,sourceMasterId,receivedAt}]
 
-export interface HandoffIndexEntry { id: string; name: string; exportedAt: string; returnedAt?: string }
+export interface HandoffIndexEntry {
+  id: string
+  name: string
+  exportedAt: string
+  returnedAt?: string
+  /** 返却を取り込んだ回数(論理カウンタ)。同期マージが「どちらの base が進んで
+   *  いるか」を判定する時計 — 実時刻(returnedAt)は端末間でずれるため。 */
+  returnSeq?: number
+}
 export interface RecvIndexEntry {
   handoffId: string
   masterId: string
@@ -759,7 +767,7 @@ export async function finalizeReturnMerge(
     // 完了に見えるのに base は旧いままで、2通目の返却が競合の山になる。
     const index = await loadHandoffIndex()
     const e = index.find(x => x.id === pending.pack.handoffId)
-    if (e) { e.returnedAt = new Date().toISOString(); await saveKv('handoff.index', JSON.stringify(index)) }
+    if (e) { e.returnedAt = new Date().toISOString(); e.returnSeq = (e.returnSeq ?? 0) + 1; await saveKv('handoff.index', JSON.stringify(index)) }
   }
   return { baseAdvanced }
 }

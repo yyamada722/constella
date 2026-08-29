@@ -55,6 +55,7 @@ export interface SyncApi {
   pullPrepare: (expectedGen: number, deadlineMs?: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   pullCommit: (expectedGen: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   pullDiscard: () => Promise<void>
+  pullUndo: () => Promise<{ ok: boolean }>
   readBase: () => Promise<Uint8Array | null>
   readFolderDb: () => Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }>
   listRemoteMedia: () => Promise<string[]>
@@ -462,6 +463,7 @@ async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger,
   // sql.js に読み込んでいるため、ファイル差し替えだけでは旧データがメモリに残り、
   // 次の自動保存で取り込んだ内容を巻き戻してしまう。
   freezeWrites()
+  const seqAtCommit = editSeq
   let r: { ok: boolean; error?: string }
   try {
     await drainSaves()
@@ -474,6 +476,19 @@ async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger,
     return 'error'
   }
   if (r.ok) {
+    // 凍結は saveState を止めるだけで UI の dispatch は止まらない。commit の短い
+    // await の間に入った編集は React メモリ上にしか無く、このままリロードすると
+    // 消える — main に控えさせた差し替え前の状態へ戻し、競合として選び直して
+    // もらう(編集はメモリに生きているので、解凍後の autosave が拾う)。
+    if (trigger !== 'startup' && editSeq !== seqAtCommit) {
+      const undone = await api.pullUndo().catch(() => ({ ok: false }))
+      if (undone.ok) {
+        thawWrites()
+        setConflict(m, false)
+        return 'conflict'
+      }
+      // 戻せなかった場合は従来どおりリロード(取り込んだ内容を優先)。
+    }
     window.location.reload()
     return 'pulled'
   }
@@ -554,6 +569,7 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
       // その隙間に入った編集が「退避したDBにも、取り込み後のDBにも無い」状態になり
       // 両方から失われる。凍結後は新たな保存が入らないので退避内容が確定する。
       freezeWrites()
+      const seqAtCommit = editSeq
       let r: { ok: boolean; error?: string }
       try {
         await drainSaves() // 飛行中の保存が退避/取り込みを跨がないよう待ち切る
@@ -571,6 +587,15 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
         return
       }
       if (r.ok) {
+        // doPull と同じ理由: commit の間に入った編集をリロードで消さない。
+        if (editSeq !== seqAtCommit) {
+          const undone = await api.pullUndo().catch(() => ({ ok: false }))
+          if (undone.ok) {
+            thawWrites()
+            setStatus({ phase: 'conflict', conflict: c, message: '取り込みの最中に編集が入ったため中止しました。もう一度お選びください' })
+            return
+          }
+        }
         window.location.reload()
         return
       }
