@@ -301,20 +301,28 @@ export function initSync(deps: SyncDeps): void {
   })
 
   ipcMain.handle('sync:pull-commit', async (_e, expectedGen: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
-    const s = await loadSettings()
+    // commit を試みた時点でバッファは消費する(どの経路で抜けても保持し続けない)。
     const p = prepared
-    if (!s.folder || !s.enabled) return { ok: false, error: 'not-configured' }
-    // prepare したフォルダと今のフォルダが違えば無効(prepare 中に設定を切り替えた
-    // 場合、旧フォルダのDBを新しい設定の下でローカルに書いてしまう)。
-    if (!p || p.gen !== expectedGen || p.folder !== s.folder) return { ok: false, error: 'not-prepared' }
     try {
+      const s = await loadSettings()
+      if (!s.folder || !s.enabled) return { ok: false, error: 'not-configured' }
+      // prepare したフォルダと今のフォルダが違えば無効。さらに configure はフォルダ
+      // 変更時に prepared を破棄するので、`prepared !== p` の検査で「この判定より
+      // 後に設定が切り替わっていない」ことも保証できる — ここから writeDbAtomic の
+      // 呼び出しまで await が無いため、シングルスレッドの main では configure が
+      // 割り込む余地がない(割り込めるのは await 境界だけ)。
+      if (!p || p.gen !== expectedGen || p.folder !== s.folder || prepared !== p) {
+        return { ok: false, error: 'not-prepared' }
+      }
       // リモート由来なので日次バックアップ枠は消費しない(その日のローカル作業の
       // バックアップが作られなくなるのを避ける)。
       await deps.writeDbAtomic(p.buf, { fromRemote: true })
       const etag = await etagOf(deps.dbPath())
       // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
-      // 差し替え中にフォルダが切り替えられていたら記録しない(commit 前の照合と
-      // 同じ理由 — 新しい設定に旧フォルダの世代を書かない)。
+      // writeDbAtomic の間にフォルダが切り替えられていたら記録しない(新しい設定に
+      // 旧フォルダの世代を書かない)。この場合ローカル DB は旧フォルダの内容に
+      // なっているが、configure が対応関係をリセット済みなので、次の同期チェックが
+      // 新フォルダから引き直して自己回復する。
       const rec = await updateSettings(c => (c.folder === p.folder ? { ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false } : c))
       if (rec.folder !== p.folder) return { ok: false, error: 'changed' }
       await writeBase(p.buf)
@@ -322,7 +330,7 @@ export function initSync(deps: SyncDeps): void {
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     } finally {
-      prepared = null
+      if (prepared === p) prepared = null
     }
   })
 
