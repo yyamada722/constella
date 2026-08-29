@@ -55,7 +55,7 @@ export interface SyncApi {
   pullPrepare: (expectedGen: number, deadlineMs?: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   pullCommit: (expectedGen: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   pullDiscard: () => Promise<void>
-  pullUndo: () => Promise<{ ok: boolean }>
+  pullUndo: () => Promise<{ ok: boolean; dbRestored?: boolean }>
   readBase: () => Promise<Uint8Array | null>
   readFolderDb: () => Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }>
   listRemoteMedia: () => Promise<string[]>
@@ -481,13 +481,25 @@ async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger,
     // 消える — main に控えさせた差し替え前の状態へ戻し、競合として選び直して
     // もらう(編集はメモリに生きているので、解凍後の autosave が拾う)。
     if (trigger !== 'startup' && editSeq !== seqAtCommit) {
-      const undone = await api.pullUndo().catch(() => ({ ok: false }))
+      const undone = await api.pullUndo().catch(() => ({ ok: false }) as { ok: boolean; dbRestored?: boolean })
       if (undone.ok) {
         thawWrites()
+        // 凍結中に autosave が空振りしている(saveState は入口で返るだけで
+        // 再予約されない)ため、コミット窓の編集はまだメモリにしか無い。
+        // ここで確定させてから競合表示に移る。
+        await settleLocalWrites()
         setConflict(m, false)
         return 'conflict'
       }
-      // 戻せなかった場合は従来どおりリロード(取り込んだ内容を優先)。
+      if (undone.dbRestored) {
+        // DB は戻ったが設定を復元できなかった。リロードすると「旧DB+同期済みの
+        // 記録」で走り出してしまうため、メモリ状態のまま続行してエラー表示する。
+        thawWrites()
+        await settleLocalWrites()
+        setStatus({ phase: 'error', message: '同期の記録を書き込めませんでした。ディスクを確認してください(編集はこのPCに保持されています)' })
+        return 'error'
+      }
+      // 何も戻せなかった場合は従来どおりリロード(取り込んだ内容を優先)。
     }
     window.location.reload()
     return 'pulled'
@@ -589,10 +601,17 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
       if (r.ok) {
         // doPull と同じ理由: commit の間に入った編集をリロードで消さない。
         if (editSeq !== seqAtCommit) {
-          const undone = await api.pullUndo().catch(() => ({ ok: false }))
+          const undone = await api.pullUndo().catch(() => ({ ok: false }) as { ok: boolean; dbRestored?: boolean })
           if (undone.ok) {
             thawWrites()
+            await settleLocalWrites() // 凍結中に空振りした autosave をここで確定
             setStatus({ phase: 'conflict', conflict: c, message: '取り込みの最中に編集が入ったため中止しました。もう一度お選びください' })
+            return
+          }
+          if (undone.dbRestored) {
+            thawWrites()
+            await settleLocalWrites()
+            setStatus({ phase: 'error', message: '同期の記録を書き込めませんでした。ディスクを確認してください(編集はこのPCに保持されています)' })
             return
           }
         }

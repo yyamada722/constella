@@ -45,7 +45,7 @@ contextBridge.exposeInMainWorld('api', {
     pullPrepare: (expectedGen: number, deadlineMs?: number): Promise<unknown> => ipcRenderer.invoke('sync:pull-prepare', expectedGen, deadlineMs),
     pullCommit: (expectedGen: number): Promise<unknown> => ipcRenderer.invoke('sync:pull-commit', expectedGen),
     pullDiscard: (): Promise<void> => ipcRenderer.invoke('sync:pull-discard'),
-    pullUndo: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('sync:pull-undo'),
+    pullUndo: (): Promise<{ ok: boolean; dbRestored?: boolean }> => ipcRenderer.invoke('sync:pull-undo'),
     // 競合の項目単位マージ用: base スナップショット / フォルダ側 DB の生バイト。
     readBase: (): Promise<Uint8Array | null> => ipcRenderer.invoke('sync:read-base'),
     readFolderDb: (): Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }> =>

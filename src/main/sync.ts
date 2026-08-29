@@ -299,7 +299,7 @@ export function initSync(deps: SyncDeps): void {
   // 直近の pull-commit を巻き戻すための控え。レンダラーが commit 完了直後に
   // 「commit の最中に編集が入っていた」と判明した場合にだけ使う(リロードすると
   // React メモリ上にしか無いその編集が消えるため、差し替え前へ戻して競合にする)。
-  let lastPullUndo: { folder: string; before: Buffer | null; hadDb: boolean; prev: SyncSettings } | null = null
+  let lastPullUndo: { folder: string; before: Buffer | null; hadDb: boolean; prev: SyncSettings; prevBase: Buffer | null } | null = null
 
   ipcMain.handle('sync:pull-prepare', async (_e, expectedGen: number, deadlineMs?: number): Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }> => {
     const s = await loadSettings()
@@ -367,8 +367,11 @@ export function initSync(deps: SyncDeps): void {
         // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
         const rec = await updateSettings(c => (sameFolder(c.folder, p.folder) ? { ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false } : c))
         if (!sameFolder(rec.folder, p.folder)) throw new Error('changed')
+        // undo 用に、上書き前の sync-base も控える(戻さないと lastSha と食い違い、
+        // undo が作る競合で項目単位マージが使えなくなる)。
+        const prevBase = await readFile(basePath()).catch(() => null)
         await writeBase(p.buf)
-        lastPullUndo = { folder: p.folder, before, hadDb, prev: s2 }
+        lastPullUndo = { folder: p.folder, before, hadDb, prev: s2, prevBase }
         return { ok: true, manifest: p.manifest }
       } catch (e) {
         // 元に戻す: DB があったならそのバイト列へ、無かったなら削除して未作成状態へ。
@@ -385,22 +388,44 @@ export function initSync(deps: SyncDeps): void {
 
   ipcMain.handle('sync:pull-discard', async () => { prepared = null })
 
-  // pull-commit の巻き戻し(直後にのみ有効)。DB と sync.json を差し替え前へ戻す。
-  // dirty は true に立てる — 巻き戻す理由は「未保存の編集が居る」ことなので、
+  // pull-commit の巻き戻し(直後にのみ有効)。DB・sync-base・sync.json を差し替え前へ
+  // 戻す。dirty は true に立てる — 巻き戻す理由は「未保存の編集が居る」ことなので、
   // 復帰後の autosave と競合判定がその編集を確実に拾うようにする。
-  ipcMain.handle('sync:pull-undo', async (): Promise<{ ok: boolean }> => {
+  ipcMain.handle('sync:pull-undo', async (): Promise<{ ok: boolean; dbRestored?: boolean }> => {
     const u = lastPullUndo
-    lastPullUndo = null
     if (!u) return { ok: false }
+    // 巻き戻しの間にフォルダが切り替えられていたら中止(旧フォルダの DB を新しい
+    // 設定の下へ復元しない)。ここから writeDbAtomic まで await を挟まないため、
+    // この検査の後に configure が割り込む余地はない(pull-commit と同じ排他手法)。
+    const s = await loadSettings()
+    if (!sameFolder(u.folder, s.folder)) { lastPullUndo = null; return { ok: false } }
+    let dbRestored = false
     try {
       if (u.before) await deps.writeDbAtomic(u.before, { fromRemote: true })
       else if (!u.hadDb) await unlink(deps.dbPath()).catch(() => { /* 元々無かった */ })
-      await updateSettings(c => (sameFolder(c.folder, u.folder)
+      dbRestored = true
+      try {
+        if (u.prevBase) await writeAtomic(basePath(), u.prevBase)
+        else await unlink(basePath()).catch(() => { /* 元々無かった */ })
+      } catch { /* base は best-effort(無ければ全体択一へ劣化するだけ) */ }
+      const restore = (c: SyncSettings): SyncSettings => (sameFolder(c.folder, u.folder)
         ? { ...c, lastGen: u.prev.lastGen, lastLocalEtag: u.prev.lastLocalEtag, lastSha: u.prev.lastSha, lastSyncAt: u.prev.lastSyncAt, dirty: true }
-        : c))
+        : c)
+      try {
+        await updateSettings(restore)
+      } catch {
+        // スナップショットは未破棄のまま一度だけ再試行(1回目が一過性の失敗の場合)。
+        await updateSettings(restore)
+      }
+      lastPullUndo = null
       return { ok: true }
     } catch {
-      return { ok: false }
+      // 「DB だけ戻って設定は同期済みのまま」という中途半端が起きた場合、
+      // ここでリロードさせてはいけない(旧DB+同期済みの記録で走り出すと、後の
+      // 編集が旧内容を push しうる)。dbRestored を返し、レンダラー側はメモリ
+      // 状態のまま続行してエラー表示する。スナップショットは保持(configure/
+      // 次の commit が破棄する)。
+      return { ok: false, dbRestored }
     }
   })
 

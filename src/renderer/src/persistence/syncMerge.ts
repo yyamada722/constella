@@ -365,10 +365,13 @@ export async function finalizeSyncMerge(
       const t = theirsIdx.find(x => x.id === id)
       const m = mineIdx.find(x => x.id === id)
       if (!t?.returnedAt) return false
-      // 論理カウンタ(returnSeq=返却取り込み回数)があれば優先する。実時刻の
-      // 辞書順比較は端末間の時計ずれで「実際には古い base」を選びうる。
-      if (typeof t.returnSeq === 'number' || typeof m?.returnSeq === 'number') {
-        return (t.returnSeq ?? 0) > (m?.returnSeq ?? 0)
+      // 論理カウンタ(returnSeq=返却取り込み回数)は「両側にあり、かつ値が違う」
+      // ときだけ使う。実時刻の辞書順比較は端末間の時計ずれに弱いが、旧クライアントは
+      // returnSeq を増やさずに base を進めうるため、片側欠落や同値を「進んでいない」と
+      // 断定すると、本当に新しい base が決定的に負け続ける。比較不能なら実時刻で
+      // 判定する(ずれの窓 < 返却間隔なら正しく、best-effort)。
+      if (typeof t.returnSeq === 'number' && typeof m?.returnSeq === 'number' && t.returnSeq !== m.returnSeq) {
+        return t.returnSeq > m.returnSeq
       }
       return !m?.returnedAt || t.returnedAt > m.returnedAt
     }

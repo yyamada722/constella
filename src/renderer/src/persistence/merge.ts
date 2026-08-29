@@ -437,10 +437,23 @@ export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: Orde
       const hasContent = (tabId: string): boolean =>
         TAB_CHILDREN.some(key => (effective(key) as { tabId?: string }[]).some(x => x.tabId === tabId))
       const byId = new Map(now.canvasTabs.map(t => [t.id, t]))
-      for (const id of deletedTabs.filter(hasContent)) {
+      const revived = new Set(deletedTabs.filter(hasContent))
+      for (const id of revived) {
         const t = byId.get(id)
         if (t && !patch.canvasTabs.some(x => x.id === id)) patch.canvasTabs.push(t)
         skipped.add(`canvasTabs:${id}`)
+      }
+      // 削除がそのまま通ったタブへの canvasLink 参照(refTabId)を掃除する。
+      // store の DELETE_CANVAS_TAB は生存カードの refTabId を消すが、この汎用適用は
+      // カード側にオペが無ければ触らないため、宙ぶらりんの参照が残る
+      // (url のコピーは残るので表示は生きる — reducer と同じ整合性)。
+      const applied = new Set(deletedTabs.filter(id => !revived.has(id)))
+      if (applied.size > 0) {
+        const cards = effective('canvasCards') as { refTabId?: string }[]
+        if (cards.some(c => c.refTabId && applied.has(c.refTabId))) {
+          ;(patch as Record<string, unknown>).canvasCards = cards.map(c =>
+            c.refTabId && applied.has(c.refTabId) ? { ...c, refTabId: undefined } : c)
+        }
       }
     }
   }
