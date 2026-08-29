@@ -28,6 +28,8 @@ jobs:
             label: Windows
           - os: macos-14
             label: macOS (arm64)
+          - os: ubuntu-latest
+            label: Linux (x64)
 
     steps:
       - uses: actions/checkout@v4
@@ -72,3 +74,20 @@ jobs:
           app="$(ls -d release/mac*/Constella.app | head -1)"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign --display --verbose=2 "$app"
+
+      # AppImage 化前の unpacked 出力が揃っているか（本体バイナリ + asar）を確認する。
+      # 実行ファイル名は electron-builder の executableName 依存なので大文字小文字は問わない。
+      - name: Verify Linux unpacked build
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          dir=release/linux-unpacked
+          test -f "$dir/resources/app.asar"
+          bin="$(find "$dir" -maxdepth 1 -type f -executable -iname constella | head -1)"
+          if [ -z "$bin" ]; then
+            echo "::error::$dir に本体バイナリ(constella)が見つかりません"
+            ls -l "$dir"
+            exit 1
+          fi
+          file -b "$bin" | grep -q ELF
+          echo "ok: $bin"

@@ -1,6 +1,7 @@
 // 自動アップデート。配布形態で2系統に分かれる:
-//  - 'auto'  : Windows の NSIS インストーラー版。electron-updater が GitHub Releases の
-//              latest.yml を見て自動ダウンロード → 再起動(または終了時)に適用する。
+//  - 'auto'  : Windows の NSIS インストーラー版と Linux の AppImage 版。electron-updater が
+//              GitHub Releases の latest*.yml を見て自動ダウンロード → 再起動(または終了時)に
+//              適用する。実行時プラットフォームに応じた実装は electron-updater 側が選ぶ。
 //  - 'notify': macOS(ad-hoc署名のため Squirrel の署名検証を通らない)・ポータブル exe・
 //              開発実行。GitHub API で新しいリリースを検知して知らせるだけで、
 //              適用はリリースページからの手動ダウンロード。
@@ -24,10 +25,13 @@ export type UpdatePhase =
 
 export type UpdateMode = 'auto' | 'notify'
 
-// ポータブル版は electron-builder のランチャーがこの環境変数を立てる。
-// インストーラー版だけが NSIS の差し替え更新を適用できる。
+// PORTABLE_EXECUTABLE_DIR はポータブル版で electron-builder のランチャーが、
+// APPIMAGE は AppImage 実行時にそのランタイムが立てる環境変数。
+// Windows はインストーラー版だけが NSIS の差し替え更新を適用でき、
+// Linux は AppImage として起動している場合のみ自身を差し替えられる。
 const mode: UpdateMode =
-  process.platform === 'win32' && app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR
+  (process.platform === 'win32' && app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR) ||
+  (process.platform === 'linux' && app.isPackaged && !!process.env.APPIMAGE)
     ? 'auto'
     : 'notify'
 
@@ -107,7 +111,8 @@ export function initUpdater(windowGetter: () => BrowserWindow | null): void {
   })
   ipcMain.on('update:install', () => {
     if (mode === 'auto' && state.phase === 'downloaded') {
-      // silent=true: NSIS を /S で走らせ、インストーラーUIを出さずに差し替えて再起動。
+      // silent=true: Windows では NSIS を /S で走らせ、インストーラーUIを出さずに差し替えて再起動。
+      // AppImage では常に無音で差し替えられるためこの指定は影響しない。
       autoUpdater.quitAndInstall(true, true)
     }
   })
