@@ -121,6 +121,14 @@
     },
     "portable": {
       "artifactName": "Constella-${version}-portable.exe"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Office",
+      "target": [
+        "AppImage"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
 }

@@ -11,6 +11,7 @@
 | `Constella-x.y.z-x64.exe` | Windows インストーラー。**自動アップデート対応**なのでこちらがおすすめ |
 | `Constella-x.y.z-portable.exe` | Windows ポータブル版。インストール不要、USB メモリなどから起動可 |
 | `Constella-x.y.z-arm64.dmg` | mac（Apple シリコン） |
+| `Constella-x.y.z-x64.AppImage` | Linux。インストール不要、**自動アップデート対応** |
 
 ### Windows で「WindowsによってPCが保護されました」と出ます
 
@@ -20,15 +21,24 @@
 
 同じく署名の関係です。アプリを右クリック →「開く」で起動するか、システム設定 → プライバシーとセキュリティ から許可してください。
 
+### Linux で AppImage が起動しません
+
+ダウンロードしたファイルには実行権限が付いていません。次のように付与してから起動してください。
+
+```
+chmod +x Constella-*.AppImage
+./Constella-*.AppImage
+```
+
 ### アップデートはどう届きますか？
 
-起動から数秒後と、その後 4 時間おきに新バージョンを確認します。インストーラー版は自動でダウンロードして次回起動時に適用、ポータブル版 / mac 版はリリースページへの案内が表示されます。設定メニューからいつでも手動で確認できます。
+起動から数秒後と、その後 4 時間おきに新バージョンを確認します。Windows インストーラー版と Linux の AppImage 版は自動でダウンロードして次回起動時に適用、ポータブル版 / mac 版はリリースページへの案内が表示されます。設定メニューからいつでも手動で確認できます。
 
 ## データ
 
 ### データはどこに保存されますか？
 
-Windows は `%APPDATA%\constella\`（`constella.db`）、mac は `~/Library/Application Support/constella/` です。添付した画像・PDF などのファイルはアプリ内のローカルストレージ（IndexedDB）に保存されます。クラウドには送信されません。
+Windows は `%APPDATA%\constella\`（`constella.db`）、mac は `~/Library/Application Support/constella/`、Linux は `~/.config/constella/` です。添付した画像・PDF などのファイルはアプリ内のローカルストレージ（IndexedDB）に保存されます。クラウドには送信されません。
 
 ### 別の PC に引っ越したい
 

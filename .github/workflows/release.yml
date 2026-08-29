@@ -75,6 +75,9 @@ jobs:
           - os: macos-14
             label: macOS (arm64)
             artifact: macos
+          - os: ubuntu-latest
+            label: Linux (x64)
+            artifact: linux
 
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +126,8 @@ jobs:
             release/*.exe
             release/*.exe.blockmap
             release/*.dmg
+            release/*.AppImage
+            release/*.AppImage.blockmap
             release/latest*.yml
 
   release:
@@ -177,6 +182,15 @@ jobs:
           ### Windows
 
           SmartScreen の警告が出た場合は「詳細情報」→「実行」で起動できます。
+
+          ### Linux
+
+          AppImage はインストール不要です。ダウンロード後に実行権限を付けて起動してください。
+
+          ```
+          chmod +x Constella-*.AppImage
+          ./Constella-*.AppImage
+          ```
 
           ---
           NOTES
