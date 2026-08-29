@@ -22,10 +22,10 @@ import type {
 import { loadKv, saveKv } from './db'
 import { settleLocalWrites } from './folderSync'
 import {
-  stableStringify, compareKey, classifyStream, streamLabel,
+  stableStringify, compareKey, classifyStream, detectOrderChange, streamLabel,
   flattenTasks, stripTasks, rebuildProjects,
   MERGE_STREAMS, PROJECTS_STREAM, TASKS_STREAM,
-  type FlatTask, type MergeStreamDef, type ChangeOp,
+  type FlatTask, type MergeStreamDef, type ChangeOp, type OrderOp,
 } from './merge'
 import { getMediaBlob, importMedia, MEDIA_PREFIX } from './media'
 import { markFolderSyncEdit } from './folderSync'
@@ -591,6 +591,8 @@ export interface PendingMerge {
   autoOps: ChangeOp[]
   /** 両方が変えた項目(ユーザーが選ぶ)。 */
   conflicts: MergeConflict[]
+  /** 相手だけが並べ替えたコレクションの並び順(自動適用、コミット時に検証)。 */
+  orderOps: OrderOp[]
   // 競合の解決を ChangeOp 化するための素材(行 key → 相手の値 / 判断根拠)
   theirsByKey: Map<string, { id: string } | null>
   expectedByKey: Map<string, string>
@@ -617,6 +619,7 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
 
   const autoOps: ChangeOp[] = []
   const conflicts: MergeConflict[] = []
+  const orderOps: OrderOp[] = []
   const theirsByKey = new Map<string, { id: string } | null>()
   const expectedByKey = new Map<string, string>()
 
@@ -639,6 +642,14 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
       theirsByKey.set(key, e.theirs)
       expectedByKey.set(key, compareKey(e.mine))
     }
+    // 相手だけの並べ替え(ord 列)も取り込む。値の差分が無い純粋な並べ替えは
+    // 上の分類ではオペにならず、黙って落ちて base だけが新しい並びへ進んで
+    // しまう(同じ返却を開き直しても二度と適用できない)。両方が並べ替えて
+    // いる場合はこのPCの並びを維持する(同期マージの既定と同じ)。
+    const o = detectOrderChange(baseArr, mineArr, theirsArr)
+    if (o && o.side === 'theirs') {
+      orderOps.push({ stream: def.key, theirsIds: o.theirsIds, expectedIds: mineArr.map(x => x.id) })
+    }
   }
 
   for (const key of Object.keys(STREAMS) as (keyof PackItems)[]) {
@@ -658,7 +669,7 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
     flattenTasks(theirs.projects) as { id: string }[],
   )
 
-  return { pack, autoOps, conflicts, theirsByKey, expectedByKey, targetMaster }
+  return { pack, autoOps, conflicts, orderOps, theirsByKey, expectedByKey, targetMaster }
 }
 
 /**

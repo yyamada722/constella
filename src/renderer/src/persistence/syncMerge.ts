@@ -244,8 +244,18 @@ function mergeLedger(mineRaw: string | undefined, theirsRaw: string, idKey: stri
     // 同じ記録でも、片方にしかないフィールド(返却済みの returnedAt など)がある。
     // 相手側だけが持つキーを補って、情報を落とさずに統合する。
     for (const [k, v] of Object.entries(e)) {
+      if (k === 'provisional') continue // 下で両側を見て判定
       if (mine[k] === undefined && v !== undefined) mine[k] = v
     }
+    // returnedAt(返却処理の時計)は新しい側を採用 — base の採用判定と揃える。
+    // 片側優先のままだと「新しい base+古い returnedAt」の食い違いを push しうる。
+    if (typeof e.returnedAt === 'string' && (typeof mine.returnedAt !== 'string' || e.returnedAt > (mine.returnedAt as string))) {
+      mine.returnedAt = e.returnedAt
+    }
+    // provisional(仮受領の印)は両側とも仮のときだけ残す。片方で確定済みなら
+    // 確定が正 — 印が残ると返却の書き出しが拒否され続け、確定済みの記録を
+    // 仮の印付きで上書き push してしまう。
+    if (mine.provisional && !e.provisional) delete mine.provisional
   }
   return JSON.stringify(merged.slice(0, 60))
 }
@@ -353,16 +363,22 @@ export async function finalizeSyncMerge(
       const m = mineIdx.find(x => x.id === id)?.returnedAt
       return !!t && (!m || t > m)
     }
-    for (const [k, v] of Object.entries(plan.theirsKv)) {
-      if (!k.startsWith('handoff.')) continue
-      if (k === 'handoff.index' || k === 'handoff.recv.index') {
-        await saveKv(k, mergeLedger(mine[k], v, k === 'handoff.index' ? 'id' : 'handoffId'))
-        continue
-      }
+    // base ブロブを先に、台帳(returnedAt を含む)を後に書く。逆順だと、2つの
+    // 書き込みの間で落ちた場合に「新しい returnedAt+古い base」が残り、再試行が
+    // 「時計が同じなので採用しない」と判定して古い base のまま push してしまう。
+    // base 先行なら、間で落ちても「新しい base+古い時計」= 再試行が base を
+    // もう一度書くだけ(冪等)で収束する。
+    const hk = Object.entries(plan.theirsKv).filter(([k]) => k.startsWith('handoff.'))
+    for (const [k, v] of hk) {
+      if (k === 'handoff.index' || k === 'handoff.recv.index') continue
       if (mine[k] === undefined) { await saveKv(k, v); continue }
       if (k.startsWith('handoff.base.') && mine[k] !== v && theirsReturnedLater(k.slice('handoff.base.'.length))) {
         await saveKv(k, v)
       }
+    }
+    for (const [k, v] of hk) {
+      if (k !== 'handoff.index' && k !== 'handoff.recv.index') continue
+      await saveKv(k, mergeLedger(mine[k], v, k === 'handoff.index' ? 'id' : 'handoffId'))
     }
   } catch {
     return { ok: false, message: '受け渡し記録を統合できなかったため送信を中止しました。マージ結果はこのPCに残っています — もう一度お試しください', mindtrainApplied }

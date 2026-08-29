@@ -349,14 +349,13 @@ export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: Orde
       applyToArr(flatNow as unknown as { id: string }[], byStream.get('tasks') ?? [], 'tasks'),
       taskOrder,
     ) as unknown as FlatTask[]
-    const skippedTaskProjects = new Set(
-      (byStream.get('tasks') ?? [])
-        .filter(op => skipped.has(`tasks:${op.id}`))
-        .map(op => flatNow.find(t => t.id === op.id)?.__projectId)
-        .filter((x): x is string => !!x),
-    )
+    // 判定は「適用後もタスクが残っているか」で行う — 見送られたタスクだけでなく、
+    // モーダル表示中に新規作成されたタスク(オペ自体が存在しない)も守れる。
+    // 正当なボード削除ではボード内の全タスクに削除オペが付いてくるので、適用後の
+    // flat にそのボードのタスクは残らず、削除はそのまま通る。
     const projOps = (byStream.get('projects') ?? []).filter(op => {
-      if (op.item === null && skippedTaskProjects.has(op.id)) { skipped.add(`projects:${op.id}`); return false }
+      if (op.item !== null) return true
+      if ((flat as FlatTask[]).some(t => t.__projectId === op.id)) { skipped.add(`projects:${op.id}`); return false }
       return true
     })
     const metas = applyOrderIfValid(
@@ -366,6 +365,40 @@ export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: Orde
     // 相手の並びを採用できた場合、flat は既にその順なので再ソートさせない。
     const taskOrderApplied = !!taskOrder && !skipped.has('order:tasks')
     patch.projects = rebuildProjects(metas, flat, now.projects, taskOrderApplied)
+  }
+
+  // マスタープロジェクトの削除も同様に「適用後も配下に項目が残っていないか」を
+  // 全コレクション横断で確認する。モーダル表示中にそのマスター配下へ新規作成された
+  // 項目(ノート・ボード等)にはオペが無く、マスター削除だけが通ると参照先の無い
+  // 不可視の孤児になる — その場合はマスターの削除を見送る。
+  {
+    const mpOps = byStream.get('masterProjects') ?? []
+    const deletedMasters = mpOps.filter(op => op.item === null && !skipped.has(`masterProjects:${op.id}`)).map(op => op.id)
+    if (deletedMasters.length > 0) {
+      const effective = (key: string): { id: string }[] =>
+        ((patch as Record<string, unknown>)[key] ?? now[key as keyof AppState] ?? []) as { id: string }[]
+      const hasChild = (masterId: string): boolean => {
+        for (const def of MERGE_STREAMS) {
+          if (def.key === 'masterProjects') continue
+          for (const item of effective(def.key) as unknown as Record<string, unknown>[]) {
+            if (item.masterProjectId === masterId || item.projectId === masterId) return true
+          }
+        }
+        for (const proj of (patch.projects ?? now.projects) as unknown as Record<string, unknown>[]) {
+          if (proj.masterProjectId === masterId) return true
+        }
+        return false
+      }
+      const revive = deletedMasters.filter(hasChild)
+      if (revive.length > 0 && patch.masterProjects) {
+        const byId = new Map(now.masterProjects.map(m => [m.id, m]))
+        for (const id of revive) {
+          const m = byId.get(id)
+          if (m && !patch.masterProjects.some(x => x.id === id)) patch.masterProjects.push(m)
+          skipped.add(`masterProjects:${id}`)
+        }
+      }
+    }
   }
 
   // アクティブなプロジェクトが削除の適用で消えた場合、存在しない id が残ると

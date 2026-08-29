@@ -137,7 +137,7 @@ export function HandoffModal({ open, onClose }: Props) {
             // 【同期コミット】最新 state への検証と dispatch を1ブロックで。
             const { result } = commitSync(now => {
               const ops = retargetReturnOps(p, buildReturnOps(p, []), now)
-              const o = buildPatchFromOps(now, ops)
+              const o = buildPatchFromOps(now, ops, p.orderOps)
               return { patch: o.patch, result: { o, ops } }
             })
             const fin = await finalizeReturnMerge(p, result.o.skipped, result.ops)
@@ -201,7 +201,7 @@ export function HandoffModal({ open, onClose }: Props) {
       // 最新 state への検証と dispatch を await を挟まず行う。
       const { result } = commitSync(now => {
         const ops = retargetReturnOps(pending, buildReturnOps(pending, resolutions), now)
-        const o = buildPatchFromOps(now, ops)
+        const o = buildPatchFromOps(now, ops, pending.orderOps)
         return { patch: o.patch, result: { o, ops } }
       })
       const fin = await finalizeReturnMerge(pending, result.o.skipped, result.ops)

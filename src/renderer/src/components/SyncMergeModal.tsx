@@ -91,7 +91,12 @@ export function SyncMergeModal({ open, onClose }: Props) {
     if (reloadOnClose) {
       // コミット済みの state がまだ autosave のデバウンス待ちのことがある。
       // そのまま reload すると取りこぼすので、保存を確定させてから読み直す。
-      void settleLocalWrites().finally(() => window.location.reload())
+      // 確定できなかったら reload しない — メモリ上にしか無いマージ結果を
+      // 捨てることになる。モーダルを開いたまま知らせて、再試行してもらう。
+      void settleLocalWrites().then(ok => {
+        if (ok) { window.location.reload(); return }
+        setError('保存に失敗したため画面を読み込み直せません。ディスクの空き容量を確認して、もう一度閉じてください(マージ結果はこの画面が開いている間は失われません)')
+      })
       return
     }
     onClose()

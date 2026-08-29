@@ -12,7 +12,7 @@
 // pull 時に実ファイルと照合することで、不整合スナップショットを取り込まない。
 import { app, ipcMain, dialog, BrowserWindow } from 'electron'
 import { join, resolve } from 'path'
-import { readFile, writeFile, mkdir, rename, readdir, stat, copyFile, unlink } from 'fs/promises'
+import { readFile, writeFile, mkdir, rename, readdir, stat, copyFile, unlink, realpath } from 'fs/promises'
 import { createHash, randomBytes } from 'crypto'
 import { hostname } from 'os'
 
@@ -178,6 +178,12 @@ export function initSync(deps: SyncDeps): void {
   })
 
   ipcMain.handle('sync:configure', async (_e, patch: { folder?: string | null; enabled?: boolean; deviceName?: string }) => {
+    // フォルダは保存前に実パスへ正規化する。ドライブ割当(Z:\team)と UNC
+    // (\\server\share\team)のような別表記は resolve では同一視できないため、
+    // OS に実体を聞く。以後の比較(sameFolder)は正規化済み同士の字句比較で足りる。
+    if (typeof patch.folder === 'string') {
+      try { patch.folder = await realpath(patch.folder) } catch { /* 未作成パス等はそのまま */ }
+    }
     return await updateSettings(cur => {
     const next: SyncSettings = { ...cur }
     if (patch.folder !== undefined && !sameFolder(patch.folder, cur.folder)) {
@@ -321,14 +327,33 @@ export function initSync(deps: SyncDeps): void {
       // 後に設定が切り替わっていない」ことも保証できる — ここから writeDbAtomic の
       // 呼び出しまで await が無いため、シングルスレッドの main では configure が
       // 割り込む余地がない(割り込めるのは await 境界だけ)。
-      if (!p || p.gen !== expectedGen || !sameFolder(p.folder, s.folder) || prepared !== p) {
+      if (!p || p.gen !== expectedGen || !sameFolder(p.folder, s.folder)) {
         return { ok: false, error: 'not-prepared' }
       }
       // 差し替え前のローカル DB を控える。差し替え後に完了記録を書けなかった場合
       // (sync.json の書き込み失敗・フォルダ切替)、レンダラーは旧 state のまま
       // なので、次の autosave が pull 結果を上書きして「半分だけ pull」の不整合に
       // なる — その場合は DB ごと元に戻して、なかったことにする。
-      const before = await readFile(deps.dbPath()).catch(() => null)
+      // ENOENT(初回起動で DB 未作成)は「無かった状態へ戻す=削除」で対応できる
+      // が、読めるはずの DB が読めない場合は差し替え自体を始めない(戻せないため)。
+      let before: Buffer | null = null
+      let hadDb = true
+      try {
+        before = await readFile(deps.dbPath())
+      } catch (err) {
+        hadDb = false
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          return { ok: false, error: 'local-db-unreadable' }
+        }
+      }
+      // ↑の readFile の await 中に configure が走った可能性があるため、書き込みの
+      // 直前にもう一度検証する。configure はフォルダ変更で prepared を破棄するので
+      // `prepared === p` の確認で足り、ここから writeDbAtomic 呼び出しまで await が
+      // 無い(= main のイベントループ上で configure が割り込めない)ことが保証。
+      const s2 = await loadSettings()
+      if (prepared !== p || !sameFolder(p.folder, s2.folder) || !s2.enabled) {
+        return { ok: false, error: 'not-prepared' }
+      }
       // リモート由来なので日次バックアップ枠は消費しない(その日のローカル作業の
       // バックアップが作られなくなるのを避ける)。
       await deps.writeDbAtomic(p.buf, { fromRemote: true })
@@ -340,7 +365,9 @@ export function initSync(deps: SyncDeps): void {
         await writeBase(p.buf)
         return { ok: true, manifest: p.manifest }
       } catch (e) {
+        // 元に戻す: DB があったならそのバイト列へ、無かったなら削除して未作成状態へ。
         if (before) await deps.writeDbAtomic(before, { fromRemote: true }).catch(() => { /* 復旧チェーンに任せる */ })
+        else if (!hadDb) await unlink(deps.dbPath()).catch(() => { /* 復旧チェーンに任せる */ })
         throw e
       }
     } catch (e) {
