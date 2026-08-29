@@ -93,6 +93,12 @@ export interface RecvIndexEntry {
    * パック外からその項目を参照していた箇所が壊れる。
    */
   idMap?: Record<string, string>
+  /**
+   * 仮受領記録の印。コミット前に書かれ、本記録(idMap 確定済み)への差し替えで
+   * 消える。これが残っている受け取りは idMap が失われている可能性があるため、
+   * 返却の書き出しを拒否する(貸出側のマージを壊さないため)。
+   */
+  provisional?: boolean
 }
 
 // 台帳の読み取り: DB エラー(読み取り自体の失敗)は投げる — 「空の台帳」と
@@ -450,10 +456,13 @@ export async function writeProvisionalReceipt(
   masterId: string,
   recv: RecvIndexEntry[],
 ): Promise<void> {
+  // ここでは件数を切り詰めない(一時的に 31 件になってよい)。仮記録の書き込みで
+  // 最古の正規の記録を追い出すと、コミット中止+ロールバック失敗の場合に
+  // 無関係な記録だけが失われる。切り詰めは本記録(finalizeReceive)側で行う。
   const ledger = [
-    { handoffId: pack.handoffId, masterId, name: pack.name, sourceMasterId: pack.sourceMasterId, receivedAt: new Date().toISOString() },
+    { handoffId: pack.handoffId, masterId, name: pack.name, sourceMasterId: pack.sourceMasterId, receivedAt: new Date().toISOString(), provisional: true },
     ...recv,
-  ].slice(0, 30)
+  ]
   await saveKv('handoff.recv.index', JSON.stringify(ledger))
 }
 
@@ -511,6 +520,11 @@ export async function finalizeReceive(ledger: RecvIndexEntry[]): Promise<void> {
 
 /** 受領側: 受け取ったプロジェクトを丸ごと「返却ファイル」として書き出す。 */
 export async function exportReturn(state: AppState, entry: RecvIndexEntry, excludeVideos: boolean): Promise<void> {
+  if (entry.provisional) {
+    // 本記録(idMap)を書けないまま終わった受け取り。ID を振り直していた場合、
+    // このまま返すと貸出側のマージが「元は削除・別物を追加」と解釈して壊れる。
+    throw new Error('この受け取りは取り込み記録を確定できていません。Ctrl+Z で取り込みを取り消してから、作業ファイルをもう一度取り込んでください')
+  }
   // 受け取ったプロジェクト配下の全ユニットを選択したのと同じ扱いで抽出する。
   const sel = emptySelection()
   state.noteFolders.forEach(f => { if (f.masterProjectId === entry.masterId && !f.parentId) sel.noteFolderIds.add(f.id) })
@@ -686,30 +700,28 @@ export function buildReturnOps(pending: PendingMerge, resolutions: MergeConflict
  */
 export async function finalizeReturnMerge(
   pending: PendingMerge,
-  merged: AppState,
   skipped: string[],
+  ops: ChangeOp[],
 ): Promise<{ baseAdvanced: boolean }> {
   let baseAdvanced = false
   try {
     const rawBase = await loadKv(`handoff.base.${pending.pack.handoffId}`)
-    const sourceMasterId = rawBase
-      ? (JSON.parse(rawBase) as { sourceMasterId: string }).sourceMasterId
-      : pending.pack.sourceMasterId
+    const prev = rawBase ? (JSON.parse(rawBase) as { sourceMasterId: string; items: PackItems }) : null
+    const sourceMasterId = prev?.sourceMasterId ?? pending.pack.sourceMasterId
+    // 次の共通祖先 = 相手が返してきた内容そのもの。手元のマージ後の値を混ぜては
+    // いけない — 相手が知らない「自分だけの変更」まで祖先扱いになり、次の返却で
+    // 相手の(変わっていない)旧値が「相手の変更」と誤分類されて、自分の変更が
+    // 無競合のまま旧値へ巻き戻る。
     const nextBase = reparentItems({ ...EMPTY_ITEMS, ...pending.pack.items }, sourceMasterId)
-    // 相手が送ってきた項目のうち、マージ後に手元へ残ったものが次の共通祖先。
-    for (const key of Object.keys(EMPTY_ITEMS) as (keyof PackItems)[]) {
-      const live = new Map((merged[key] as unknown as { id: string }[]).map(x => [x.id, x]))
-      ;(nextBase as unknown as Record<string, unknown[]>)[key] =
-        (nextBase[key] as { id: string }[]).map(x => live.get(x.id) ?? x).filter(x => live.has(x.id))
-    }
-    // 見送った「相手の削除」は base に手元の版を残す。パック(=nextBase の素)には
-    // 無い項目なので、そのまま進めると相手の削除意図が二度と現れず、こちらの版が
-    // 黙って生き続ける。base に残しておけば、次の返却取り込みで「相手が削除 /
-    // 自分は変更」の競合として再提示され、ユーザーが改めて選べる。
+    // 見送ったオペの項目は「合意に達していない」— base を前回の値のまま据え置く。
+    //  ・見送った更新: base=前回値なら、次回は「両方で変更」の競合として再提示される
+    //  ・見送った削除: base=前回値なら、次回は「相手が削除/自分は変更」として再提示される
+    //    (手元の編集後の値を base に入れると base==自分 となり、次回は削除が無競合で
+    //     自動適用され、見送りで守ったはずの編集ごと消える)
+    const prevItems: PackItems = { ...EMPTY_ITEMS, ...(prev?.items ?? {}) }
     const skippedIds = new Set(skipped)
-    for (const op of pending.autoOps) {
-      if (op.item !== null || !skippedIds.has(op.id)) continue
-      keepInBase(nextBase, merged, op.stream, op.id)
+    for (const op of ops) {
+      if (skippedIds.has(op.id)) restoreBaseItem(nextBase, prevItems, op.stream, op.id)
     }
     await saveKv(`handoff.base.${pending.pack.handoffId}`, JSON.stringify({ sourceMasterId, items: nextBase }))
     baseAdvanced = true
@@ -724,26 +736,33 @@ export async function finalizeReturnMerge(
   return { baseAdvanced }
 }
 
-// 見送った項目の手元の版を base に残す(タスクは入れ子の持ち主まで辿る)。
-function keepInBase(nextBase: PackItems, merged: AppState, stream: string, id: string): void {
+// 見送った項目の base 値を前回の base の値へ戻す(前回にも無ければ取り除く)。
+function restoreBaseItem(nextBase: PackItems, prev: PackItems, stream: string, id: string): void {
   if (stream === 'projects') {
-    const meta = merged.projects.find(x => x.id === id)
-    if (meta && !nextBase.projects.some(x => x.id === id)) nextBase.projects.push(meta)
+    const p = prev.projects.find(x => x.id === id)
+    const i = nextBase.projects.findIndex(x => x.id === id)
+    // メタの据え置きでタスクまで巻き戻さない(タスクは tasks ストリームが別管理)。
+    if (p) { if (i >= 0) nextBase.projects[i] = { ...p, tasks: nextBase.projects[i].tasks }; else nextBase.projects.push(p) }
+    else if (i >= 0) nextBase.projects.splice(i, 1)
     return
   }
   if (stream === 'tasks') {
-    const t = flattenTasks(merged.projects).find(x => x.id === id)
-    if (!t) return
-    const host = nextBase.projects.find(p => p.id === t.__projectId)
-    if (host && !host.tasks.some(x => x.id === id)) {
-      const { __projectId: _pid, ...task } = t
-      host.tasks.push(task)
+    for (const proj of nextBase.projects) {
+      const i = proj.tasks.findIndex(x => x.id === id)
+      if (i >= 0) proj.tasks.splice(i, 1)
+    }
+    const t = flattenTasks(prev.projects).find(x => x.id === id)
+    if (t) {
+      const host = nextBase.projects.find(x => x.id === t.__projectId)
+      if (host) { const { __projectId: _pid, ...task } = t; host.tasks.push(task) }
     }
     return
   }
   if (!(stream in EMPTY_ITEMS)) return
   const key = stream as keyof PackItems
-  const item = (merged[key] as unknown as { id: string }[]).find(x => x.id === id)
+  const prevItem = (prev[key] as { id: string }[]).find(x => x.id === id)
   const arr = nextBase[key] as { id: string }[]
-  if (item && !arr.some(x => x.id === id)) arr.push(item as never)
+  const i = arr.findIndex(x => x.id === id)
+  if (prevItem) { if (i >= 0) arr[i] = prevItem as never; else arr.push(prevItem as never) }
+  else if (i >= 0) arr.splice(i, 1)
 }

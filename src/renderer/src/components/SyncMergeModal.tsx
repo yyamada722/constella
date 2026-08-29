@@ -6,7 +6,7 @@ import { X, GitMerge } from 'lucide-react'
 import { useApp } from '../store'
 import { buildPatchFromOps } from '../persistence/merge'
 import { prepareSyncMerge, buildSyncCommit, finalizeSyncMerge, type SyncMergePlan, type SyncMergeRow } from '../persistence/syncMerge'
-import { manualFolderSync } from '../persistence/folderSync'
+import { manualFolderSync, settleLocalWrites } from '../persistence/folderSync'
 
 interface Props {
   open: boolean
@@ -88,7 +88,12 @@ export function SyncMergeModal({ open, onClose }: Props) {
   if (!open) return null
 
   const close = (): void => {
-    if (reloadOnClose) { window.location.reload(); return }
+    if (reloadOnClose) {
+      // コミット済みの state がまだ autosave のデバウンス待ちのことがある。
+      // そのまま reload すると取りこぼすので、保存を確定させてから読み直す。
+      void settleLocalWrites().finally(() => window.location.reload())
+      return
+    }
     onClose()
   }
 

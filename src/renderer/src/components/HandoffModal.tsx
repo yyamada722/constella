@@ -14,7 +14,6 @@ import {
 } from '../persistence/handoff'
 import { buildPatchFromOps } from '../persistence/merge'
 import { generateId } from '../utils'
-import type { AppState } from '../store'
 
 interface Props {
   open: boolean
@@ -137,10 +136,11 @@ export function HandoffModal({ open, onClose }: Props) {
           if (p.conflicts.length === 0) {
             // 【同期コミット】最新 state への検証と dispatch を1ブロックで。
             const { result } = commitSync(now => {
-              const o = buildPatchFromOps(now, retargetReturnOps(p, buildReturnOps(p, []), now))
-              return { patch: o.patch, result: { o, merged: { ...now, ...o.patch } as AppState } }
+              const ops = retargetReturnOps(p, buildReturnOps(p, []), now)
+              const o = buildPatchFromOps(now, ops)
+              return { patch: o.patch, result: { o, ops } }
             })
-            const fin = await finalizeReturnMerge(p, result.merged, result.o.skipped)
+            const fin = await finalizeReturnMerge(p, result.o.skipped, result.ops)
             const a = result.o.applied
             setLent(await loadHandoffIndex().catch(() => []))
             setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted})。Ctrl+Z で丸ごと取り消せます${result.o.skipped.length > 0 ? `
@@ -184,7 +184,7 @@ export function HandoffModal({ open, onClose }: Props) {
       setReceived(await loadRecvIndex().catch(() => []))
       const omitted = pack.mediaOmitted?.length ? `(動画など ${pack.mediaOmitted.length} 件は同梱されていません)` : ''
       setNotice(`「${master.name}」として取り込みました${omitted}。作業後はこの画面から返却ファイルを書き出せます${ledgerOk ? '' : `
-取り込み記録の一部を書き込めませんでした(取り込み自体は完了しています)`}`)
+取り込み記録を確定できませんでした。このままでは返却ファイルを書き出せません — Ctrl+Z で取り込みを取り消し、もう一度取り込み直してください`}`)
     } catch (e) {
       setNotice(String(e instanceof Error ? e.message : e))
     } finally {
@@ -200,10 +200,11 @@ export function HandoffModal({ open, onClose }: Props) {
       // 【同期コミット】自動適用ぶん+競合の選択を1つのオペ集合にして、
       // 最新 state への検証と dispatch を await を挟まず行う。
       const { result } = commitSync(now => {
-        const o = buildPatchFromOps(now, retargetReturnOps(pending, buildReturnOps(pending, resolutions), now))
-        return { patch: o.patch, result: { o, merged: { ...now, ...o.patch } as AppState } }
+        const ops = retargetReturnOps(pending, buildReturnOps(pending, resolutions), now)
+        const o = buildPatchFromOps(now, ops)
+        return { patch: o.patch, result: { o, ops } }
       })
-      const fin = await finalizeReturnMerge(pending, result.merged, result.o.skipped)
+      const fin = await finalizeReturnMerge(pending, result.o.skipped, result.ops)
       const a = result.o.applied
       setLent(await loadHandoffIndex().catch(() => []))
       setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted} + 競合 ${resolutions.length} 件を解決)。Ctrl+Z で丸ごと取り消せます${result.o.skipped.length > 0 ? `

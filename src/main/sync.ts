@@ -116,7 +116,11 @@ export function initSync(deps: SyncDeps): void {
     }
   }
   async function saveSettings(s: SyncSettings): Promise<void> {
-    try { await writeFile(settingsPath(), JSON.stringify(s, null, 2)) } catch { /* best-effort */ }
+    // 失敗は投げる。握り潰すと sync:set-dirty が成功を装い、レンダラーの
+    // dirtyMarked だけ立って永続側は dirty=false のまま — その状態でアプリを
+    // 終えると、次回のリモート pull が未送信の編集を無警告で上書きする。
+    // (レンダラーは setDirty の reject で dirtyMarked を戻し、次の編集で再試行する)
+    await writeFile(settingsPath(), JSON.stringify(s, null, 2))
   }
 
   // sync.json への read-modify-write は必ずここを通す。ハンドラごとに
@@ -239,7 +243,10 @@ export function initSync(deps: SyncDeps): void {
       // フォルダ側と中身が同一なら世代を上げず記録だけ更新(起動のたびの
       // 再シリアライズで gen が空回りしないように)。
       if (prev.manifest && prev.manifest.dbSha256 === sha) {
-        await updateSettings(c => ({ ...c, lastGen: prev.manifest!.gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: new Date().toISOString() }))
+        // 待っている間にフォルダが切り替えられていたら、旧フォルダの世代を
+        // 新しい設定へ記録しない(configure がリセットした対応関係を汚すため)。
+        const rec = await updateSettings(c => (c.folder === s.folder ? { ...c, lastGen: prev.manifest!.gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: new Date().toISOString() } : c))
+        if (rec.folder !== s.folder) return { ok: false, error: 'changed' }
         // base も揃えておく。ここを飛ばすと lastSha と sync-base.db が食い違い、
         // 以後の競合で項目単位マージが使えなくなる(全体択一に劣化する)。
         await writeBase(buf)
@@ -253,7 +260,11 @@ export function initSync(deps: SyncDeps): void {
         pushedAt: new Date().toISOString(), dbSize: buf.length, dbSha256: sha,
       }
       await withDeadline(writeAtomic(join(s.folder, MANIFEST_NAME), JSON.stringify(manifest, null, 2)), 30_000)
-      await updateSettings(c => ({ ...c, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt }))
+      // 押している間にフォルダが切り替えられていたら記録しない(この push 自体は
+      // 旧フォルダに残るだけで無害。新フォルダの設定に旧フォルダの世代/SHA を
+      // 書き込むと、以後の判定と sync-base.db が全部ずれる)。
+      const rec = await updateSettings(c => (c.folder === s.folder ? { ...c, lastGen: gen, lastLocalEtag: etag, lastSha: sha, lastSyncAt: manifest.pushedAt } : c))
+      if (rec.folder !== s.folder) return { ok: false, error: 'changed' }
       await writeBase(buf)
       return { ok: true, manifest }
     } catch (e) {
@@ -302,7 +313,10 @@ export function initSync(deps: SyncDeps): void {
       await deps.writeDbAtomic(p.buf, { fromRemote: true })
       const etag = await etagOf(deps.dbPath())
       // pull はローカルの内容を丸ごと置き換えるので、編集フラグも下ろす。
-      await updateSettings(c => ({ ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false }))
+      // 差し替え中にフォルダが切り替えられていたら記録しない(commit 前の照合と
+      // 同じ理由 — 新しい設定に旧フォルダの世代を書かない)。
+      const rec = await updateSettings(c => (c.folder === p.folder ? { ...c, lastGen: p.manifest.gen, lastLocalEtag: etag, lastSha: p.manifest.dbSha256, lastSyncAt: new Date().toISOString(), dirty: false } : c))
+      if (rec.folder !== p.folder) return { ok: false, error: 'changed' }
       await writeBase(p.buf)
       return { ok: true, manifest: p.manifest }
     } catch (e) {
