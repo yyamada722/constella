@@ -5,6 +5,7 @@
 // Writes are debounced and flushed on pagehide/hide, so dragging a station
 // (many rapid store updates) doesn't re-serialize the whole DB on every frame.
 import { loadKv, saveKv } from '../persistence/db'
+import { markFolderSyncEdit } from '../persistence/folderSync'
 
 const KEY = 'mindtrain'
 const LEGACY_LS_KEY = 'mindtrain-storage' // Phase 1 persisted straight to localStorage
@@ -12,11 +13,21 @@ const DEBOUNCE_MS = 500
 
 let pending: string | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
+// 直近に読み込み/保存した内容。同一なら書かない — 起動時の再バインド等で
+// 内容が変わっていないのに DB 全体を書き直し、同期の dirty を立てないため。
+let lastSaved: string | null = null
 
 function flush(): void {
   if (timer) { clearTimeout(timer); timer = null }
-  if (pending != null) { const v = pending; pending = null; void saveKv(KEY, v) }
+  if (pending != null) { const v = pending; pending = null; lastSaved = v; void saveKv(KEY, v) }
 }
+
+/**
+ * デバウンス待ちの路線図保存を即座に確定させる。同期の項目単位マージが
+ * 路線図ブロブを読む/置き換える前に呼ぶ — 500ms 窓の中の編集を読み飛ばしたり、
+ * 置き換え後に古い保存が着地して巻き戻すのを防ぐ。
+ */
+export function flushMindtrainPending(): void { flush() }
 
 if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', flush)
@@ -26,15 +37,17 @@ if (typeof window !== 'undefined') {
 export const constellaMindtrainStorage = {
   getItem: async (_name: string): Promise<string | null> => {
     const fromDb = await loadKv(KEY)
-    if (fromDb != null) return fromDb
+    if (fromDb != null) { lastSaved = fromDb; return fromDb }
     // One-time migration from the Phase 1 localStorage store.
     try {
       const ls = localStorage.getItem(LEGACY_LS_KEY)
-      if (ls != null) { await saveKv(KEY, ls); localStorage.removeItem(LEGACY_LS_KEY); return ls }
+      if (ls != null) { await saveKv(KEY, ls); localStorage.removeItem(LEGACY_LS_KEY); lastSaved = ls; return ls }
     } catch { /* ignore */ }
     return null
   },
   setItem: (_name: string, value: string): void => {
+    if (value === lastSaved && pending == null) return // 内容が変わっていない
+    markFolderSyncEdit()
     pending = value
     if (timer) clearTimeout(timer)
     timer = setTimeout(flush, DEBOUNCE_MS)
@@ -42,6 +55,8 @@ export const constellaMindtrainStorage = {
   removeItem: (_name: string): void => {
     pending = null
     if (timer) { clearTimeout(timer); timer = null }
+    lastSaved = null
+    markFolderSyncEdit()
     void saveKv(KEY, null)
   },
 }

@@ -1,9 +1,12 @@
 import { createContext, useContext, useReducer, useEffect, useMemo, useState, useRef, useCallback, ReactNode } from 'react'
 import { Note, NoteAttachment, NoteFolder, FileItem, FileFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Flow, Plan, PlanFolder, TimelineBand } from './types'
 import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNotice } from './persistence/db'
+import { flushMindtrainPending } from './mindtrain/persist'
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
+import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs, currentEditSeq } from './persistence/folderSync'
+import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
 
 // The single default master project that all pre-existing data is migrated under.
@@ -133,6 +136,11 @@ export type Action =
   // 複製・貼り付け・一括削除など）。historyReducer は BATCH を1アクションとして
   // 見るので、past には適用前のスナップショットが1つだけ積まれる。
   | { type: 'BATCH'; payload: Action[] }
+  // 作業ファイル(受け渡し)の取り込み/返却マージ用の汎用パッチ。呼び出し側
+  // (persistence/handoff.ts)が計算済みの配列で該当コレクションを置き換える。
+  // historyReducer は1アクション=1スナップショットなので、取り込みもマージも
+  // Ctrl+Z 一発で丸ごと戻せる。
+  | { type: 'APPLY_STATE_PATCH'; payload: Partial<AppState> }
 
 const now = new Date().toISOString()
 
@@ -270,6 +278,7 @@ function applyStatusBookkeeping(prev: Task | undefined, next: Task): Task {
 
 function reducer(state: AppState, action: Action): AppState {
   if (action.type === 'BATCH') return action.payload.reduce(reducer, state)
+  if (action.type === 'APPLY_STATE_PATCH') return { ...state, ...action.payload }
   switch (action.type) {
     case 'ADD_MASTER_PROJECT':
       // Ignore a re-add of an existing id: the mindtrain reconciliation can fire
@@ -781,6 +790,11 @@ const COALESCABLE = new Set<Action['type']>([
 // active master project must not become an undo step (an UNDO would teleport the
 // user to a different project).
 const NO_HISTORY = new Set<Action['type']>(['SET_CANVAS_CARD_VIEW', 'SET_ACTIVE_MASTER_PROJECT'])
+
+// 同期の dirty(= 他マシンへ送るべき変更)を立てないアクション。閲覧状態の変更を
+// 編集として数えると、プロジェクトを切り替えたり PDF のページを送っただけで
+// 新世代が push され、相手に実編集があるとニセ競合になる。
+const NOT_A_SYNC_EDIT = NO_HISTORY
 // Discrete, atomic edits (add/remove/paste of a flow node/group) that must stay
 // their own undo step and NOT absorb a following continuous edit. Without this,
 // creating a memo/image then immediately typing/resizing (<500ms) would coalesce
@@ -856,7 +870,9 @@ function readLegacyState(): AppState | null {
 
 // All live media references: card media URLs plus idb: images embedded in any
 // Markdown text (card/page content, note content, task/research descriptions).
-function collectMediaRefs(s: AppState): string[] {
+// exported: 作業ファイル(handoff)の書き出しが部分状態に対しても同じ規則で
+// メディアを集めるのに使う。
+export function collectMediaRefs(s: AppState): string[] {
   const refs: string[] = []
   const scan = (text?: string) => {
     const m = text?.match(/idb:[A-Za-z0-9]+/g)
@@ -972,6 +988,22 @@ const AppContext = createContext<{
   undo: () => void
   redo: () => void
   syncNow: () => Promise<void>
+  /**
+   * 「今」の state。取り込み/マージのように await を挟んでから dispatch する処理は、
+   * レンダー時点のスナップショットを土台にすると、その待ち時間に入った編集
+   * (グローバル Ctrl+Z、LAN の focus-sync による再 hydrate 等)を全置換で消す。
+   * 適用の直前にこれで読み直すこと。
+   */
+  getLatestState: () => AppState
+  /**
+   * 【同期コミット】最新 state を読み → patch を計算し → その場で dispatch する、
+   * await を挟めない唯一の適用入口。fn は同期関数であること(async を渡すと戻り値が
+   * Promise になり型エラーで弾かれる)。マージ/取り込みの適用は必ずここを通す —
+   * 「読む」と「dispatch」の間に await があると、その間の編集が全置換で消える。
+   * 戻り値の editSeqAfter は自身の dispatch を含む編集シーケンスで、
+   * 後続の push 成功時に clearFolderSyncDirtyIfUnchanged へ渡す。
+   */
+  commitSync: <T>(fn: (now: AppState) => { patch: Partial<AppState>; result: T }) => { result: T; editSeqAfter: number }
 } | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -987,6 +1019,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Latest committed state, for flushing on teardown without re-subscribing.
   const latest = useRef(history.present)
   latest.current = history.present
+  // hydrate/loadFailed の最新値を非 React コード(同期の flush フック)から読むための ref。
+  const hydratedRef = useRef(false)
+  const loadFailedRef = useRef(false)
+  // 同期フォルダの状態(競合バナーの表示に使う)。
+  const folderSync = useFolderSyncStatus()
+  // 競合の「項目単位マージ」モーダル(バナーの「内容を確認して選ぶ」から)。
+  const [syncMergeOpen, setSyncMergeOpen] = useState(false)
+
   // Version token of the DB as we last loaded/saved it — used to detect when another
   // device (iPad over the LAN) changed it so we reload on focus. Guards re-entrancy.
   const lastEtag = useRef('')
@@ -1013,11 +1053,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true
     ;(async () => {
+      // 他マシンとの同期(同期フォルダ): ロード前にチェックし、フォルダ側が進んで
+      // いれば DB ファイルを差し替えてから読む(hydrate 前なのでリロード不要)。
+      if (!isRemote) {
+        initFolderSync({
+          getLiveRefs: async () => {
+            const refs = collectMediaRefs(latest.current)
+            try {
+              const mt = await loadKv('mindtrain')
+              const m = mt?.match(/idb:[A-Za-z0-9]+/g)
+              if (m) refs.push(...m)
+            } catch { /* ignore */ }
+            return refs
+          },
+          // push は DB ファイルを読むので、400ms デバウンス待ちの編集を先に確定させる。
+          // これが無いと「編集を含まないバイトを送ってから dirty を落とす」ことになり、
+          // その編集は次の無関係な編集まで同期されない。
+          flushPendingSaves: async () => {
+            if (!hydratedRef.current || loadFailedRef.current) return
+            // 路線図のデバウンス待ちブロブも先に確定させる。これを飛ばすと、
+            // 500ms 窓の中で手動同期した場合に旧路線図を push して dirty を
+            // 下ろし、後から着地する新ブロブが次の無関係な編集まで送られない。
+            flushMindtrainPending()
+            await saveState(latest.current)
+          },
+        })
+        try { await startupFolderSync() } catch { /* 同期の失敗で起動を止めない */ }
+      }
       let loaded: AppState | null
       try {
         loaded = await loadState()
       } catch {
-        if (alive) { dispatch({ type: '__HYDRATE', payload: initialState }); setLoadFailed(true); setHydrated(true) }
+        if (alive) { dispatch({ type: '__HYDRATE', payload: initialState }); loadFailedRef.current = true; setLoadFailed(true); hydratedRef.current = true; setHydrated(true) }
         return
       }
       if (loaded === null) {
@@ -1037,12 +1104,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const m = mt?.match(/idb:[A-Za-z0-9]+/g)
         if (m) refs.push(...m)
       } catch { /* ignore */ }
+      // 競合バックアップ(退避したDB)が参照する実体も生存扱いにする。退避は
+      // DBファイルだけをコピーするので、これを守らないと「バックアップは残るのに
+      // 中の画像/PDF/動画が全部読めない」状態になる。
+      if (!isRemote) refs.push(...(await backupMediaRefs()))
       if (!alive) return
       sweepMedia(refs).catch(() => { /* ignore */ })
       try { lastEtag.current = await dbEtag() } catch { /* ignore */ }
       if (!alive) return
+      // latest は通常レンダー中に更新されるが、直後に走る post-hydrate の
+      // メディア照合(getLiveRefs)がレンダー前に読むと hydrate 前のサンプル状態を
+      // 走査してしまい、取り込んだDBだけが参照するメディアが落とされる。先に反映。
+      latest.current = loaded
       dispatch({ type: '__HYDRATE', payload: loaded })
+      hydratedRef.current = true
       setHydrated(true)
+      // hydrate 後にメディアの差分転送(参照が出そろってから)と未送信分の push。
+      if (!isRemote) checkFolderSync('post-hydrate').catch(() => { /* ignore */ })
       // If the DB was auto-restored from a backup (corruption at load time),
       // surface it as a dismissible banner. (Not alert(): Electron's blocking
       // alert during boot is unreliable and would freeze first paint.)
@@ -1054,12 +1132,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Persist to SQLite (debounced). Never write before hydration or after a load
   // failure, or we'd clobber the stored data.
+  // dirty のマークは dispatchTracked(UI 由来のアクションのみ)が担当する。
+  // present の変化を数えると、__HYDRATE や閲覧状態の変更まで編集扱いになる。
   useEffect(() => {
     if (!hydrated || loadFailed) return
     const id = setTimeout(() => {
       saveState(history.present)
         .then(() => dbEtag())
         .then(e => { if (e) lastEtag.current = e })
+        .then(() => { if (!isRemote) scheduleFolderPush() }) // 同期フォルダへの送信は少し待ってまとめる
         .catch(() => { /* ignore */ })
     }, 400)
     return () => clearTimeout(id)
@@ -1069,7 +1150,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // edit made within the 400ms debounce window isn't lost on reload/quit.
   useEffect(() => {
     if (!hydrated || loadFailed) return
-    const flush = () => { saveState(latest.current).then(() => dbEtag()).then(e => { if (e) lastEtag.current = e }).catch(() => { /* ignore */ }) }
+    const flush = () => {
+      saveState(latest.current)
+        .then(() => dbEtag())
+        .then(e => { if (e) lastEtag.current = e })
+        // 席を立つ(別マシンに移る)タイミングで同期フォルダにも送っておく。
+        .then(() => { if (!isRemote) return checkFolderSync('blur').then(() => undefined) })
+        .catch(() => { /* ignore */ })
+    }
     const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
     window.addEventListener('pagehide', flush)
     // 'blur' = the window lost focus (e.g. user picked up the iPad): flush now so the
@@ -1107,15 +1195,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis) }
   }, [hydrated, loadFailed, reloadFromServer])
 
+  // 同期フォルダのフォーカス時チェック: 別マシンが押した新世代があれば取り込む。
+  // 無効時は checkFolderSync 自身が即 no-op になるのでリスナーは常設でよい。
+  useEffect(() => {
+    if (!hydrated || loadFailed || isRemote) return
+    const onFocus = () => { checkFolderSync('focus').catch(() => { /* ignore */ }) }
+    const onVis = () => { if (document.visibilityState === 'visible') onFocus() }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVis)
+    return () => { window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVis) }
+  }, [hydrated, loadFailed])
+
+  // UI から届くアクションだけを「同期すべき実編集」として記録する入口。
+  // 内部 dispatch(__HYDRATE / focus-sync の再ロード)はここを通らないので、
+  // 何も編集していないのに dirty が立ってニセ競合になることがない。
+  const dispatchTracked = useCallback((action: Action | { type: 'UNDO' } | { type: 'REDO' }) => {
+    if (!isRemote && !NOT_A_SYNC_EDIT.has(action.type as Action['type'])) markFolderSyncEdit()
+    dispatch(action as Action)
+  }, [])
+
+  // E2E・デバッグ用の内部フック(ローカルアプリなので露出リスクは無い)。
+  // 実データの編集をUI操作なしで注入できるので、受け渡しマージ等の自動検証に使う。
+  // dispatch は UI と同じ dispatchTracked を渡す — 生の dispatch を渡すと同期の
+  // dirty が立たず、テストが本番と違う経路を通ってしまう。
+  useEffect(() => {
+    ;(window as unknown as Record<string, unknown>).__constella = { dispatch: dispatchTracked, getState: () => latest.current }
+  }, [dispatchTracked])
+
   const value = useMemo(() => ({
     state: history.present,
-    dispatch: dispatch as React.Dispatch<Action>,
+    dispatch: dispatchTracked as React.Dispatch<Action>,
     canUndo: history.past.length > 0,
     canRedo: history.future.length > 0,
-    undo: () => dispatch({ type: 'UNDO' }),
-    redo: () => dispatch({ type: 'REDO' }),
+    undo: () => dispatchTracked({ type: 'UNDO' }),
+    redo: () => dispatchTracked({ type: 'REDO' }),
     syncNow: reloadFromServer,
-  }), [history, reloadFromServer])
+    getLatestState: () => latest.current,
+    commitSync: <T,>(fn: (now: AppState) => { patch: Partial<AppState>; result: T }): { result: T; editSeqAfter: number } => {
+      // fn の実行〜dispatch まで同期。latest.current はレンダーで更新されるため、
+      // 呼び出しは async 継続(直前のレンダーが flush 済み)から行うこと — 実際、
+      // すべての呼び出し元は prepare の await を終えたハンドラ内にある。
+      const { patch, result } = fn(latest.current)
+      // dispatch の反映(レンダー)を待たずに latest.current を進める。呼び出し元は
+      // commitSync の直後に finalize(settleLocalWrites 等)へ進み、その flush は
+      // レンダー前に latest.current を読む — 古いままだと「マージ前の state を
+      // 保存して台帳(base/returnedAt)だけ前進」というズレが起きる。レンダー後は
+      // reducer の同じ計算({...state, ...patch})が同値で上書きするだけ。
+      latest.current = { ...latest.current, ...patch }
+      dispatchTracked({ type: 'APPLY_STATE_PATCH', payload: patch })
+      return { result, editSeqAfter: currentEditSeq() }
+    },
+  }), [history, reloadFromServer, dispatchTracked])
 
   if (!hydrated) {
     return <div className="h-screen w-screen flex items-center justify-center text-slate-400 text-sm">読み込み中…</div>
@@ -1152,6 +1282,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
           </button>
         </div>
       )}
+      {folderSync.phase === 'conflict' && folderSync.conflict && (
+        <div
+          data-folder-sync-conflict-banner="1"
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-[70] max-w-[620px] px-4 py-3 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-900 text-xs shadow-lg"
+        >
+          <div className="flex items-start gap-2">
+            <span className="font-semibold shrink-0">⇄ 同期</span>
+            <span className="flex-1">
+              {folderSync.conflict.initial
+                ? 'この同期フォルダには既にデータがあります。どちらの内容から始めますか?'
+                : `「${folderSync.conflict.remoteDeviceName}」の変更とこのPCの変更が両方あります。どちらを採用しますか?`}
+              {' '}採用されなかった側は自動でバックアップに退避されます。
+              {folderSync.message && <span className="block mt-1 text-rose-600">{folderSync.message}</span>}
+            </span>
+          </div>
+          <div className="mt-2 flex items-center gap-2 justify-end">
+            {!folderSync.conflict.initial && (
+              <button
+                onClick={() => setSyncMergeOpen(true)}
+                className="px-2.5 py-1 rounded border border-indigo-400 bg-indigo-500 text-white hover:bg-indigo-600 font-semibold text-[11px]"
+                title="双方の変更を項目ごとに確認して、どこまで取り込むか選びます"
+              >
+                内容を確認して選ぶ…
+              </button>
+            )}
+            <button
+              onClick={() => { resolveFolderSyncConflict('remote').catch(() => { /* ignore */ }) }}
+              disabled={syncMergeOpen}
+              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
+              title={syncMergeOpen ? '項目ごとの選択画面を閉じてから操作してください' : '同期フォルダの内容でこのPCのデータを置き換えます(現在の内容は退避されます)'}
+            >
+              {folderSync.conflict.initial ? '同期フォルダの内容を取り込む(推奨)' : '同期フォルダを採用'}
+            </button>
+            <button
+              onClick={() => { resolveFolderSyncConflict('local').catch(() => { /* ignore */ }) }}
+              disabled={syncMergeOpen}
+              className="px-2.5 py-1 rounded border border-indigo-300 bg-white hover:bg-indigo-100 font-semibold text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
+              title={syncMergeOpen ? '項目ごとの選択画面を閉じてから操作してください' : 'このPCの内容を同期フォルダへ送ります(フォルダ側は退避されます)'}
+            >
+              {folderSync.conflict.initial ? 'このPCの内容で開始' : 'このPCを採用'}
+            </button>
+          </div>
+        </div>
+      )}
+      <SyncMergeModal open={syncMergeOpen} onClose={() => setSyncMergeOpen(false)} />
     </AppContext.Provider>
   )
 }
