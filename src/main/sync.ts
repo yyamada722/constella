@@ -184,13 +184,15 @@ export function initSync(deps: SyncDeps): void {
     if (typeof patch.folder === 'string') {
       try { patch.folder = await realpath(patch.folder) } catch { /* 未作成パス等はそのまま */ }
     }
-    return await updateSettings(cur => {
+    let folderChanged = false
+    const next = await updateSettings(cur => {
     const next: SyncSettings = { ...cur }
     if (patch.folder !== undefined && !sameFolder(patch.folder, cur.folder)) {
       // フォルダが変わったら世代の対応関係もリセットし、旧フォルダから
       // prepare 済みの pull バッファも破棄する。
       prepared = null
       lastPullUndo = null
+      folderChanged = true
       next.folder = patch.folder
       next.lastGen = 0
       next.lastLocalEtag = ''
@@ -202,6 +204,13 @@ export function initSync(deps: SyncDeps): void {
     if (patch.deviceName !== undefined && patch.deviceName.trim()) next.deviceName = patch.deviceName.trim().slice(0, 40)
     return next
     })
+    if (folderChanged) {
+      // 旧フォルダの共通祖先(sync-base)を残さない。lastSha を空にした状態では
+      // read-base が SHA 照合をしないため、残すと新フォルダの競合で旧フォルダの
+      // DB が3方向マージの祖先として使われてしまう。
+      await unlink(basePath()).catch(() => { /* 無ければそれでよい */ })
+    }
+    return next
   })
 
   ipcMain.handle('sync:pick-folder', async (): Promise<string | null> => {
@@ -355,7 +364,7 @@ export function initSync(deps: SyncDeps): void {
       // 直前にもう一度検証する。configure はフォルダ変更で prepared を破棄するので
       // `prepared === p` の確認で足り、ここから writeDbAtomic 呼び出しまで await が
       // 無い(= main のイベントループ上で configure が割り込めない)ことが保証。
-      const s2 = await loadSettings()
+      const s2 = await updateSettings(c => c) // 識別 mutate = settingsLock に並んで読む
       if (prepared !== p || !sameFolder(p.folder, s2.folder) || !s2.enabled) {
         return { ok: false, error: 'not-prepared' }
       }
@@ -374,7 +383,9 @@ export function initSync(deps: SyncDeps): void {
         // base の読み書きも await なので、その間のフォルダ切替を最後にもう一度
         // 確認してから成功を報告する。切り替わっていたら throw して DB を巻き戻す
         // (configure 側が新フォルダ用に設定をリセット済みなので、設定はそのまま)。
-        const s3 = await loadSettings()
+        // 素の loadSettings ではなく識別 mutate で読む — settingsLock に並ぶため、
+        // 書き込み途中の configure を追い越して古いフォルダを読むことがない。
+        const s3 = await updateSettings(c => c)
         if (!sameFolder(s3.folder, p.folder)) throw new Error('changed')
         lastPullUndo = { folder: p.folder, before, hadDb, prev: s2, prevBase }
         return { ok: true, manifest: p.manifest }
@@ -396,19 +407,29 @@ export function initSync(deps: SyncDeps): void {
   // pull-commit の巻き戻し(直後にのみ有効)。DB・sync-base・sync.json を差し替え前へ
   // 戻す。dirty は true に立てる — 巻き戻す理由は「未保存の編集が居る」ことなので、
   // 復帰後の autosave と競合判定がその編集を確実に拾うようにする。
-  ipcMain.handle('sync:pull-undo', async (): Promise<{ ok: boolean; dbRestored?: boolean }> => {
+  ipcMain.handle('sync:pull-undo', async (): Promise<{ ok: boolean; dbRestored?: boolean; reason?: 'no-snapshot' }> => {
     const u = lastPullUndo
-    if (!u) return { ok: false }
+    // スナップショットが無い=commit と undo の間に configure が走った(または
+    // 二重呼び出し)。「戻せない」ではなく「戻す対象がもう無効」なので、レンダラー
+    // には理由を返し、凍結リロード(=編集の放棄)ではなくメモリ続行を選ばせる。
+    if (!u) return { ok: false, reason: 'no-snapshot' }
     // 巻き戻しの間にフォルダが切り替えられていたら中止(旧フォルダの DB を新しい
-    // 設定の下へ復元しない)。ここから writeDbAtomic まで await を挟まないため、
-    // この検査の後に configure が割り込む余地はない(pull-commit と同じ排他手法)。
-    const s = await loadSettings()
-    if (!sameFolder(u.folder, s.folder)) { lastPullUndo = null; return { ok: false } }
+    // 設定の下へ復元しない)。識別 mutate で読む= settingsLock に並ぶため、書き
+    // 込み途中の configure を追い越さない。ここから writeDbAtomic まで await を
+    // 挟まないため、この検査の後に configure が割り込む余地はない。
+    const s = await updateSettings(c => c)
+    if (!sameFolder(u.folder, s.folder)) { lastPullUndo = null; return { ok: false, reason: 'no-snapshot' } }
     let dbRestored = false
     try {
       if (u.before) await deps.writeDbAtomic(u.before, { fromRemote: true })
       else if (!u.hadDb) await unlink(deps.dbPath()).catch(() => { /* 元々無かった */ })
       dbRestored = true
+      // base 復元の前にもフォルダを再確認する。DB 復元の await 中に切り替わって
+      // いた場合、旧フォルダの base を共有の sync-base.db へ書くと、新フォルダの
+      // 競合で旧フォルダの DB が共通祖先に化ける(configure 側の base 削除とも
+      // 競合しない — 不一致ならここで書かない)。
+      const sMid = await updateSettings(c => c)
+      if (!sameFolder(sMid.folder, u.folder)) return { ok: false, dbRestored }
       try {
         if (u.prevBase) await writeAtomic(basePath(), u.prevBase)
         else await unlink(basePath()).catch(() => { /* 元々無かった */ })
@@ -475,7 +496,7 @@ export function initSync(deps: SyncDeps): void {
     const out = new Set<string>()
     try {
       const dir = deps.backupsDir()
-      const names = (await readdir(dir)).filter(n => /^constella-conflict-\d{8}-\d{6}\.db$/.test(n))
+      const names = (await readdir(dir)).filter(n => /^constella-conflict-\d{8}-\d{6}(?:-[0-9a-f]{6})?\.db$/.test(n))
       for (const n of names) {
         try {
           const buf = await withDeadline(readFile(join(dir, n)), 30_000)
@@ -532,13 +553,26 @@ export function initSync(deps: SyncDeps): void {
     const pad = (n: number): string => String(n).padStart(2, '0')
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
     const dir = deps.backupsDir()
-    const name = `constella-conflict-${stamp}.db`
+    // 同じ秒に2回退避しても上書きしないよう、乱数サフィックスで一意化する
+    // (先の退避が「選ばれなかった側」の唯一の控えであることがある)。
+    const name = `constella-conflict-${stamp}-${randomBytes(3).toString('hex')}.db`
     try {
       await mkdir(dir, { recursive: true })
-      await withDeadline(copyFile(src, join(dir, name)), 60_000)
+      if (source === 'remote') {
+        // クラウドがマニフェストだけ先に運んだ瞬間は、フォルダの DB がまだ旧世代
+        // または運びかけのことがある。未検証のまま退避を成立させると、「相手側は
+        // 退避済み」という約束のもとで push がフォルダを上書きし、約束の実体が
+        // 壊れたファイルになる — SHA 照合に通った検証済みバイトから書く。
+        const { manifest } = await readManifest(s.folder!)
+        const buf = await withDeadline(readFile(src), 60_000)
+        if (!manifest || buf.length !== manifest.dbSize || sha256(buf) !== manifest.dbSha256) return null
+        await writeFile(join(dir, name), buf)
+      } else {
+        await withDeadline(copyFile(src, join(dir, name)), 60_000)
+      }
     } catch { return null }
     try {
-      const names = (await readdir(dir)).filter(n => /^constella-conflict-\d{8}-\d{6}\.db$/.test(n)).sort()
+      const names = (await readdir(dir)).filter(n => /^constella-conflict-\d{8}-\d{6}(?:-[0-9a-f]{6})?\.db$/.test(n)).sort()
       for (const n of names.slice(0, Math.max(0, names.length - CONFLICT_BACKUP_KEEP))) {
         try { await unlink(join(dir, n)) } catch { /* best-effort prune */ }
       }

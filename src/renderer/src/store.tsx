@@ -1,6 +1,7 @@
 import { createContext, useContext, useReducer, useEffect, useMemo, useState, useRef, useCallback, ReactNode } from 'react'
 import { Note, NoteAttachment, NoteFolder, FileItem, FileFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Flow, Plan, PlanFolder, TimelineBand } from './types'
 import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNotice } from './persistence/db'
+import { flushMindtrainPending } from './mindtrain/persist'
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
@@ -1030,6 +1031,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           // その編集は次の無関係な編集まで同期されない。
           flushPendingSaves: async () => {
             if (!hydratedRef.current || loadFailedRef.current) return
+            // 路線図のデバウンス待ちブロブも先に確定させる。これを飛ばすと、
+            // 500ms 窓の中で手動同期した場合に旧路線図を push して dirty を
+            // 下ろし、後から着地する新ブロブが次の無関係な編集まで送られない。
+            flushMindtrainPending()
             await saveState(latest.current)
           },
         })
@@ -1191,6 +1196,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // 呼び出しは async 継続(直前のレンダーが flush 済み)から行うこと — 実際、
       // すべての呼び出し元は prepare の await を終えたハンドラ内にある。
       const { patch, result } = fn(latest.current)
+      // dispatch の反映(レンダー)を待たずに latest.current を進める。呼び出し元は
+      // commitSync の直後に finalize(settleLocalWrites 等)へ進み、その flush は
+      // レンダー前に latest.current を読む — 古いままだと「マージ前の state を
+      // 保存して台帳(base/returnedAt)だけ前進」というズレが起きる。レンダー後は
+      // reducer の同じ計算({...state, ...patch})が同値で上書きするだけ。
+      latest.current = { ...latest.current, ...patch }
       dispatchTracked({ type: 'APPLY_STATE_PATCH', payload: patch })
       return { result, editSeqAfter: currentEditSeq() }
     },

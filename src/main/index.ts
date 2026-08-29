@@ -106,7 +106,7 @@ ipcMain.handle('db:recovery-list', async (): Promise<{ name: string; size: numbe
   try { const s = await stat(bakPath()); out.push({ name: 'constella.db.bak', size: s.size, mtime: s.mtimeMs, kind: 'auto' }) } catch { /* none */ }
   try {
     const dir = backupsDir()
-    const names = (await readdir(dir)).filter(n => /^constella-(?:\d{8}|conflict-\d{8}-\d{6})\.db$/.test(n))
+    const names = (await readdir(dir)).filter(n => /^constella-(?:\d{8}|conflict-\d{8}-\d{6}(?:-[0-9a-f]{6})?)\.db$/.test(n))
     const dated: { name: string; size: number; mtime: number; kind: 'auto' | 'conflict' }[] = []
     for (const n of names) {
       try {

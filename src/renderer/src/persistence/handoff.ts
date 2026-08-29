@@ -622,6 +622,22 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
   const targetMaster = state.masterProjects.some(m => m.id === srcMaster) ? srcMaster : state.activeMasterProjectId
   const theirs = reparentItems({ ...EMPTY_ITEMS, ...pack.items }, targetMaster)
   const baseR = reparentItems(base, targetMaster)
+  // 共有・他プロジェクト参照のメタデータ(shared/sharedAlias/refByMasterIds/
+  // linkedMasterIds)は貸出側の所有物で、受領時に相手側で剥がしている。返却
+  // パックには常に無いため、そのまま比較すると「相手が解除した」ように見えて
+  // 自動適用され、貸出側の共有設定と参照リンクが黙って消える。相手には編集
+  // 手段の無いフィールドなので、このPCの現在値(項目をこちらで消していた場合は
+  // 貸出時の base の値)を theirs へ写してから比較する — 差分にならず、適用
+  // されても値が保たれる。base は reparent 前の生値を使う(reparent も剥がすため)。
+  restoreOwnedFields(theirs, state, base)
+  // 共有・他プロジェクト参照のメタデータ(shared/sharedAlias/refByMasterIds/
+  // linkedMasterIds)は貸出側の所有物で、受領時に相手側で剥がしている。返却
+  // パックには常に無いため、そのまま比較すると「相手が解除した」ように見えて
+  // 自動適用され、貸出側の共有設定と参照リンクが黙って消える。相手には編集
+  // 手段の無いフィールドなので、このPCの現在値(項目をこちらで消していた場合は
+  // 貸出時の base の値)を theirs へ写してから比較する — 差分にならず、適用
+  // されても値が保たれる。base は reparent 前の生値を使う(reparent も剥がすため)。
+  restoreOwnedFields(theirs, state, base)
 
   await importMedia(pack.media)
 
@@ -678,6 +694,33 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
   )
 
   return { pack, autoOps, conflicts, orderOps, theirsByKey, expectedByKey, targetMaster }
+}
+
+const OWNED_FIELDS = ['shared', 'sharedAlias', 'refByMasterIds', 'linkedMasterIds'] as const
+
+function restoreOwnedFields(theirs: PackItems, mine: AppState, base: PackItems): void {
+  const apply = (tArr: { id: string }[], mArr: { id: string }[], bArr: { id: string }[], fields: readonly string[]): void => {
+    const mMap = new Map(mArr.map(x => [x.id, x as unknown as Record<string, unknown>]))
+    const bMap = new Map(bArr.map(x => [x.id, x as unknown as Record<string, unknown>]))
+    for (const t of tArr as unknown as Record<string, unknown>[]) {
+      const src = mMap.get(t.id as string) ?? bMap.get(t.id as string)
+      if (!src) continue
+      for (const f of fields) {
+        if (src[f] !== undefined) t[f] = src[f]
+        else delete t[f]
+      }
+    }
+  }
+  for (const key of Object.keys(EMPTY_ITEMS) as (keyof PackItems)[]) {
+    if (key === 'projects') continue
+    apply(theirs[key] as { id: string }[], mine[key] as unknown as { id: string }[], base[key] as { id: string }[], OWNED_FIELDS)
+  }
+  // タスクの共有(shared/sharedAlias)は入れ子なので個別に写す。
+  const mineTasks = flattenTasks(mine.projects) as { id: string }[]
+  const baseTasks = flattenTasks(base.projects) as { id: string }[]
+  for (const proj of theirs.projects) {
+    apply(proj.tasks as unknown as { id: string }[], mineTasks, baseTasks, ['shared', 'sharedAlias'])
+  }
 }
 
 /**

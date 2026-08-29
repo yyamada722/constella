@@ -55,7 +55,7 @@ export interface SyncApi {
   pullPrepare: (expectedGen: number, deadlineMs?: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   pullCommit: (expectedGen: number) => Promise<{ ok: boolean; error?: string; manifest?: SyncManifest }>
   pullDiscard: () => Promise<void>
-  pullUndo: () => Promise<{ ok: boolean; dbRestored?: boolean }>
+  pullUndo: () => Promise<{ ok: boolean; dbRestored?: boolean; reason?: 'no-snapshot' }>
   readBase: () => Promise<Uint8Array | null>
   readFolderDb: () => Promise<{ ok: boolean; error?: string; gen?: number; bytes?: Uint8Array; deviceName?: string }>
   listRemoteMedia: () => Promise<string[]>
@@ -481,31 +481,29 @@ async function doPull(api: SyncApi, m: SyncManifest, trigger: FolderSyncTrigger,
     // 消える — main に控えさせた差し替え前の状態へ戻し、競合として選び直して
     // もらう(編集はメモリに生きているので、解凍後の autosave が拾う)。
     if (trigger !== 'startup' && editSeq !== seqAtCommit) {
-      const callUndo = (): Promise<{ ok: boolean; dbRestored?: boolean }> =>
+      const callUndo = (): Promise<{ ok: boolean; dbRestored?: boolean; reason?: 'no-snapshot' }> =>
         api.pullUndo().catch(() => ({ ok: false }))
       let undone = await callUndo()
       // 「何も戻せなかった」の最終手段はリロード=コミット窓の編集の放棄なので、
       // 一過性の失敗(rename 競合等)に備えて一度だけ再試行する(main 側は失敗時
-      // スナップショットを保持している)。
-      if (!undone.ok && !undone.dbRestored) undone = await callUndo()
+      // スナップショットを保持している)。no-snapshot は再試行しても無意味。
+      if (!undone.ok && !undone.dbRestored && undone.reason !== 'no-snapshot') undone = await callUndo()
       if (undone.ok) {
         thawWrites()
         // 凍結中に autosave が空振りしている(saveState は入口で返るだけで
         // 再予約されない)ため、コミット窓の編集はまだメモリにしか無い。
-        // ここで確定させてから競合表示に移る。確定に失敗したら、その旨を
-        // 競合バナーに載せる(黙って「保存済みの競合」に見せない)。
+        // 確定できるまでは競合バナーを出さない — 選択肢の実行側にも settle
+        // ゲートはあるが、未保存の編集を抱えたまま操作させない。
         const settled = await settleLocalWrites()
-        setConflict(m, false)
         if (!settled) {
-          setStatus({
-            phase: 'conflict',
-            conflict: { remoteGen: m.gen, remoteDeviceName: m.deviceName || '別のマシン', pushedAt: m.pushedAt, initial: false },
-            message: '直前の編集をまだ保存できていません。アプリを終了する前にもう一度操作するか、ディスクを確認してください',
-          })
+          setStatus({ phase: 'error', message: '直前の編集を保存できていません。ディスクを確認してください(保存できるまで同期を再開しません)' })
+          scheduleRetry(20_000)
+          return 'error'
         }
+        setConflict(m, false)
         return 'conflict'
       }
-      if (undone.dbRestored) {
+      if (undone.dbRestored || undone.reason === 'no-snapshot') {
         // DB は戻ったが設定を復元できなかった。リロードすると「旧DB+同期済みの
         // 記録」で走り出してしまうため、メモリ状態のまま続行してエラー表示する。
         thawWrites()
@@ -620,23 +618,23 @@ export async function resolveFolderSyncConflict(choice: 'local' | 'remote'): Pro
       if (r.ok) {
         // doPull と同じ理由: commit の間に入った編集をリロードで消さない。
         if (editSeq !== seqAtCommit) {
-          const callUndo = (): Promise<{ ok: boolean; dbRestored?: boolean }> =>
+          const callUndo = (): Promise<{ ok: boolean; dbRestored?: boolean; reason?: 'no-snapshot' }> =>
             api.pullUndo().catch(() => ({ ok: false }))
           let undone = await callUndo()
-          if (!undone.ok && !undone.dbRestored) undone = await callUndo() // 一過性の失敗に備えて一度だけ
+          if (!undone.ok && !undone.dbRestored && undone.reason !== 'no-snapshot') undone = await callUndo() // 一過性の失敗に備えて一度だけ
           if (undone.ok) {
             thawWrites()
             const settled = await settleLocalWrites() // 凍結中に空振りした autosave をここで確定
-            setStatus({
-              phase: 'conflict',
-              conflict: c,
-              message: settled
-                ? '取り込みの最中に編集が入ったため中止しました。もう一度お選びください'
-                : '取り込みの最中に編集が入ったため中止しました。直前の編集をまだ保存できていません — ディスクを確認してください',
-            })
+            if (!settled) {
+              // 未保存の編集を抱えたまま競合操作をさせない。
+              setStatus({ phase: 'error', message: '直前の編集を保存できていません。ディスクを確認してください(保存できるまで同期を再開しません)' })
+              scheduleRetry(20_000)
+              return
+            }
+            setStatus({ phase: 'conflict', conflict: c, message: '取り込みの最中に編集が入ったため中止しました。もう一度お選びください' })
             return
           }
-          if (undone.dbRestored) {
+          if (undone.dbRestored || undone.reason === 'no-snapshot') {
             thawWrites()
             await settleLocalWrites()
             dirtyMarked = false
