@@ -240,3 +240,125 @@ export function rebuildProjects(
 
 /** AppState のうち、この共通コアが扱う id コレクションのキー一覧。 */
 export const MERGE_STREAM_KEYS: (keyof AppState)[] = MERGE_STREAMS.map(s => s.key as keyof AppState)
+
+// ── 変更オペと同期コミット ──
+//
+// 【同期コミット不変条件】状態への適用は「最新を読む → 検証 → dispatch」を
+// await を挟まない1つの同期ブロックで行う。I/O はすべてその前(prepare)か
+// 後(persist/push)に置く。
+//
+// 適用フローはかつて「state を読む → 長い await → 全置換配列を dispatch」の形で、
+// await 中に入った編集を全置換が消す競合窓が構造的に空いていた(レビューで同種の
+// 指摘が場所を変えて出続けた)。ここでは判断を ChangeOp(id + 値 + 判断根拠の
+// compareKey)として持ち運び、コミット時に現在値と突き合わせる。JS は
+// シングルスレッドなので、同期ブロック内に割り込む編集は存在しない。
+
+export interface ChangeOp {
+  /** AppState のキー、または 'projects'(メタ) / 'tasks'(フラット化)の擬似ストリーム。 */
+  stream: string
+  id: string
+  /** 適用する値。null は削除。 */
+  item: { id: string } | null
+  /**
+   * この判断の根拠になった「このPC側の値」の compareKey。コミット時に現在値と
+   * 一致しなければ、その項目は判断後に編集された=判断が古いので適用を見送る
+   * (見送らないと、選択中に入れた編集を上書き/削除で消してしまう)。
+   */
+  expectedBefore: string
+}
+
+export interface OrderOp {
+  stream: string
+  /** 採用する相手側の id 並び。 */
+  theirsIds: string[]
+  /** 判断時点の「このPC側の並び」。コミット時に変わっていたら見送る。 */
+  expectedIds: string[]
+}
+
+export interface CommitOutcome {
+  patch: Partial<AppState>
+  /** 判断後に変わっていて適用を見送った id(重複除去済み)。 */
+  skipped: string[]
+  applied: { updated: number; added: number; deleted: number }
+}
+
+const ABSENT = compareKey(null)
+
+/**
+ * 変更オペ集合を「今」の状態に適用した patch を作る。**純粋・同期**。
+ * commitSync(store.tsx) の同期ブロック内から呼ぶことを想定している。
+ * stillSame / untouched / rebasePatch として3箇所に散っていた検査の唯一の実装。
+ */
+export function buildPatchFromOps(now: AppState, ops: ChangeOp[], orderOps: OrderOp[] = []): CommitOutcome {
+  const patch: Partial<AppState> = {}
+  const skipped = new Set<string>()
+  const applied = { updated: 0, added: 0, deleted: 0 }
+
+  const byStream = new Map<string, ChangeOp[]>()
+  for (const op of ops) {
+    const list = byStream.get(op.stream) ?? []
+    list.push(op)
+    byStream.set(op.stream, list)
+  }
+  const orderByStream = new Map(orderOps.map(o => [o.stream, o]))
+
+  const applyToArr = (arr: { id: string }[], streamOps: ChangeOp[]): { id: string }[] => {
+    const next = [...arr]
+    for (const op of streamOps) {
+      const i = next.findIndex(x => x.id === op.id)
+      const current = i >= 0 ? next[i] : null
+      if (compareKey(current) !== op.expectedBefore) { skipped.add(op.id); continue }
+      if (op.item) {
+        if (i >= 0) { next[i] = op.item; applied.updated++ }
+        else { next.push(op.item); applied.added++ }
+      } else if (i >= 0) {
+        next.splice(i, 1)
+        applied.deleted++
+      }
+    }
+    return next
+  }
+
+  const applyOrderIfValid = (arr: { id: string }[], o: OrderOp | undefined): { id: string }[] => {
+    if (!o) return arr
+    // 判断時点と比較集合を揃える: 期待順と相手順の両方に載っている id だけで比べる。
+    const cmpSet = new Set(o.expectedIds.filter(id => o.theirsIds.includes(id)))
+    const expected = o.expectedIds.filter(id => cmpSet.has(id)).join(',')
+    const nowJoin = arr.map(x => x.id).filter(id => cmpSet.has(id)).join(',')
+    if (nowJoin !== expected) { skipped.add(`order:${o.stream}`); return arr }
+    return applyOrder(arr, o.theirsIds)
+  }
+
+  const streams = new Set([...byStream.keys(), ...orderByStream.keys()])
+  const hasTaskWork = streams.has('projects') || streams.has('tasks')
+  for (const stream of streams) {
+    if (stream === 'projects' || stream === 'tasks') continue // 下でまとめて処理
+    const arr = (now[stream as keyof AppState] ?? []) as unknown as { id: string }[]
+    ;(patch as Record<string, unknown>)[stream] = applyOrderIfValid(applyToArr(arr, byStream.get(stream) ?? []), orderByStream.get(stream))
+  }
+  if (hasTaskWork) {
+    const metas = applyOrderIfValid(
+      applyToArr(stripTasks(now.projects) as unknown as { id: string }[], byStream.get('projects') ?? []),
+      orderByStream.get('projects'),
+    ) as unknown as Omit<Project, 'tasks'>[]
+    const taskOrder = orderByStream.get('tasks')
+    const flat = applyOrderIfValid(
+      applyToArr(flattenTasks(now.projects) as unknown as { id: string }[], byStream.get('tasks') ?? []),
+      taskOrder,
+    ) as unknown as FlatTask[]
+    // 相手の並びを採用できた場合、flat は既にその順なので再ソートさせない。
+    const taskOrderApplied = !!taskOrder && !skipped.has('order:tasks')
+    patch.projects = rebuildProjects(metas, flat, now.projects, taskOrderApplied)
+  }
+
+  // アクティブなプロジェクトが削除の適用で消えた場合、存在しない id が残ると
+  // 画面が空に見える。生き残っているプロジェクトへ寄せる。
+  if (patch.masterProjects && !patch.masterProjects.some(p => p.id === now.activeMasterProjectId)) {
+    patch.activeMasterProjectId = patch.masterProjects[0]?.id ?? ''
+  }
+
+  return { patch, skipped: [...skipped], applied }
+}
+
+/** 「存在しない」を期待値にする ChangeOp(新規追加用)。 */
+export const EXPECT_ABSENT = ABSENT

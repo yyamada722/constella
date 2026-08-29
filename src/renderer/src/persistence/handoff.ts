@@ -24,7 +24,7 @@ import {
   stableStringify, compareKey, classifyStream, streamLabel,
   flattenTasks, stripTasks, rebuildProjects,
   MERGE_STREAMS, PROJECTS_STREAM, TASKS_STREAM,
-  type FlatTask, type MergeStreamDef,
+  type FlatTask, type MergeStreamDef, type ChangeOp,
 } from './merge'
 import { getMediaBlob, importMedia, MEDIA_PREFIX } from './media'
 import { markFolderSyncEdit } from './folderSync'
@@ -417,46 +417,65 @@ function applyIdMap(items: PackItems, map: Map<string, string>): PackItems {
 }
 
 /**
- * 受け取った作業ファイルを「専用の新プロジェクト」として追加する。
- * 既存データには一切触れない。戻り値の patch を APPLY_STATE_PATCH で適用する。
+ * 【prepare・非同期】受領の下ごしらえ: 台帳を読み、メディアを先に取り込む。
+ * メディアは追加専用なので state に先行して入れても安全(コミットが中止されても
+ * 未参照 blob は sweep の7日猶予で回収される)。
  */
-export async function receiveHandoff(state: AppState, pack: HandoffPack, getLatest?: () => AppState): Promise<{ patch: Partial<AppState>; master: MasterProject }> {
+export async function prepareReceive(pack: HandoffPack): Promise<{ recv: RecvIndexEntry[] }> {
   const recv = await loadRecvIndex()
+  await importMedia(pack.media)
+  return { recv }
+}
+
+/**
+ * 【commit・同期】受領を「今」の状態に対して組み立てる。commitSync の同期ブロック
+ * 内から呼ぶこと — 重複チェックも ID 衝突のリマップも now に対して行うので、
+ * prepare の await 中に入った編集(Ctrl+Z による復活を含む)と矛盾しない。
+ * 重複取り込みは throw する(commitSync は dispatch せずそのまま伝播させる)。
+ */
+export function buildReceiveCommit(
+  now: AppState,
+  pack: HandoffPack,
+  recv: RecvIndexEntry[],
+): { patch: Partial<AppState>; result: { master: MasterProject; ledger: RecvIndexEntry[] } } {
   // 取り込みは undo できるが台帳は履歴の外にあるため、「台帳にはあるがプロジェクトが
   // 無い」= 取り込みを取り消した/削除した状態になりうる。その場合は再取り込みを許す
   // (でないと undo した瞬間に、そのファイルを二度と開けなくなる)。
-  const stale = recv.filter(r => r.handoffId === pack.handoffId && !state.masterProjects.some(m => m.id === r.masterId))
-  const live = recv.filter(r => r.handoffId === pack.handoffId && state.masterProjects.some(m => m.id === r.masterId))
+  const stale = recv.filter(r => r.handoffId === pack.handoffId && !now.masterProjects.some(m => m.id === r.masterId))
+  const live = recv.filter(r => r.handoffId === pack.handoffId && now.masterProjects.some(m => m.id === r.masterId))
   if (live.length > 0) {
     throw new Error(`この作業ファイル(${pack.name})は既に取り込み済みです。返却を受け取る側の場合は、元のマシンで取り込んでください`)
   }
   const kept = stale.length > 0 ? recv.filter(r => !stale.includes(r)) : recv
   const master: MasterProject = { id: generateId(), name: `📦 ${pack.name}`, createdAt: new Date().toISOString() }
-  const remap = remapCollidingIds(state, pack.items)
+  const remap = remapCollidingIds(now, pack.items)
   const items = reparentItems(remap.items, master.id)
-  // メディア取り込みは時間がかかる。この間に入った編集を消さないよう、連結の土台は
-  // await を終えた「今」の状態にする(getLatest が無ければ渡された state のまま)。
-  await importMedia(pack.media)
-  const base = getLatest ? getLatest() : state
   const patch: Partial<AppState> = {
-    masterProjects: [...base.masterProjects, master],
+    masterProjects: [...now.masterProjects, master],
     activeMasterProjectId: master.id,
   }
   for (const key of Object.keys(EMPTY_ITEMS) as (keyof PackItems)[]) {
     // 既存配列の後ろに連結。id は元のまま維持する(返却マージの前提)。
-    ;(patch as Record<string, unknown[]>)[key] = [...(base[key] as unknown[]), ...(items[key] as unknown[])]
+    ;(patch as Record<string, unknown[]>)[key] = [...(now[key] as unknown[]), ...(items[key] as unknown[])]
   }
   // 逆引き(新 id → 元 id)を控える。返却時にこれで元の id へ戻さないと、貸出側の
   // マージが「元 id は削除・新 id は追加」と解釈してパック外の参照を壊す。
   const idMap: Record<string, string> = {}
   for (const [orig, next] of remap.map) idMap[next] = orig
-  kept.unshift({
-    handoffId: pack.handoffId, masterId: master.id, name: pack.name,
-    sourceMasterId: pack.sourceMasterId, receivedAt: new Date().toISOString(),
-    ...(Object.keys(idMap).length ? { idMap } : {}),
-  })
-  await saveKv('handoff.recv.index', JSON.stringify(kept.slice(0, 30)))
-  return { patch, master }
+  const ledger = [
+    {
+      handoffId: pack.handoffId, masterId: master.id, name: pack.name,
+      sourceMasterId: pack.sourceMasterId, receivedAt: new Date().toISOString(),
+      ...(Object.keys(idMap).length ? { idMap } : {}),
+    },
+    ...kept,
+  ].slice(0, 30)
+  return { patch, result: { master, ledger } }
+}
+
+/** 【finalize・非同期】受領台帳を書く(コミット済みの結果を永続化するだけ)。 */
+export async function finalizeReceive(ledger: RecvIndexEntry[]): Promise<void> {
+  await saveKv('handoff.recv.index', JSON.stringify(ledger))
 }
 
 /** 受領側: 受け取ったプロジェクトを丸ごと「返却ファイル」として書き出す。 */
@@ -498,45 +517,10 @@ export interface MergeConflict {
   resolution: 'theirs' | 'mine'
 }
 
-export interface MergeResult {
-  patch: Partial<AppState>
-  applied: { updated: number; added: number; deleted: number }
-  conflicts: MergeConflict[]
-}
-
 const KIND_MAP: Record<string, MergeConflict['kind']> = {
   'both-edited': 'both-edited',
   'they-edited-i-deleted': 'they-edited-i-deleted',
   'they-deleted-i-edited': 'they-deleted-i-edited',
-}
-
-// 1コレクション分の 3方向マージ。分類は共通コアに任せ、ここでは
-// 「相手だけの変更を適用した配列」を組み立て、競合は記録だけして applyResolutions に回す。
-function mergeStream<T extends { id: string }>(
-  def: MergeStreamDef,
-  baseArr: T[], mineArr: T[], theirsArr: T[],
-  out: { conflicts: MergeConflict[]; theirsByKey: Map<string, T | null>; applied: MergeResult['applied'] },
-): T[] {
-  const result = new Map(mineArr.map(x => [x.id, x])) // 自分の並び・自分だけの新規はそのまま生かす
-  for (const e of classifyStream(def, baseArr, mineArr, theirsArr, { partialPack: true })) {
-    if (e.side === 'mine') continue // 相手は触っていない → 自分の状態を維持
-    if (e.side === 'theirs') {
-      if (e.theirs) { result.set(e.id, e.theirs); out.applied[e.base ? 'updated' : 'added']++ }
-      else { result.delete(e.id); out.applied.deleted++ }
-      continue
-    }
-    // 両方が変えた → 競合として記録(既定は相手の版)
-    const key = `${def.key}:${e.id}`
-    out.conflicts.push({
-      key,
-      typeLabel: def.typeLabel,
-      label: streamLabel(def, (e.theirs ?? e.mine) as Record<string, unknown>),
-      kind: KIND_MAP[e.kind] ?? 'both-edited',
-      resolution: 'theirs',
-    })
-    out.theirsByKey.set(key, e.theirs)
-  }
-  return [...result.values()]
 }
 
 // パックに載るコレクションだけを共通レジストリから引く(順序も揃う)。
@@ -546,13 +530,21 @@ const STREAMS: { [K in keyof PackItems]?: MergeStreamDef } = Object.fromEntries(
 
 export interface PendingMerge {
   pack: HandoffPack
-  result: MergeResult
-  // 競合の解決を反映して最終 patch を得るための素材
+  /** 相手だけが変えた項目(自動適用)。expectedBefore 付きなので、計算後にこの
+   *  PC で編集された項目はコミット時に自動で見送られる。 */
+  autoOps: ChangeOp[]
+  /** 両方が変えた項目(ユーザーが選ぶ)。 */
+  conflicts: MergeConflict[]
+  // 競合の解決を ChangeOp 化するための素材(行 key → 相手の値 / 判断根拠)
   theirsByKey: Map<string, { id: string } | null>
-  mineState: AppState
+  expectedByKey: Map<string, string>
 }
 
-/** 返却ファイルと控えておいた base から 3方向マージを計算する(まだ適用しない)。 */
+/**
+ * 【prepare・非同期】返却ファイルと控えておいた base から 3方向分類を行い、
+ * 変更オペと競合リストを作る。メディアもここで取り込む(追加専用なので安全)。
+ * 適用はしない — commitSync(同期ブロック)で buildPatchFromOps に渡す。
+ */
 export async function computeReturnMerge(state: AppState, pack: HandoffPack): Promise<PendingMerge> {
   const rawBase = await loadKv(`handoff.base.${pack.handoffId}`)
   if (!rawBase) throw new Error('この作業ファイルの貸出記録が見つかりません(別のマシンで書き出したファイルの可能性があります)')
@@ -563,190 +555,82 @@ export async function computeReturnMerge(state: AppState, pack: HandoffPack): Pr
   const theirs = reparentItems({ ...EMPTY_ITEMS, ...pack.items }, targetMaster)
   const baseR = reparentItems(base, targetMaster)
 
-  const applied: MergeResult['applied'] = { updated: 0, added: 0, deleted: 0 }
+  await importMedia(pack.media)
+
+  const autoOps: ChangeOp[] = []
   const conflicts: MergeConflict[] = []
   const theirsByKey = new Map<string, { id: string } | null>()
-  const out = { conflicts, theirsByKey, applied }
-  const patch: Partial<AppState> = {}
+  const expectedByKey = new Map<string, string>()
 
-  for (const key of Object.keys(STREAMS) as (keyof PackItems)[]) {
-    const def = STREAMS[key]!
-    ;(patch as Record<string, unknown>)[key] = mergeStream(
-      def,
-      baseR[key] as { id: string }[],
-      state[key] as { id: string }[],
-      theirs[key] as { id: string }[],
-      out,
-    )
+  const collect = (def: MergeStreamDef, baseArr: { id: string }[], mineArr: { id: string }[], theirsArr: { id: string }[]): void => {
+    for (const e of classifyStream(def, baseArr, mineArr, theirsArr, { partialPack: true })) {
+      if (e.side === 'mine') continue // 相手は触っていない → 自分の状態を維持
+      if (e.side === 'theirs') {
+        autoOps.push({ stream: def.key, id: e.id, item: e.theirs, expectedBefore: compareKey(e.mine) })
+        continue
+      }
+      // 両方が変えた → 競合として記録(既定は相手の版)
+      const key = `${def.key}:${e.id}`
+      conflicts.push({
+        key,
+        typeLabel: def.typeLabel,
+        label: streamLabel(def, (e.theirs ?? e.mine) as Record<string, unknown>),
+        kind: KIND_MAP[e.kind] ?? 'both-edited',
+        resolution: 'theirs',
+      })
+      theirsByKey.set(key, e.theirs)
+      expectedByKey.set(key, compareKey(e.mine))
+    }
   }
 
-  // タスク: プロジェクトのメタとタスクを別ストリームでマージしてから組み立て直す。
-  const projMeta = mergeStream(
+  for (const key of Object.keys(STREAMS) as (keyof PackItems)[]) {
+    if (key === 'projects') continue // メタ/タスクに分けて下で処理
+    collect(STREAMS[key]!, baseR[key] as { id: string }[], state[key] as { id: string }[], theirs[key] as { id: string }[])
+  }
+  collect(
     PROJECTS_STREAM,
     stripTasks(baseR.projects) as { id: string }[],
     stripTasks(state.projects) as { id: string }[],
     stripTasks(theirs.projects) as { id: string }[],
-    out,
-  ) as (Omit<Project, 'tasks'>)[]
-  const mergedTasks = mergeStream(
+  )
+  collect(
     TASKS_STREAM,
     flattenTasks(baseR.projects) as { id: string }[],
     flattenTasks(state.projects) as { id: string }[],
     flattenTasks(theirs.projects) as { id: string }[],
-    out,
-  ) as FlatTask[]
-  patch.projects = rebuildProjects(projMeta, mergedTasks, state.projects)
+  )
 
-  return { pack, result: { patch, applied, conflicts }, theirsByKey, mineState: state }
+  return { pack, autoOps, conflicts, theirsByKey, expectedByKey }
 }
 
 /**
- * 凍結時点で計算した patch を「今」の状態に載せ替える。
- *
- * mergeStream は `new Map(mine)` から始めて相手の変更を重ねた**全置換配列**を返すので、
- * そのまま適用すると凍結時点以降の編集が消える。ここでは patch と凍結スナップショットを
- * 突き合わせて「マージが実際に加えた変更(追加/更新/削除)」だけを取り出し、
- * それを現在の配列へ適用し直す。
+ * 【commit 前・純粋】自動適用ぶんと競合の選択を1つのオペ集合にまとめる。
+ * commitSync 内で buildPatchFromOps(now, ops) に渡す。
  */
-function rebasePatch(pending: PendingMerge, current: AppState, skipped: string[]): Partial<AppState> {
-  const out: Partial<AppState> = {}
-  const rebaseOne = (frozen: { id: string }[], merged: { id: string }[], now: { id: string }[]): { id: string }[] => {
-    const frozenById = new Map(frozen.map(x => [x.id, x]))
-    const mergedById = new Map(merged.map(x => [x.id, x]))
-    const nowById = new Map(now.map(x => [x.id, x]))
-    const next = [...now]
-    // 取り込み画面を開いてから、この PC 側でその項目自体が変わっていないか。
-    // 変わっているのに凍結時点の決定を当てると、その間の編集(や削除)を
-    // 無言で潰してしまう。変わった項目は適用を見送る。
-    const untouched = (id: string): boolean => {
-      const f = frozenById.get(id) ?? null
-      const n = nowById.get(id) ?? null
-      if (compareKey(f) === compareKey(n)) return true
-      skipped.push(id)
-      return false
-    }
-    // マージが変えた/足したもの
-    for (const item of merged) {
-      const before = frozenById.get(item.id)
-      if (before && compareKey(before) === compareKey(item)) continue
-      if (!untouched(item.id)) continue
-      const i = next.findIndex(x => x.id === item.id)
-      if (i >= 0) next[i] = item
-      else next.push(item)
-    }
-    // マージが消したもの
-    for (const item of frozen) {
-      if (mergedById.has(item.id)) continue
-      if (!untouched(item.id)) continue
-      const i = next.findIndex(x => x.id === item.id)
-      if (i >= 0) next.splice(i, 1)
-    }
-    return next
-  }
-  for (const key of Object.keys(pending.result.patch) as (keyof AppState)[]) {
-    if (key === 'projects') continue // タスク入れ子は呼び出し側が組み立て直す
-    const merged = pending.result.patch[key] as unknown as { id: string }[] | undefined
-    if (!merged) continue
-    ;(out as Record<string, unknown>)[key] = rebaseOne(
-      pending.mineState[key] as unknown as { id: string }[],
-      merged,
-      current[key] as unknown as { id: string }[],
-    )
-  }
-  if (pending.result.patch.projects) {
-    const metas = rebaseOne(
-      stripTasks(pending.mineState.projects) as unknown as { id: string }[],
-      stripTasks(pending.result.patch.projects) as unknown as { id: string }[],
-      stripTasks(current.projects) as unknown as { id: string }[],
-    ) as unknown as Omit<Project, 'tasks'>[]
-    const flat = rebaseOne(
-      flattenTasks(pending.mineState.projects) as unknown as { id: string }[],
-      flattenTasks(pending.result.patch.projects) as unknown as { id: string }[],
-      flattenTasks(current.projects) as unknown as { id: string }[],
-    ) as unknown as FlatTask[]
-    out.projects = rebuildProjects(metas, flat, current.projects)
-  }
-  return out
-}
-
-/** 競合の解決(theirs/mine)を patch に反映した最終形を返し、メディアも取り込む。 */
-export async function applyReturnMerge(
-  pending: PendingMerge,
-  resolutions: MergeConflict[],
-  current: AppState,
-): Promise<{ patch: Partial<AppState>; skipped: number }> {
-  // 差分の計算は取り込み時点で凍結してよいが、適用の土台は「今」の状態にする。
-  // 競合の選択に時間をかけている間の編集(グローバル Ctrl+Z など)を巻き戻さない。
-  const skipped: string[] = []
-  const patch = rebasePatch(pending, current, skipped)
-  // key = "<stream>:<id>"。resolution が theirs の競合だけ、相手の版で上書き/削除する。
-  const byStream = new Map<string, { id: string; item: { id: string } | null }[]>()
+export function buildReturnOps(pending: PendingMerge, resolutions: MergeConflict[]): ChangeOp[] {
+  const ops = [...pending.autoOps]
   for (const c of resolutions) {
     if (c.resolution !== 'theirs') continue
-    const [stream, id] = [c.key.slice(0, c.key.indexOf(':')), c.key.slice(c.key.indexOf(':') + 1)]
-    const list = byStream.get(stream) ?? []
-    list.push({ id, item: pending.theirsByKey.get(c.key) ?? null })
-    byStream.set(stream, list)
+    const stream = c.key.slice(0, c.key.indexOf(':'))
+    const id = c.key.slice(c.key.indexOf(':') + 1)
+    ops.push({
+      stream,
+      id,
+      item: pending.theirsByKey.get(c.key) ?? null,
+      expectedBefore: pending.expectedByKey.get(c.key) ?? compareKey(null),
+    })
   }
-  // 競合解決の適用も、rebasePatch と同じく「画面を開いてから変わっていないか」を
-  // 見る。見ないと、選択中にこのPCで編集/削除した項目を選択どおりに上書き・削除して
-  // その編集を消してしまう。
-  const frozenOf = (stream: string, id: string): unknown =>
-    (pending.mineState[stream as keyof AppState] as unknown as { id: string }[] | undefined)?.find(x => x.id === id) ?? null
-  const untouchedSince = (stream: string, id: string, now: { id: string }[]): boolean => {
-    const same = compareKey(frozenOf(stream, id)) === compareKey(now.find(x => x.id === id) ?? null)
-    if (!same) skipped.push(id)
-    return same
-  }
-  for (const [stream, changes] of byStream) {
-    if (stream === 'projects' || stream === 'tasks') continue // 下でまとめて処理
-    const nowArr = current[stream as keyof AppState] as unknown as { id: string }[]
-    const arr = [...((patch as Record<string, { id: string }[]>)[stream] ?? [])]
-    for (const { id, item } of changes) {
-      if (!untouchedSince(stream, id, nowArr)) continue
-      const i = arr.findIndex(x => x.id === id)
-      if (item) { if (i >= 0) arr[i] = item; else arr.push(item) }
-      else if (i >= 0) arr.splice(i, 1)
-    }
-    ;(patch as Record<string, unknown>)[stream] = arr
-  }
-  // projects/tasks の競合解決: プロジェクトメタとフラットタスクへ反映して組み立て直す。
-  const projChanges = byStream.get('projects') ?? []
-  const taskChanges = byStream.get('tasks') ?? []
-  if (projChanges.length || taskChanges.length) {
-    const cur = (patch.projects ?? current.projects) as Project[]
-    let metas = stripTasks(cur)
-    let flat = flattenTasks(cur)
-    const nowMetas = stripTasks(current.projects) as unknown as { id: string }[]
-    const nowFlat = flattenTasks(current.projects) as unknown as { id: string }[]
-    const frozenMetas = stripTasks(pending.mineState.projects) as unknown as { id: string }[]
-    const frozenFlat = flattenTasks(pending.mineState.projects) as unknown as { id: string }[]
-    const same = (frozenArr: { id: string }[], nowArr: { id: string }[], id: string): boolean => {
-      const ok = compareKey(frozenArr.find(x => x.id === id) ?? null) === compareKey(nowArr.find(x => x.id === id) ?? null)
-      if (!ok) skipped.push(id)
-      return ok
-    }
-    for (const { id, item } of projChanges) {
-      if (!same(frozenMetas, nowMetas, id)) continue
-      const i = metas.findIndex(x => x.id === id)
-      if (item) { if (i >= 0) metas[i] = item as Omit<Project, 'tasks'>; else metas.push(item as Omit<Project, 'tasks'>) }
-      else metas = metas.filter(x => x.id !== id)
-    }
-    for (const { id, item } of taskChanges) {
-      if (!same(frozenFlat, nowFlat, id)) continue
-      const i = flat.findIndex(x => x.id === id)
-      if (item) { if (i >= 0) flat[i] = item as FlatTask; else flat.push(item as FlatTask) }
-      else flat = flat.filter(x => x.id !== id)
-    }
-    patch.projects = rebuildProjects(metas, flat, current.projects)
-  }
-  await importMedia(pending.pack.media)
-  // base を「マージ後の状態」へ進める。ここを据え置くと、同じ handoffId の2通目の
-  // 返却(途中経過→最終版)で1回目に取り込んだ全項目が iChanged 扱いになり、
-  // 貸出側が何も触っていない項目まで競合として並び、既定(相手)のまま適用すると
-  // マージ済みの作業が旧版へ巻き戻る。
+  return ops
+}
+
+/**
+ * 【finalize・非同期】コミット済みのマージを台帳へ反映する。
+ * base を「マージ後の状態」へ進める — 据え置くと、同じ handoffId の2通目の返却
+ * (途中経過→最終版)で1回目に取り込んだ全項目が競合として並び、既定(相手)の
+ * まま適用するとマージ済みの作業が旧版へ巻き戻る。
+ */
+export async function finalizeReturnMerge(pending: PendingMerge, merged: AppState): Promise<void> {
   try {
-    const merged = { ...pending.mineState, ...patch } as AppState
     const rawBase = await loadKv(`handoff.base.${pending.pack.handoffId}`)
     const sourceMasterId = rawBase
       ? (JSON.parse(rawBase) as { sourceMasterId: string }).sourceMasterId
@@ -760,9 +644,7 @@ export async function applyReturnMerge(
     }
     await saveKv(`handoff.base.${pending.pack.handoffId}`, JSON.stringify({ sourceMasterId, items: nextBase }))
   } catch { /* base の更新は best-effort — 失敗しても今回のマージ自体は成立している */ }
-  // 台帳に返却済みを記録する。
   const index = await loadHandoffIndex()
   const e = index.find(x => x.id === pending.pack.handoffId)
   if (e) { e.returnedAt = new Date().toISOString(); await saveKv('handoff.index', JSON.stringify(index)) }
-  return { patch, skipped: new Set(skipped).size }
 }

@@ -22,6 +22,13 @@ function flush(): void {
   if (pending != null) { const v = pending; pending = null; lastSaved = v; void saveKv(KEY, v) }
 }
 
+/**
+ * デバウンス待ちの路線図保存を即座に確定させる。同期の項目単位マージが
+ * 路線図ブロブを読む/置き換える前に呼ぶ — 500ms 窓の中の編集を読み飛ばしたり、
+ * 置き換え後に古い保存が着地して巻き戻すのを防ぐ。
+ */
+export function flushMindtrainPending(): void { flush() }
+
 if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', flush)
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush() })

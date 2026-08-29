@@ -4,7 +4,7 @@ import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNot
 import { sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
-import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs } from './persistence/folderSync'
+import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs, currentEditSeq } from './persistence/folderSync'
 import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
 
@@ -954,6 +954,15 @@ const AppContext = createContext<{
    * 適用の直前にこれで読み直すこと。
    */
   getLatestState: () => AppState
+  /**
+   * 【同期コミット】最新 state を読み → patch を計算し → その場で dispatch する、
+   * await を挟めない唯一の適用入口。fn は同期関数であること(async を渡すと戻り値が
+   * Promise になり型エラーで弾かれる)。マージ/取り込みの適用は必ずここを通す —
+   * 「読む」と「dispatch」の間に await があると、その間の編集が全置換で消える。
+   * 戻り値の editSeqAfter は自身の dispatch を含む編集シーケンスで、
+   * 後続の push 成功時に clearFolderSyncDirtyIfUnchanged へ渡す。
+   */
+  commitSync: <T>(fn: (now: AppState) => { patch: Partial<AppState>; result: T }) => { result: T; editSeqAfter: number }
 } | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -1177,6 +1186,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     redo: () => dispatchTracked({ type: 'REDO' }),
     syncNow: reloadFromServer,
     getLatestState: () => latest.current,
+    commitSync: <T,>(fn: (now: AppState) => { patch: Partial<AppState>; result: T }): { result: T; editSeqAfter: number } => {
+      // fn の実行〜dispatch まで同期。latest.current はレンダーで更新されるため、
+      // 呼び出しは async 継続(直前のレンダーが flush 済み)から行うこと — 実際、
+      // すべての呼び出し元は prepare の await を終えたハンドラ内にある。
+      const { patch, result } = fn(latest.current)
+      dispatchTracked({ type: 'APPLY_STATE_PATCH', payload: patch })
+      return { result, editSeqAfter: currentEditSeq() }
+    },
   }), [history, reloadFromServer, dispatchTracked])
 
   if (!hydrated) {

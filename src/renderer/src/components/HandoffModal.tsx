@@ -6,11 +6,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { X, Package, Upload, Download, CornerUpLeft } from 'lucide-react'
 import { useApp } from '../store'
 import {
-  emptySelection, buildPackItems, packItemCount, exportHandoff, parsePack, receiveHandoff,
-  exportReturn, computeReturnMerge, applyReturnMerge,
+  emptySelection, buildPackItems, packItemCount, exportHandoff, parsePack,
+  prepareReceive, buildReceiveCommit, finalizeReceive,
+  exportReturn, computeReturnMerge, buildReturnOps, finalizeReturnMerge,
   loadHandoffIndex, loadRecvIndex,
   type HandoffSelection, type HandoffIndexEntry, type RecvIndexEntry, type PendingMerge, type MergeConflict,
 } from '../persistence/handoff'
+import { buildPatchFromOps } from '../persistence/merge'
+import type { AppState } from '../store'
 
 interface Props {
   open: boolean
@@ -44,7 +47,7 @@ const CONFLICT_KIND_LABEL: Record<MergeConflict['kind'], string> = {
 }
 
 export function HandoffModal({ open, onClose }: Props) {
-  const { state, dispatch, getLatestState } = useApp()
+  const { state, commitSync } = useApp()
   const active = state.activeMasterProjectId
   const [sel, setSel] = useState<HandoffSelection>(emptySelection)
   const [name, setName] = useState('')
@@ -129,18 +132,21 @@ export function HandoffModal({ open, onClose }: Props) {
       if (pack.kind === 'return') {
         // 返却 → 3方向マージ。貸出記録(base)が無いマシンでは受領として取り込む道を案内。
         try {
-          const p = await computeReturnMerge(state, pack)
-          if (p.result.conflicts.length === 0) {
-            // 土台は「今」の状態(ここまでの await 中に入った編集を巻き戻さない)。
-            const { patch, skipped } = await applyReturnMerge(p, [], getLatestState())
-            dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
-            const a = p.result.applied
+          const p = await computeReturnMerge(state, pack) // prepare(メディア取り込み込み)
+          if (p.conflicts.length === 0) {
+            // 【同期コミット】最新 state への検証と dispatch を1ブロックで。
+            const { result } = commitSync(now => {
+              const o = buildPatchFromOps(now, buildReturnOps(p, []))
+              return { patch: o.patch, result: { o, merged: { ...now, ...o.patch } as AppState } }
+            })
+            await finalizeReturnMerge(p, result.merged)
+            const a = result.o.applied
             setLent(await loadHandoffIndex())
-            setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted})。Ctrl+Z で丸ごと取り消せます${skipped > 0 ? `
-この画面を開いている間に変更された ${skipped} 件は、変更を失わないよう適用を見送りました` : ''}`)
+            setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted})。Ctrl+Z で丸ごと取り消せます${result.o.skipped.length > 0 ? `
+この画面を開いている間に変更された ${result.o.skipped.length} 件は、変更を失わないよう適用を見送りました` : ''}`)
           } else {
             setPending(p)
-            setResolutions(p.result.conflicts.map(c => ({ ...c })))
+            setResolutions(p.conflicts.map(c => ({ ...c })))
           }
           return
         } catch (e) {
@@ -148,9 +154,16 @@ export function HandoffModal({ open, onClose }: Props) {
           return
         }
       }
-      // 受領: 専用の新プロジェクトとして追加
-      const { patch, master } = await receiveHandoff(getLatestState(), pack, getLatestState)
-      dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
+      // 受領: 専用の新プロジェクトとして追加。
+      // prepare(台帳読み+メディア取り込み) → 同期コミット(重複チェック・リマップは
+      // 最新 state に対して行う) → 台帳の永続化。
+      const prep = await prepareReceive(pack)
+      const { result: recvResult } = commitSync(now => {
+        const r = buildReceiveCommit(now, pack, prep.recv)
+        return { patch: r.patch, result: r.result }
+      })
+      const master = recvResult.master
+      await finalizeReceive(recvResult.ledger)
       setReceived(await loadRecvIndex())
       const omitted = pack.mediaOmitted?.length ? `(動画など ${pack.mediaOmitted.length} 件は同梱されていません)` : ''
       setNotice(`「${master.name}」として取り込みました${omitted}。作業後はこの画面から返却ファイルを書き出せます`)
@@ -166,13 +179,17 @@ export function HandoffModal({ open, onClose }: Props) {
     if (!pending) return
     setBusy('マージ中…')
     try {
-      // 適用の土台は「今」の状態(競合の選択中に進んだ編集を巻き戻さない)。
-      const { patch, skipped } = await applyReturnMerge(pending, resolutions, getLatestState())
-      dispatch({ type: 'APPLY_STATE_PATCH', payload: patch })
-      const a = pending.result.applied
+      // 【同期コミット】自動適用ぶん+競合の選択を1つのオペ集合にして、
+      // 最新 state への検証と dispatch を await を挟まず行う。
+      const { result } = commitSync(now => {
+        const o = buildPatchFromOps(now, buildReturnOps(pending, resolutions))
+        return { patch: o.patch, result: { o, merged: { ...now, ...o.patch } as AppState } }
+      })
+      await finalizeReturnMerge(pending, result.merged)
+      const a = result.o.applied
       setLent(await loadHandoffIndex())
-      setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted} + 競合 ${resolutions.length} 件を解決)。Ctrl+Z で丸ごと取り消せます${skipped > 0 ? `
-この画面を開いている間に変更された ${skipped} 件は、変更を失わないよう適用を見送りました` : ''}`)
+      setNotice(`返却を取り込みました(更新 ${a.updated} / 追加 ${a.added} / 削除 ${a.deleted} + 競合 ${resolutions.length} 件を解決)。Ctrl+Z で丸ごと取り消せます${result.o.skipped.length > 0 ? `
+この画面を開いている間に変更された ${result.o.skipped.length} 件は、変更を失わないよう適用を見送りました` : ''}`)
       setPending(null)
     } catch (e) {
       setNotice(String(e instanceof Error ? e.message : e))

@@ -13,13 +13,14 @@
 // できないため対象外 — このPCの版が維持される。
 import type { AppState } from '../store'
 import type { Project } from '../types'
-import { parseDbBytes, saveState, saveKv, loadKv } from './db'
-import { syncApi, clearFolderSyncDirty, markFolderSyncEdit } from './folderSync'
+import { parseDbBytes, saveKv, loadKv } from './db'
+import { syncApi, clearFolderSyncDirtyIfUnchanged, settleLocalWrites } from './folderSync'
+import { flushMindtrainPending } from '../mindtrain/persist'
 import {
-  stableStringify, compareKey, classifyStream, detectOrderChange, applyOrder, applyChanges,
-  flattenTasks, stripTasks, rebuildProjects, streamLabel,
+  stableStringify, compareKey, classifyStream, detectOrderChange, streamLabel,
+  flattenTasks, stripTasks,
   MERGE_STREAMS, PROJECTS_STREAM, TASKS_STREAM,
-  type FlatTask, type MergeStreamDef,
+  type MergeStreamDef, type ChangeOp, type OrderOp,
 } from './merge'
 
 // ── 差分行 ──
@@ -50,8 +51,10 @@ export type SyncMergePlan =
       // フォルダ側の app_kv(受け渡し台帳など)。マージ結果を push する際に
       // 取りこぼさないよう、こちらに無いキーだけ復元してから送る。
       theirsKv: Record<string, string>
-      // 並び順だけが違うコレクションの、相手側の id 並び(採用時に使う)。
+      // 並び順だけが違うコレクションの、相手側の id 並び(採用時に使う)と、
+      // 判断時点のこのPC側の並び(コミット時の検証に使う)。
       theirsOrder: Record<string, string[]>
+      mineOrder: Record<string, string[]>
     }
   | { ok: false; reason: 'no-base' | 'inconsistent' | 'error'; message: string }
 
@@ -112,7 +115,7 @@ const KIND_JA: Record<string, string> = {
 function rowsForStream(
   def: MergeStreamDef,
   baseArr: Row[], mineArr: Row[], theirsArr: Row[],
-  out: { rows: SyncMergeRow[]; mineByKey: Map<string, { id: string } | null>; theirsByKey: Map<string, { id: string } | null>; theirsOrder: Record<string, string[]> },
+  out: { rows: SyncMergeRow[]; mineByKey: Map<string, { id: string } | null>; theirsByKey: Map<string, { id: string } | null>; theirsOrder: Record<string, string[]>; mineOrder: Record<string, string[]> },
 ): void {
   for (const e of classifyStream(def, baseArr, mineArr, theirsArr)) {
     const key = `${def.key}:${e.id}`
@@ -142,6 +145,7 @@ function rowsForStream(
     resolution: o.side === 'both' ? 'mine' : 'theirs',
   })
   out.theirsOrder[def.key] = o.theirsIds
+  out.mineOrder[def.key] = mineArr.map(x => x.id)
 }
 
 /** 競合中に呼ぶ: base とフォルダ側 DB を読み、項目単位の差分プランを作る。 */
@@ -172,6 +176,7 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
       mineByKey: new Map<string, { id: string } | null>(),
       theirsByKey: new Map<string, { id: string } | null>(),
       theirsOrder: {} as Record<string, string[]>,
+      mineOrder: {} as Record<string, string[]>,
     }
     const plan_theirsKv = theirsParsed.kv
     const pick = (st: AppState, key: string): Row[] => (st[key as keyof AppState] ?? []) as unknown as Row[]
@@ -196,6 +201,8 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
 
     // 路線図(mindtrain)は app_kv の単一ブロブで項目分解できないが、黙って
     // このPCの版を残すと相手の路線図編集が消える。ブロブ全体を1行として出す。
+    // 読む前にデバウンス待ちの保存を確定させる(500ms 窓の編集を読み飛ばさない)。
+    flushMindtrainPending()
     const myMindtrain = await loadKv('mindtrain')
     const theirMindtrain = plan_theirsKv['mindtrain']
     if ((theirMindtrain ?? null) !== (myMindtrain ?? null)) {
@@ -214,7 +221,7 @@ export async function prepareSyncMerge(state: AppState): Promise<SyncMergePlan> 
     // 表示順: 要選択(both) → 相手の変更 → 自分の変更
     const order = { both: 0, theirs: 1, mine: 2 }
     out.rows.sort((a, b2) => order[a.side] - order[b2.side] || a.typeLabel.localeCompare(b2.typeLabel))
-    return { ok: true, folderGen: folder.gen, deviceName: folder.deviceName || '相手のマシン', rows: out.rows, mineByKey: out.mineByKey, theirsByKey: out.theirsByKey, mineState: state, theirsKv: theirsParsed.kv, theirsOrder: out.theirsOrder }
+    return { ok: true, folderGen: folder.gen, deviceName: folder.deviceName || '相手のマシン', rows: out.rows, mineByKey: out.mineByKey, theirsByKey: out.theirsByKey, mineState: state, theirsKv: theirsParsed.kv, theirsOrder: out.theirsOrder, mineOrder: out.mineOrder }
   } catch (e) {
     return { ok: false, reason: 'error', message: e instanceof Error ? e.message : '差分の計算に失敗しました' }
   }
@@ -264,99 +271,66 @@ async function loadHandoffKeys(): Promise<Record<string, string | undefined>> {
 }
 
 /**
- * 選択を反映したマージ結果を作り、保存してフォルダへ新世代として push する。
- * 戻り値の patch を APPLY_STATE_PATCH で dispatch すると画面にも反映される。
- *
- * `current` は**適用ボタンを押した時点**の状態を渡すこと。差分の計算はモーダルを
- * 開いた時点のスナップショット(plan.mineState)で凍結してよいが、適用の土台まで
- * 凍結すると、モーダル表示中に進んだ編集(グローバル Ctrl+Z、LAN の focus-sync に
- * よる再 hydrate 等)がディスクと push 先で巻き戻る。
+ * 【commit 前・純粋】行の選択を ChangeOp / OrderOp に変換する。
+ * expectedBefore には判断の根拠になった「モーダルを開いた時点のこのPC側の値」を
+ * 入れる — コミット時に現在値と食い違えば、その項目は表示後に編集されたので
+ * 適用が自動で見送られる(buildPatchFromOps 側の唯一の検査に集約)。
  */
-export async function applySyncMerge(
+export function buildSyncCommit(
   plan: Extract<SyncMergePlan, { ok: true }>,
   rows: SyncMergeRow[],
-  current: AppState,
-): Promise<{ ok: true; patch: Partial<AppState>; skipped: number; needsReload: boolean } | { ok: false; message: string; patch?: Partial<AppState> }> {
+): { ops: ChangeOp[]; orderOps: OrderOp[]; takeMindtrain: boolean } {
+  const ops: ChangeOp[] = []
+  const orderOps: OrderOp[] = []
+  let takeMindtrain = false
+  for (const r of rows) {
+    if (r.resolution !== 'theirs') continue
+    if (r.stream === 'kv:mindtrain') { takeMindtrain = true; continue }
+    if (r.stream.startsWith('order:')) {
+      const stream = r.stream.slice('order:'.length)
+      orderOps.push({ stream, theirsIds: plan.theirsOrder[stream] ?? [], expectedIds: plan.mineOrder[stream] ?? [] })
+      continue
+    }
+    const id = r.key.slice(r.key.indexOf(':') + 1)
+    ops.push({
+      stream: r.stream,
+      id,
+      item: plan.theirsByKey.get(r.key) ?? null,
+      expectedBefore: compareKey(plan.mineByKey.get(r.key) ?? null),
+    })
+  }
+  return { ops, orderOps, takeMindtrain }
+}
+
+/**
+ * 【commit 後・非同期】コミット済みのマージを永続化してフォルダへ送る。
+ * 順序: 路線図kv(採用時) → 相手側台帳の復元 → 未確定保存の確定 → 相手側スナップ
+ * ショットの退避 → push → dirty解除(コミット以降に編集が無い場合のみ)。
+ * コミットは既に済んでいるので、ここで失敗しても「マージはこのPCに残り dirty の
+ * まま」という一貫した状態に落ちる(ディスクとメモリの乖離クラスは存在しない)。
+ */
+export async function finalizeSyncMerge(
+  plan: Extract<SyncMergePlan, { ok: true }>,
+  editSeqAfterCommit: number,
+  takeMindtrain: boolean,
+): Promise<{ ok: true } | { ok: false; message: string }> {
   const api = syncApi()
   if (!api) return { ok: false, message: 'デスクトップ版でのみ利用できます' }
 
-  // resolution==='theirs' の行だけ、相手側の値で 上書き/追加/削除 する。
-  const byStream = new Map<string, { id: string; item: { id: string } | null }[]>()
-  const reorder = new Set<string>() // 相手の並び順を採用するコレクション
-  for (const r of rows) {
-    if (r.resolution !== 'theirs') continue
-    if (r.stream.startsWith('order:')) { reorder.add(r.stream.slice('order:'.length)); continue }
-    if (r.stream.startsWith('kv:')) continue // app_kv は上で直接処理済み
-    const list = byStream.get(r.stream) ?? []
-    list.push({ id: r.key.slice(r.key.indexOf(':') + 1), item: plan.theirsByKey.get(r.key) ?? null })
-    byStream.set(r.stream, list)
-  }
-  // 相手の並びに寄せる。相手に無い id(こちらだけの新規)は現在の相対順で末尾に残す。
-  const ordered = (stream: string, arr: { id: string }[]): { id: string }[] =>
-    reorder.has(stream) ? applyOrder(arr, plan.theirsOrder[stream] ?? []) : arr
-
-  const patch: Partial<AppState> = {}
-  // 路線図は AppState 外なので、採用されたら app_kv を直接置き換える。
-  const takeMindtrain = rows.some(r => r.stream === 'kv:mindtrain' && r.resolution === 'theirs')
   if (takeMindtrain) {
-    const v = plan.theirsKv['mindtrain']
-    try { await saveKv('mindtrain', v ?? null) } catch { /* 失敗しても他のマージは成立させる */ }
-  }
-  // モーダルを開いてから今までに、その項目自体がこのPCで変わっていないか。
-  // 変わっているのに差分表示時の決定(特に「相手が削除」)をそのまま当てると、
-  // 選択中に入れた編集を無言で消してしまう。変わった項目は適用を見送る。
-  const changedSinceOpen: string[] = []
-  const stillSame = (stream: string, id: string, arr: { id: string }[]): boolean => {
-    const frozen = plan.mineByKey.get(`${stream}:${id}`) ?? null
-    const now = arr.find(x => x.id === id) ?? null
-    if (compareKey(frozen) === compareKey(now)) return true
-    changedSinceOpen.push(id)
-    return false
-  }
-  const applyTo = applyChanges
-  // 土台は「適用時点」の状態。相手側を採用した行だけを重ねるので、モーダル表示中に
-  // 進んだ他の変更はそのまま生き残る。
-  for (const [stream, changes] of byStream) {
-    if (stream === 'projects' || stream === 'tasks') continue
-    const arr = current[stream as keyof AppState] as unknown as { id: string }[]
-    ;(patch as Record<string, unknown>)[stream] = ordered(stream, applyTo(arr, changes.filter(c => stillSame(stream, c.id, arr))))
-  }
-  // 並び順だけ採用するコレクション(項目の差分は無い)も反映する。
-  for (const stream of reorder) {
-    if (stream === 'projects' || stream === 'tasks') continue
-    if ((patch as Record<string, unknown>)[stream]) continue
-    ;(patch as Record<string, unknown>)[stream] = ordered(stream, [...(current[stream as keyof AppState] as unknown as { id: string }[])])
-  }
-  const projChanges = byStream.get('projects') ?? []
-  const taskChanges = byStream.get('tasks') ?? []
-  if (projChanges.length || taskChanges.length || reorder.has('projects') || reorder.has('tasks')) {
-    const curMetas = stripTasks(current.projects) as unknown as { id: string }[]
-    const curFlat = flattenTasks(current.projects) as unknown as { id: string }[]
-    const metas = ordered('projects', applyTo(curMetas, projChanges.filter(c => stillSame('projects', c.id, curMetas)))) as unknown as Omit<Project, 'tasks'>[]
-    const flat = ordered('tasks', applyTo(curFlat, taskChanges.filter(c => stillSame('tasks', c.id, curFlat)))) as unknown as FlatTask[]
-    // 相手の並びを採用した場合、flat は既にその順に並んでいるので再ソートさせない。
-    patch.projects = rebuildProjects(metas, flat, current.projects, reorder.has('tasks'))
+    // 採用=このPCの版を捨てる選択。書き換え前に pending を確定させ、
+    // 置き換え後に古い保存が着地して巻き戻るのを防ぐ。
+    flushMindtrainPending()
+    try { await saveKv('mindtrain', plan.theirsKv['mindtrain'] ?? null) } catch { /* 失敗しても他のマージは成立させる */ }
   }
 
-  // アクティブなプロジェクトが相手側の削除で消えた場合、存在しない id が残ると
-  // 画面が空に見える。生き残っているプロジェクトへ寄せる。
-  if (patch.masterProjects) {
-    const activeId = patch.activeMasterProjectId ?? current.activeMasterProjectId
-    if (!patch.masterProjects.some(p => p.id === activeId)) {
-      patch.activeMasterProjectId = patch.masterProjects[0]?.id ?? ''
-    }
-  }
-
-  const merged: AppState = { ...current, ...patch }
   // 受け渡しの台帳(app_kv の handoff.*)は AppState の外にあるため、マージ結果を
-  // そのまま push すると相手側の台帳が消える。こちらに無いキーだけ先に復元する
+  // そのまま push すると相手側の台帳が消える。統合してから送る
   // (貸出記録が消えると、その返却ファイルを取り込めなくなる)。
   try {
     const mine = await loadHandoffKeys()
     for (const [k, v] of Object.entries(plan.theirsKv)) {
-      if (!k.startsWith('handoff.')) continue // mindtrain 等の単一ブロブはマージ不能なのでこのPCの版を維持
-      // 一覧(index)は配列なので「こちらに無ければ入れる」では足りない。両方が
-      // 別々の貸出記録を持っていると相手側の記録が push で消えるため、id で統合する。
+      if (!k.startsWith('handoff.')) continue
       if (k === 'handoff.index' || k === 'handoff.recv.index') {
         await saveKv(k, mergeLedger(mine[k], v, k === 'handoff.index' ? 'id' : 'handoffId'))
         continue
@@ -364,38 +338,29 @@ export async function applySyncMerge(
       if (mine[k] === undefined) await saveKv(k, v)
     }
   } catch { /* 台帳の復元は best-effort — 失敗してもマージ自体は成立する */ }
-  // 先に保存してから push(push はディスク上の DB ファイルを読むため)。
-  try {
-    await saveState(merged)
-  } catch (e) {
-    return { ok: false, message: `マージ結果の保存に失敗しました: ${e instanceof Error ? e.message : e}` }
+
+  // push はディスク上の DB を読む。コミット済みの state を確定させてから送る。
+  if (!(await settleLocalWrites())) {
+    return { ok: false, message: '保存に失敗したため送信を見送りました。マージ結果はこのPCに残っています' }
   }
   // 相手側スナップショットを退避してから上書きする。項目単位で「自分」を選んだ行の
   // 相手の値は、この push で唯一の保管場所だったフォルダ側DBから消えるため、
   // 退避に失敗したら押さない(押すと復元不能に消える)。
   const backedUp = await api.backupConflict('remote').catch(() => null)
   if (!backedUp) {
-    markFolderSyncEdit()
-    return { ok: false, patch, message: 'バックアップを作れなかったため送信を中止しました(ディスクの空き容量をご確認ください)。マージ結果はこのPCに保存済みです' }
+    return { ok: false, message: 'バックアップを作れなかったため送信を中止しました(ディスクの空き容量をご確認ください)。マージ結果はこのPCに保存済みです' }
   }
   const r = await api.push(plan.folderGen + 1, plan.folderGen)
   if (!r.ok) {
-    // フォルダ側がさらに進んだ等。ディスクにはマージ結果が入っているのにメモリ側は
-    // 未マージなので、(a) 呼び出し側が patch を dispatch して両者を揃えられるよう
-    // patch を返し、(b) 未 push であることを dirty として残す(落とすと次の pull で
-    // マージ結果ごと無警告に上書きされる)。
-    markFolderSyncEdit()
     return {
       ok: false,
-      patch,
       message: r.error === 'changed'
         ? '同期フォルダ側が更新されました。マージ結果はこのPCに保存済みです — もう一度開き直して送信してください'
         : `送信に失敗しました: ${r.error ?? ''}(マージ結果はこのPCに保存済みです)`,
     }
   }
-  // dirty は必ずこの入口で落とす(main の永続フラグとレンダラー側フラグを揃える)。
-  await clearFolderSyncDirty()
-  // 路線図ストアはメモリ上に別途保持されているため、app_kv を差し替えただけでは
-  // 画面に反映されず、次の保存で元に戻ってしまう。採用時はリロードが要る。
-  return { ok: true, patch, skipped: changedSinceOpen.length, needsReload: takeMindtrain }
+  // コミットの dispatch ぶんは editSeqAfterCommit に織り込み済み。それ以降に
+  // 編集があれば dirty は残り、次の同期 push が拾う。
+  await clearFolderSyncDirtyIfUnchanged(editSeqAfterCommit)
+  return { ok: true }
 }

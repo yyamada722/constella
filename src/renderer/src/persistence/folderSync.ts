@@ -134,7 +134,7 @@ export function initFolderSync(opts: {
  * まだ最新の編集が入っておらず、押したうえで dirty を落とすと「未保存の編集を
  * 同期済みと記録する」ことになり、次の pull で消える。
  */
-async function settleLocalWrites(): Promise<boolean> {
+export async function settleLocalWrites(): Promise<boolean> {
   try {
     await flushPendingSaves?.()
   } catch {
