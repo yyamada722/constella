@@ -27,6 +27,10 @@ export function fmtLocalDate(d: Date): string {
 // and rolls to next month if that day has already passed. (JS Date normalises
 // month overflow, so index 12 rolls into next January.)
 export function draftWhenToEndDate(when: DraftWhen | undefined, month?: number, year?: number): string | undefined {
+  // A month picked WITHOUT a within-month position still means "some time that
+  // month" — resolve it to the month's end instead of silently dropping the
+  // user's choice at conversion.
+  if (!when && month != null) when = 'monthEnd'
   if (!when) return undefined
   const now = new Date()
   const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate())

@@ -9,6 +9,8 @@ import { BOARD_COLOR_CLASSES, ALL_BOARD_COLORS, boardColorFor } from '../utils/b
 import { SearchInput } from '../components/SearchInput'
 import LinkedNotesField from '../components/LinkedNotesField'
 import LinkedFilesField from '../components/LinkedFilesField'
+import DoingTimeField from '../components/DoingTimeField'
+import DoingTimeChip from '../components/DoingTimeChip'
 import NotePanel from '../components/NotePanel'
 import { confirmDialog, chooseDialog } from '../components/ConfirmDialog'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
@@ -473,10 +475,14 @@ export default function ProjectsPage() {
     const subtree = selectedProject.tasks.filter(t => t.id === taskId || descIds.has(t.id))
     const idMap = new Map<string, string>()
     for (const t of subtree) idMap.set(t.id, generateId())
-    const clonedRoot: Task = { ...dragged, id: idMap.get(taskId)!, parentId: undefined }
+    // Clones drop doingSince — copying a RUNNING clock segment would backdate the
+    // copy's timer to the original's start and double-count the elapsed time
+    // (the reducer re-stamps a fresh segment for in-progress clones). The settled
+    // doingMs is content like any other field and is copied as-is.
+    const clonedRoot: Task = { ...dragged, id: idMap.get(taskId)!, parentId: undefined, doingSince: undefined }
     const clonedRest: Task[] = subtree
       .filter(t => t.id !== taskId)
-      .map(t => ({ ...t, id: idMap.get(t.id)!, parentId: t.parentId ? idMap.get(t.parentId) : undefined }))
+      .map(t => ({ ...t, id: idMap.get(t.id)!, parentId: t.parentId ? idMap.get(t.parentId) : undefined, doingSince: undefined }))
     dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: targetBoardId, tasks: [...targetBoard.tasks, clonedRoot, ...clonedRest] } })
   }
 
@@ -1167,6 +1173,7 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
             }}
           />
         </div>
+        <DoingTimeField task={task} onPatch={p => onUpdate({ ...task, ...p })} />
         <LinkedNotesField task={task} onChange={ids => onUpdate({ ...task, linkedNoteIds: ids.length > 0 ? ids : undefined })} />
         <LinkedFilesField task={task} onChange={ids => onUpdate({ ...task, fileIds: ids.length > 0 ? ids : undefined })} />
         {otherBoards.length > 0 && (
@@ -1353,6 +1360,7 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
           )}
         </p>
       )}
+      <DoingTimeChip task={task} className="text-[10px] mt-1" />
       {mode === 'tree' && hasChildren && (
         <div className="mt-2 flex items-center gap-2">
           {/* Tri-segment progress bar: emerald(done) | amber(doing) | slate(remaining todo).

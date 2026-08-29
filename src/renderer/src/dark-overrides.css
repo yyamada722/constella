@@ -203,6 +203,7 @@
 :where(.dark) .hover\:bg-teal-50:hover { background-color: rgb(4 47 46); }
 :where(.dark) .hover\:bg-white:hover { background-color: rgb(38 38 38); }
 :where(.dark) .hover\:bg-yellow-400\/40:hover { background-color: rgb(202 138 4 / 0.4); }
+:where(.dark) .hover\:bg-yellow-50:hover { background-color: rgb(66 32 6); }
 :where(.dark) .hover\:border-amber-400:hover { border-color: rgb(217 119 6); }
 :where(.dark) .hover\:border-cyan-300:hover { border-color: rgb(14 116 144); }
 :where(.dark) .hover\:border-emerald-300:hover { border-color: rgb(4 120 87); }

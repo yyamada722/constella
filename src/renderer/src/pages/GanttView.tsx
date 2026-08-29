@@ -9,6 +9,7 @@ import { holidayNameFor } from '../utils/jpHolidays'
 import { generateId } from '../utils'
 import LinkedNotesField from '../components/LinkedNotesField'
 import LinkedFilesField from '../components/LinkedFilesField'
+import DoingTimeField from '../components/DoingTimeField'
 
 const ROW_H = 30
 const LEFT_W_DEFAULT = 280
@@ -458,6 +459,18 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
   useEffect(() => {
     const rd = ZOOM_PRESETS[zoomPreset].rangeDays
     setRangeDays(rd)
+    // Selecting 標準表示 means "show me my tasks" — re-fit the range to the data
+    // (same rule as the first-load fit below) instead of parking at today-7, which
+    // would leave bars older than a week invisible after a preset round-trip.
+    if (zoomPreset === 'default') {
+      let lo: string | undefined, hi: string | undefined
+      for (const r of rows) { if (r.kind !== 'task' || !r.span) continue; lo = minIso(lo, r.span.start); hi = maxIso(hi, r.span.end) }
+      if (lo && hi) {
+        setRangeStart(addDaysIso(lo, -7))
+        setRangeDays(Math.max(60, daysBetween(addDaysIso(lo, -7), hi) + 14))
+        return
+      }
+    }
     setRangeStart(addDaysIso(isoToday(), -PRESET_LOOKBACK_DAYS))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [zoomPreset])
@@ -786,7 +799,12 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
             ) : (
               <select
                 value={editing.row.task.status}
-                onChange={e => { patchTask(editing.row, { status: e.target.value as Task['status'] }); setEditing(s => s ? { ...s, row: { ...s.row, task: { ...s.row.task, status: e.target.value as Task['status'] } } } : s) }}
+                // The reducer owns completedAt and the 進行中 clock (doingMs/
+                // doingSince) on status transitions — drop ALL of them from the
+                // local snapshot so later patches from this popover don't overwrite
+                // the reducer's bookkeeping with stale values (the reducer restores
+                // the stored values when the payload omits them).
+                onChange={e => { const v = e.target.value as Task['status']; patchTask(editing.row, { status: v }); setEditing(s => s ? { ...s, row: { ...s.row, task: { ...s.row.task, status: v, doingMs: undefined, doingSince: undefined, completedAt: undefined } } } : s) }}
                 className="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs outline-none focus:border-emerald-400"
               >
                 <option value="todo">未着手</option>
@@ -794,6 +812,15 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
                 <option value="done">完了</option>
               </select>
             )}
+          </div>
+          <div className="mb-2 px-0.5">
+            <DoingTimeField
+              task={(boards.find(b => b.id === editing.row.board.id)?.tasks.find(t => t.id === editing.row.task.id)) ?? editing.row.task}
+              // Snapshot hygiene: the local snapshot never carries clock fields
+              // (see the status onChange above) — the dispatch alone is enough,
+              // and DoingTimeField reads the live task from the store.
+              onPatch={p => patchTask(editing.row, p)}
+            />
           </div>
           {/* Parent picker — can be any task across visible boards (cross-board parenting). */}
           {(() => {
