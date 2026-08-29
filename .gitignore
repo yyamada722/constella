@@ -26,6 +26,9 @@ docs/.vitepress/cache/
 # Scratch / debug artifacts
 debug-capture.png
 test_dompurify.js
+# レビュー指摘の作業用ダンプ(gh api の生JSON / 整形メモ)。誤コミット実績あり
+cm*.json
+rv*.txt
 
 # OS
 .DS_Store
