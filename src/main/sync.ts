@@ -371,6 +371,11 @@ export function initSync(deps: SyncDeps): void {
         // undo が作る競合で項目単位マージが使えなくなる)。
         const prevBase = await readFile(basePath()).catch(() => null)
         await writeBase(p.buf)
+        // base の読み書きも await なので、その間のフォルダ切替を最後にもう一度
+        // 確認してから成功を報告する。切り替わっていたら throw して DB を巻き戻す
+        // (configure 側が新フォルダ用に設定をリセット済みなので、設定はそのまま)。
+        const s3 = await loadSettings()
+        if (!sameFolder(s3.folder, p.folder)) throw new Error('changed')
         lastPullUndo = { folder: p.folder, before, hadDb, prev: s2, prevBase }
         return { ok: true, manifest: p.manifest }
       } catch (e) {
@@ -411,12 +416,18 @@ export function initSync(deps: SyncDeps): void {
       const restore = (c: SyncSettings): SyncSettings => (sameFolder(c.folder, u.folder)
         ? { ...c, lastGen: u.prev.lastGen, lastLocalEtag: u.prev.lastLocalEtag, lastSha: u.prev.lastSha, lastSyncAt: u.prev.lastSyncAt, dirty: true }
         : c)
+      let rec: SyncSettings
       try {
-        await updateSettings(restore)
+        rec = await updateSettings(restore)
       } catch {
         // スナップショットは未破棄のまま一度だけ再試行(1回目が一過性の失敗の場合)。
-        await updateSettings(restore)
+        rec = await updateSettings(restore)
       }
+      // DB 復元の await 中にフォルダが切り替えられていたら restore は素通りして
+      // いる(mutate が設定を変えずに返す)。成功と報告すると、旧フォルダの状態を
+      // 新フォルダの設定下で競合として扱ってしまう — dbRestored 扱いに落とす
+      // (レンダラーはリロードせずメモリ状態のまま続行し、dirty を立て直す)。
+      if (!sameFolder(rec.folder, u.folder)) return { ok: false, dbRestored }
       lastPullUndo = null
       return { ok: true }
     } catch {
