@@ -116,6 +116,12 @@ contextBridge.exposeInMainWorld('api', {
       return () => { ipcRenderer.off('update:state', h) }
     },
   },
+  // リサーチのオフラインクリップ: 表示中の webview ページを MHTML として保存/読込。
+  clip: {
+    save: (wcId: number, itemId: string): Promise<{ ok: boolean; size?: number; error?: string }> => ipcRenderer.invoke('clip:save', wcId, itemId),
+    url: (itemId: string): Promise<string | null> => ipcRenderer.invoke('clip:url', itemId),
+    delete: (itemId: string): Promise<void> => ipcRenderer.invoke('clip:delete', itemId),
+  },
   localFile: {
     // `kind` (image/pdf/video/audio) pre-selects the dialog's file filter.
     pick: (kind?: string): Promise<string[] | null> => ipcRenderer.invoke('local:pick', kind),

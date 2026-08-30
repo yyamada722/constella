@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { Plus, ExternalLink, Trash2, X, BookmarkPlus, Home, Folder, FolderPlus, ChevronDown, ChevronRight, MoreHorizontal, ArrowLeft, ArrowRight, RotateCw, Loader2, Search, Archive, ArchiveRestore, Download } from 'lucide-react'
+import { Plus, ExternalLink, Trash2, X, BookmarkPlus, Home, Folder, FolderPlus, ChevronDown, ChevronRight, MoreHorizontal, ArrowLeft, ArrowRight, RotateCw, Loader2, Search, Archive, ArchiveRestore, Download, HardDriveDownload, WifiOff, Globe } from 'lucide-react'
 import { useApp } from '../store'
 import { ResearchItem, ResearchFolder } from '../types'
 import { generateId } from '../utils'
@@ -7,7 +7,7 @@ import { WebFrame, type WebFrameHandle } from './CanvasPage'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
-import { confirmDialog } from '../components/ConfirmDialog'
+import { confirmDialog, alertDialog } from '../components/ConfirmDialog'
 
 // Default landing page when no bookmark is selected.
 const HOME_URL = 'https://www.google.com'
@@ -16,6 +16,22 @@ const HOME_URL = 'https://www.google.com'
 // `javascript:` and `data:` in a bookmark would run in whatever origin the
 // webview happens to be on when the link is clicked — treat them as invalid.
 const UNSAFE_SCHEME = /^(javascript|data|vbscript):/i
+
+// オフラインクリップ (MHTML) の保存/読込 IPC — Electron 以外 (ブラウザプレビュー/
+// リモート) では null になり、クリップ UI ごと非表示になる。
+type ClipApi = {
+  save: (wcId: number, itemId: string) => Promise<{ ok: boolean; size?: number; error?: string }>
+  url: (itemId: string) => Promise<string | null>
+  delete: (itemId: string) => Promise<void>
+}
+function clipApi(): ClipApi | null {
+  return (window as unknown as { api?: { clip?: ClipApi } }).api?.clip ?? null
+}
+
+function formatClipSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  return Math.max(1, Math.round(bytes / 1024)) + ' KB'
+}
 
 // Normalize URLs for equality checks so harmless server redirects
 // (root-path trailing slash, hash fragment) don't keep showing "save current page".
@@ -130,6 +146,11 @@ export default function ResearchPage() {
   const [canGoBack, setCanGoBack] = useState(false)
   const [canGoForward, setCanGoForward] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  // オフラインクリップ表示: clipMode = トグル状態、clipUrl = 解決済み file:// URL。
+  const [clipMode, setClipMode] = useState(false)
+  const [clipUrl, setClipUrl] = useState<string | null>(null)
+  const [clipSaving, setClipSaving] = useState(false)
+  const clipSupported = !!clipApi()
 
   const selected = useMemo(() => items.find(i => i.id === selectedId) ?? null, [items, selectedId])
   const homeMode = !selected
@@ -150,14 +171,38 @@ export default function ResearchPage() {
     }
     setTagDraft('')
     setLiveUrl(null); setLiveTitle(null)
+    // クリップはブックマークごとの状態なので選択切替でリセット。オフライン時は
+    // クリップを持つブックマークを自動でクリップ表示にする（ライブは失敗するだけ）。
+    setClipUrl(null)
+    setClipMode(!!(selected?.clip && !navigator.onLine))
     // browseUrl deliberately excluded — see goHome / commitUrl for the home-mode URL flow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId])
 
+  // クリップ表示に入ったら file:// URL を解決する。ファイルが消えている場合
+  // (クリップは端末ローカル — 同期先の別マシンには存在しない) はメタデータを
+  // 掃除してライブ表示へ戻す。
+  useEffect(() => {
+    if (!clipMode || !selected?.clip) { setClipUrl(null); return }
+    let cancelled = false
+    clipApi()?.url(selected.id).then(u => {
+      if (cancelled) return
+      if (u) { setClipUrl(u); return }
+      setClipMode(false)
+      dispatch({ type: 'UPDATE_RESEARCH', payload: { ...selected, clip: undefined } })
+      alertDialog('クリップファイルがこのPCに見つかりませんでした。\nページを表示して、もう一度クリップを保存してください。')
+    })
+    return () => { cancelled = true }
+    // selected は編集のたびに新オブジェクトになるため、意図的に id とモードだけ見る。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clipMode, selectedId])
+
   // URL bar follows webview navigation — but only when the user isn't actively editing it.
   // Mirrors how Chrome/Safari behave: click a link inside the page, address bar updates to match.
   useEffect(() => {
-    if (!liveUrl) return
+    // クリップ表示中の file:// URL はアドレスバーに反映しない（ブックマークの
+    // 実 URL を保ったままにする）。
+    if (!liveUrl || /^file:/i.test(liveUrl)) return
     if (document.activeElement === urlInputRef.current) return
     setUrlDraft(liveUrl)
   }, [liveUrl])
@@ -211,6 +256,8 @@ export default function ResearchPage() {
       if (!v || v === selected.url) return
       dispatch({ type: 'UPDATE_RESEARCH', payload: { ...selected, url: v } })
       setUrlDraft(v)
+      // URL を変えたのだから新しいページをライブで見たいはず。
+      setClipMode(false)
     } else {
       // Home mode: just navigate the embedded browser, don't save anything.
       const target = v || HOME_URL
@@ -434,13 +481,44 @@ export default function ResearchPage() {
     window.open(target, '_blank', 'noopener,noreferrer')
   }
 
+  // 表示中のページをオフラインクリップ (MHTML) として保存する。webview の
+  // webContents id を main へ渡し、main 側で savePage する。
+  async function saveClip() {
+    const api = clipApi()
+    if (!selected || !api || clipSaving) return
+    const wcId = webFrameRef.current?.getWebContentsId() ?? null
+    if (wcId == null) {
+      await alertDialog('ページの読み込みが完了してから、もう一度お試しください。')
+      return
+    }
+    setClipSaving(true)
+    try {
+      const r = await api.save(wcId, selected.id)
+      if (r.ok) {
+        dispatch({ type: 'UPDATE_RESEARCH', payload: { ...selected, clip: { savedAt: new Date().toISOString(), size: r.size ?? 0 } } })
+      } else {
+        await alertDialog(`クリップを保存できませんでした。\n${r.error ?? ''}`)
+      }
+    } finally {
+      setClipSaving(false)
+    }
+  }
+
+  async function deleteClip() {
+    if (!selected?.clip) return
+    if (!(await confirmDialog('オフラインクリップを削除しますか？\n（ブックマーク自体は残ります）', { danger: true }))) return
+    await clipApi()?.delete(selected.id).catch(() => { /* file cleanup is best-effort */ })
+    setClipMode(false)
+    dispatch({ type: 'UPDATE_RESEARCH', payload: { ...selected, clip: undefined } })
+  }
+
   // Save whatever the webview is currently displaying as a new bookmark.
   // Works in both home mode (no selection) and within an existing bookmark
   // when the user has navigated away from its URL.
   function bookmarkCurrent() {
     if (!active) return
     const url = liveUrl ?? (homeMode ? browseUrl : null)
-    if (!url) return
+    if (!url || /^file:/i.test(url)) return
     const item: ResearchItem = {
       id: generateId(),
       masterProjectId: active,
@@ -458,7 +536,8 @@ export default function ResearchPage() {
   // Show the "save current page" prompt when:
   // - bookmark is selected and live URL differs from the bookmark URL (after normalization), OR
   // - in home mode and the webview has loaded *something* (so user can save it).
-  const showSavePrompt = !!(liveUrl && (
+  // クリップ表示 (file://) は「今見ているページ」ではないので保存プロンプトを出さない。
+  const showSavePrompt = !!(liveUrl && !/^file:/i.test(liveUrl) && (
     selected ? normalizeUrl(liveUrl) !== normalizeUrl(selected.url) : true
   ))
 
@@ -466,7 +545,11 @@ export default function ResearchPage() {
   // url may have been imported/migrated from a build that predates UNSAFE_SCHEME
   // (or crafted by a manual DB edit), so we defend the render path here as well.
   const rawEffectiveUrl = selected ? selected.url : browseUrl
-  const effectiveUrl = rawEffectiveUrl && UNSAFE_SCHEME.test(rawEffectiveUrl.trim()) ? 'about:blank' : rawEffectiveUrl
+  const liveEffectiveUrl = rawEffectiveUrl && UNSAFE_SCHEME.test(rawEffectiveUrl.trim()) ? 'about:blank' : rawEffectiveUrl
+  // クリップ表示中は解決済みの file:// URL を出す。解決待ちの間に about:blank を
+  // 挟むのは、オフライン時にライブ URL を一瞬でもロードしに行かないため。
+  const clipActive = !!(selected?.clip && clipMode)
+  const effectiveUrl = clipActive ? (clipUrl ?? 'about:blank') : liveEffectiveUrl
   const effectiveTitle = selected ? (selected.title || 'Web page') : 'ホーム'
 
   // Recursive sidebar folder render. Closure-captures selectedId/openFolders/etc.
@@ -682,6 +765,20 @@ export default function ResearchPage() {
               placeholder="タイトル"
               className="flex-1 min-w-0 text-sm font-semibold bg-transparent outline-none border-b border-transparent focus:border-sky-400"
             />
+            {clipSupported && (
+              <button
+                onClick={saveClip}
+                disabled={clipSaving || clipActive}
+                title={clipActive
+                  ? 'クリップ表示中は保存できません（ライブに切り替えてから）'
+                  : selected.clip
+                    ? 'クリップを更新（表示中のページで上書き保存）'
+                    : 'オフライン用に保存（表示中のページをクリップ）'}
+                className="p-1.5 rounded hover:bg-slate-100 text-slate-500 hover:text-emerald-600 disabled:opacity-30 disabled:hover:bg-transparent"
+              >
+                {clipSaving ? <Loader2 size={16} className="animate-spin" /> : <HardDriveDownload size={16} />}
+              </button>
+            )}
             <button
               onClick={openExternal}
               disabled={!selected.url}
@@ -852,7 +949,41 @@ export default function ResearchPage() {
             {homeMode ? '移動' : '開く'}
           </button>
           {isLoading && <Loader2 size={12} className="text-slate-400 animate-spin shrink-0" />}
+          {selected?.clip && (
+            <div className="flex items-center rounded overflow-hidden border border-slate-300 shrink-0">
+              <button
+                onClick={() => setClipMode(false)}
+                title="ライブ表示（インターネット上の最新ページ）"
+                className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors ${!clipMode ? 'bg-sky-500 text-white' : 'bg-white text-slate-500 hover:bg-slate-100'}`}
+              >
+                <Globe size={10} /> ライブ
+              </button>
+              <button
+                onClick={() => setClipMode(true)}
+                title={`クリップ表示（オフライン可・${new Date(selected.clip.savedAt).toLocaleString()} 保存）`}
+                className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors ${clipMode ? 'bg-emerald-500 text-white' : 'bg-white text-slate-500 hover:bg-slate-100'}`}
+              >
+                <WifiOff size={10} /> クリップ
+              </button>
+            </div>
+          )}
         </div>
+
+        {clipActive && selected?.clip && (
+          <div className="flex items-center gap-2 px-3 py-1 border-b border-slate-200 bg-emerald-50/60 text-[11px] shrink-0">
+            <WifiOff size={11} className="text-emerald-600 shrink-0" />
+            <span className="text-slate-600 flex-1 truncate">
+              保存済みクリップを表示中（{new Date(selected.clip.savedAt).toLocaleString()}・{formatClipSize(selected.clip.size)}）— オフラインでも閲覧できます
+            </span>
+            <button
+              onClick={deleteClip}
+              title="クリップを削除（ブックマークは残ります）"
+              className="shrink-0 p-1 rounded hover:bg-rose-100 text-slate-400 hover:text-rose-600 transition-colors"
+            >
+              <Trash2 size={11} />
+            </button>
+          </div>
+        )}
 
         {showSavePrompt && (
           <div className="flex items-center gap-2 px-3 py-1 border-b border-slate-200 bg-emerald-50/60 text-[11px] shrink-0">
@@ -917,7 +1048,14 @@ function BookmarkRow({ item, active, onSelect, onDelete, onDragStart, onDragEnd 
       }`}
     >
       <div className="pr-6">
-        <p className="text-sm font-medium text-slate-800 truncate">{item.title || '無題'}</p>
+        <p className="text-sm font-medium text-slate-800 truncate flex items-center gap-1">
+          <span className="truncate">{item.title || '無題'}</span>
+          {item.clip && (
+            <span title="オフラインクリップあり" className="shrink-0 inline-flex">
+              <HardDriveDownload size={10} className="text-emerald-500" />
+            </span>
+          )}
+        </p>
         <p className="text-[11px] text-slate-500 truncate">{item.url || 'URL未設定'}</p>
         {item.tags.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-1.5">

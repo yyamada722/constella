@@ -1,5 +1,6 @@
-import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, webContents } from 'electron'
 import { join, dirname, normalize, extname } from 'path'
+import { pathToFileURL } from 'url'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
 import { createServer, Server } from 'http'
 import { networkInterfaces } from 'os'
@@ -275,6 +276,51 @@ ipcMain.handle('local:open', async (_e, p: string): Promise<string> => {
 
 ipcMain.handle('local:reveal', async (_e, p: string): Promise<void> => {
   shell.showItemInFolder(p)
+})
+
+// ── リサーチのオフラインクリップ (MHTML) ──
+// The research browser can snapshot whatever its <webview> is displaying into a
+// single MHTML file (page + inlined subresources), so a bookmark stays readable
+// with no network. Files live under userData/clips/<itemId>.mhtml — local to this
+// machine (not carried by folder-sync / handoff), only metadata rides in the DB.
+const clipsDir = (): string => join(app.getPath('userData'), 'clips')
+// generateId() output is [a-z0-9] — anything else is rejected so a crafted id
+// (e.g. via an imported backup) can never traverse out of the clips folder.
+const clipPath = (itemId: string): string | null =>
+  /^[a-z0-9]{1,64}$/i.test(itemId) ? join(clipsDir(), itemId + '.mhtml') : null
+
+ipcMain.handle('clip:save', async (_e, wcId: number, itemId: string): Promise<{ ok: boolean; size?: number; error?: string }> => {
+  const p = clipPath(itemId)
+  if (!p) return { ok: false, error: '不正なIDです' }
+  const wc = webContents.fromId(wcId)
+  // Only accept a <webview> hosted by OUR window — a forged id must not let the
+  // renderer snapshot some other webContents.
+  if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' ||
+      !mainWindow || mainWindow.isDestroyed() || wc.hostWebContents !== mainWindow.webContents) {
+    return { ok: false, error: 'ページを取得できません' }
+  }
+  try {
+    await mkdir(clipsDir(), { recursive: true })
+    await wc.savePage(p, 'MHTML')
+    const s = await stat(p)
+    return { ok: true, size: s.size }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+// file:// URL for loading the clip back into the webview (null if missing —
+// e.g. the DB was synced to another machine where the file doesn't exist).
+ipcMain.handle('clip:url', async (_e, itemId: string): Promise<string | null> => {
+  const p = clipPath(itemId)
+  if (!p) return null
+  try { return (await stat(p)).isFile() ? pathToFileURL(p).href : null } catch { return null }
+})
+
+ipcMain.handle('clip:delete', async (_e, itemId: string): Promise<void> => {
+  const p = clipPath(itemId)
+  if (!p) return
+  try { await unlink(p) } catch { /* already gone */ }
 })
 
 // ── 計画の PDF 書き出し ──
