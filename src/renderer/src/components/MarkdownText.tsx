@@ -382,6 +382,18 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
       return
     }
 
+    // Shift+Enter: Markdown の強制改行。素の Enter 1 回はプレビューで改行に
+    // ならない（段落内の折り返し扱い）ので、行末にバックスラッシュを置いてから
+    // 改行する。IME の変換確定 Enter には反応しない。
+    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return
+      e.preventDefault()
+      e.stopPropagation()
+      const insert = '\\\n'
+      applyEdit(value.slice(0, s) + insert + value.slice(en), s + insert.length)
+      return
+    }
+
     if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const lineStart = value.lastIndexOf('\n', s - 1) + 1
       const m = lineMarker(value.slice(lineStart, s))

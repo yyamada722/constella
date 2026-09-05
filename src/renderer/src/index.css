@@ -161,3 +161,10 @@ body {
 .dark .slideshow-slide del { color: #94a3b8; }
 .dark .slideshow-slide code { background: rgba(100,116,139,0.16); }
 .dark .slideshow-slide pre { background: rgba(100,116,139,0.12); }
+
+/* キャンバス: ヘッダー非表示メディアカードの掴みストリップ。カードにホバー
+   するか選択中/名前編集中（.canvas-card-strip-on）のときだけ現れる。 */
+.canvas-card-strip { opacity: 0; transition: opacity 120ms ease; }
+.canvas-card-strip.canvas-card-strip-on,
+.canvas-card-strip:hover,
+.canvas-card:hover > .canvas-card-strip { opacity: 1; }

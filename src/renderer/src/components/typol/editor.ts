@@ -203,6 +203,15 @@ export class Editor {
           return;
         }
       }
+      // Shift+Enter: Markdown の強制改行（行末に "\" を置いて改行）。素の Enter
+      // 1 回は段落内の折り返し扱いでプレビューに改行が出ないため。
+      if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const { start, end } = this.getSel();
+        this.replaceRange(start, end, "\\\n", start + 2);
+        return;
+      }
       if (e.key === "Tab") {
         e.preventDefault();
         const { start, end } = this.getSel();

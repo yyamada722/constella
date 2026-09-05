@@ -106,6 +106,8 @@ export type Action =
   | { type: 'RESIZE_CANVAS_CARD'; payload: { id: string; width: number; height: number } }
   | { type: 'BRING_CARD_FRONT'; payload: string[] }
   | { type: 'SEND_CARD_BACK'; payload: string[] }
+  | { type: 'BRING_GROUP_FRONT'; payload: string[] }
+  | { type: 'SEND_GROUP_BACK'; payload: string[] }
   | { type: 'ADD_CANVAS_TAB'; payload: CanvasTab }
   | { type: 'UPDATE_CANVAS_TAB'; payload: CanvasTab }
   | { type: 'DELETE_CANVAS_TAB'; payload: string }
@@ -651,6 +653,15 @@ function reducer(state: AppState, action: Action): AppState {
     case 'SEND_CARD_BACK': {
       const ids = new Set(action.payload)
       return { ...state, canvasCards: [...state.canvasCards.filter(c => ids.has(c.id)), ...state.canvasCards.filter(c => !ids.has(c.id))] }
+    }
+    // Group paint order (array order == z-order among groups, same idiom as cards).
+    case 'BRING_GROUP_FRONT': {
+      const ids = new Set(action.payload)
+      return { ...state, canvasGroups: [...state.canvasGroups.filter(g => !ids.has(g.id)), ...state.canvasGroups.filter(g => ids.has(g.id))] }
+    }
+    case 'SEND_GROUP_BACK': {
+      const ids = new Set(action.payload)
+      return { ...state, canvasGroups: [...state.canvasGroups.filter(g => ids.has(g.id)), ...state.canvasGroups.filter(g => !ids.has(g.id))] }
     }
     case 'ADD_CANVAS_TAB':
       return { ...state, canvasTabs: [...state.canvasTabs, action.payload] }
