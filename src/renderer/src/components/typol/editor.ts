@@ -1,4 +1,4 @@
-import { tableKeydown } from "../../utils/mdTable";
+import { tableKeydown, inTableCell } from "../../utils/mdTable";
 
 export interface EditorRefs {
   textarea: HTMLTextAreaElement;
@@ -202,6 +202,17 @@ export class Editor {
           this.applyValue(r.value, r.selStart, r.selEnd);
           return;
         }
+      }
+      // Shift+Enter: Markdown の強制改行（行末に "\" を置いて改行）。素の Enter
+      // 1 回は段落内の折り返し扱いでプレビューに改行が出ないため。
+      if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const { start, end, value } = this.getSel();
+        // 表セル内では \ + 改行が行区切りになって表が崩れるので <br> を入れる
+        const ins = inTableCell(value, start) ? "<br>" : "\\\n";
+        this.replaceRange(start, end, ins, start + ins.length);
+        return;
       }
       if (e.key === "Tab") {
         e.preventDefault();

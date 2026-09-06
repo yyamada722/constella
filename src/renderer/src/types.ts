@@ -192,6 +192,10 @@ export interface CanvasGroup {
   width: number
   height: number
   createdAt: string
+  color?: string // optional hue key (COLOR_THEMES) — tints the frame + title chip
+  hideHeader?: boolean // hide the title chip (shown again while the group is selected)
+  opacity?: number // fill strength 0–1 (default: faint tint)
+  layer?: 'front' | 'back' // 'front' (default): outline drawn above cards; 'back': outline behind cards
 }
 
 export interface CanvasStroke {
@@ -370,6 +374,7 @@ export interface CanvasCard {
   draftMonth?: number // 'taskDraft' cards: 1-12 absolute month for draftWhen (undefined = current month, rolling) — same grammar as FlowNode.whenMonth
   draftYear?: number // 'taskDraft' cards: explicit calendar year for draftMonth (undefined = auto: this year, else next)
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
+  hideHeader?: boolean // media cards (image/video/pdf/audio/sequence): hide the title header; a hover-revealed grab strip takes its place
 
   x: number
   y: number
