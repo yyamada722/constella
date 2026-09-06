@@ -62,6 +62,31 @@ const isSepRow = (r: Row) => r.cells.length > 0 && r.cells.every(c => /^:?-+:?$/
 // 整形後のセル文字列（パディング込み）の文字数
 const cellCharLen = (cell: string, width: number) => cell.length + Math.max(0, width - dispWidth(cell))
 
+// caret がレンダリングされる表（区切り行を持つ | ブロック、フェンス外）のセル内に
+// あるか。Shift+Enter の強制改行 (\ + 改行) は表を行区切りで壊すので、呼び出し側は
+// これが true なら <br> を挿入する。
+export function inTableCell(value: string, selStart: number): boolean {
+  const lineStart = value.lastIndexOf('\n', selStart - 1) + 1
+  let lineEnd = value.indexOf('\n', selStart)
+  if (lineEnd === -1) lineEnd = value.length
+  if (!isTableLine(value.slice(lineStart, lineEnd))) return false
+  if (inFenceAt(value, lineStart)) return false
+  let blockStart = lineStart
+  while (blockStart > 0) {
+    const prevStart = value.lastIndexOf('\n', blockStart - 2) + 1
+    if (!isTableLine(value.slice(prevStart, blockStart - 1))) break
+    blockStart = prevStart
+  }
+  let blockEnd = lineEnd
+  while (blockEnd < value.length) {
+    let nextEnd = value.indexOf('\n', blockEnd + 1)
+    if (nextEnd === -1) nextEnd = value.length
+    if (!isTableLine(value.slice(blockEnd + 1, nextEnd))) break
+    blockEnd = nextEnd
+  }
+  return value.slice(blockStart, blockEnd).split('\n').map(splitRow).some(isSepRow)
+}
+
 export function tableKeydown(value: string, selStart: number, key: 'Tab' | 'ShiftTab' | 'Enter'): EditResult | null {
   const lineStart = value.lastIndexOf('\n', selStart - 1) + 1
   let lineEnd = value.indexOf('\n', selStart)

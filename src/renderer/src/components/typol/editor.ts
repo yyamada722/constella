@@ -1,4 +1,4 @@
-import { tableKeydown } from "../../utils/mdTable";
+import { tableKeydown, inTableCell } from "../../utils/mdTable";
 
 export interface EditorRefs {
   textarea: HTMLTextAreaElement;
@@ -208,8 +208,10 @@ export class Editor {
       if (e.key === "Enter" && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         e.stopPropagation();
-        const { start, end } = this.getSel();
-        this.replaceRange(start, end, "\\\n", start + 2);
+        const { start, end, value } = this.getSel();
+        // 表セル内では \ + 改行が行区切りになって表が崩れるので <br> を入れる
+        const ins = inTableCell(value, start) ? "<br>" : "\\\n";
+        this.replaceRange(start, end, ins, start + ins.length);
         return;
       }
       if (e.key === "Tab") {

@@ -622,7 +622,9 @@ const HUE_KEYS = ['slate', 'rose', 'amber', 'emerald', 'sky', 'violet', 'teal', 
 
 // Card types whose title header can be hidden (card.hideHeader) so the media
 // fills the whole card; a hover-revealed grab strip stands in for the header.
-const HEADERLESS_CARD_TYPES: readonly CanvasCard['type'][] = ['pdf', 'image', 'video', 'audio', 'sequence', 'web']
+// 'web' is excluded: its body carries a URL toolbar along the top edge that the
+// hover strip would sit on and intercept.
+const HEADERLESS_CARD_TYPES: readonly CanvasCard['type'][] = ['pdf', 'image', 'video', 'audio', 'sequence']
 const canHideHeader = (c: CanvasCard) => HEADERLESS_CARD_TYPES.includes(c.type)
 
 // Group frame tint from its hue key: light dot for the frame, dark dot for text.
@@ -2511,7 +2513,7 @@ export default function CanvasPage() {
   // Media cards: show/hide the title header. `hidden` applies to every selected
   // card that supports it (text-ish cards keep their header — it holds the editor tools).
   const setHeaderHidden = useCallback((hidden: boolean) => {
-    tabCards.filter(c => selectedIds.includes(c.id) && canHideHeader(c)).forEach(c => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...c, hideHeader: hidden || undefined } }))
+    tabCards.filter(c => selectedIds.includes(c.id) && canHideHeader(c) && !c.locked).forEach(c => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...c, hideHeader: hidden || undefined } }))
   }, [tabCards, selectedIds, dispatch])
 
   // Context-menu "名前を変更": the title input lives inside the card component,
@@ -2578,7 +2580,7 @@ export default function CanvasPage() {
     if (canvasLockedRef.current) return
     e.preventDefault(); e.stopPropagation()
     setSelectedGroupIds([group.id]); setSelectedIds([]); setSelectedLabelIds([]); setSelectedArrowId(null)
-    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 160), kind: 'group', canvasX: 0, canvasY: 0 })
+    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 420)), kind: 'group', canvasX: 0, canvasY: 0 })
   }, [])
 
   const handleCanvasContextMenu = useCallback((e: React.MouseEvent) => {
@@ -4718,8 +4720,8 @@ export default function CanvasPage() {
           <>
             <div className="fixed inset-0 z-40" onMouseDown={() => setContextMenu(null)} onContextMenu={e => { e.preventDefault(); setContextMenu(null) }} />
             <div
-              className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl py-1 text-sm w-56"
-              style={{ left: contextMenu.x, top: contextMenu.y }}
+              className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl py-1 text-sm w-56 overflow-y-auto"
+              style={{ left: contextMenu.x, top: contextMenu.y, maxHeight: `calc(100vh - ${contextMenu.y + 8}px)` }}
               onMouseDown={e => e.stopPropagation()}
             >
               {contextMenu.kind === 'canvas' ? (
@@ -4888,8 +4890,8 @@ export default function CanvasPage() {
                   {selCards.length === 1 && !selCards[0].locked && selCards[0].type !== 'shape' && (
                     <button onClick={() => { setRenameCardId(selCards[0].id); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Type size={14} /> 名前を変更</button>
                   )}
-                  {selCards.some(canHideHeader) && anyUnlocked && (() => {
-                    const media = selCards.filter(canHideHeader)
+                  {selCards.some(c => canHideHeader(c) && !c.locked) && (() => {
+                    const media = selCards.filter(c => canHideHeader(c) && !c.locked)
                     const allHidden = media.every(c => c.hideHeader)
                     return (
                       <button onClick={() => { setHeaderHidden(!allHidden); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2">
@@ -7146,6 +7148,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
       {headerless && (
         <div
           className={`canvas-card-strip absolute top-0 inset-x-0 h-7 px-2 rounded-t-xl flex items-center gap-1.5 select-none bg-white/85 border-b ${theme.border} ${isSelected || editingTitle ? 'canvas-card-strip-on' : ''}`}
+          data-export-hide="1"
           style={{ cursor: locked ? 'default' : 'grab', zIndex: 1 }}
           onMouseDown={e => onHeaderDown(e, card)}
         >
@@ -7556,7 +7559,9 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                     onPickerTab('new')
                     // Suggest a title from the memo's first line so "作成してリンク" is one click.
                     if (card.type === 'note' && !pickerSearch.trim()) {
-                      const first = (card.content ?? '').split('\n').map(l => l.replace(/^[#>\-*\s\d.]+/, '').trim()).find(Boolean)
+                      // Strip only real Markdown markers (heading / quote / list / task / ordered list) so
+                      // a leading number that is part of the text ("2026年度計画") survives.
+                      const first = (card.content ?? '').split('\n').map(l => l.replace(/^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)/, '').trim()).find(Boolean)
                       if (first) onPickerSearch(first.slice(0, 40))
                     }
                   }}

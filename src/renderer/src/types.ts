@@ -374,7 +374,7 @@ export interface CanvasCard {
   draftMonth?: number // 'taskDraft' cards: 1-12 absolute month for draftWhen (undefined = current month, rolling) — same grammar as FlowNode.whenMonth
   draftYear?: number // 'taskDraft' cards: explicit calendar year for draftMonth (undefined = auto: this year, else next)
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
-  hideHeader?: boolean // media cards (image/video/pdf/audio/sequence/web): hide the title header; a hover-revealed grab strip takes its place
+  hideHeader?: boolean // media cards (image/video/pdf/audio/sequence): hide the title header; a hover-revealed grab strip takes its place
 
   x: number
   y: number

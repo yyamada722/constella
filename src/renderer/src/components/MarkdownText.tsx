@@ -13,7 +13,7 @@ import { decodeMdHref } from '../utils/mdLink'
 import { normalizeTasks, toggleTaskAt } from '../utils/mdTask'
 import { remarkConstellaSyntax } from '../utils/mdSyntax'
 import { MD_CALLOUT, jpDate, jpDateTime, TPL_MINUTES, TPL_DAILY } from '../utils/mdSnippets'
-import { tableKeydown } from '../utils/mdTable'
+import { tableKeydown, inTableCell } from '../utils/mdTable'
 import { htmlClipboardToMarkdown, tsvToMarkdownTable } from '../utils/richPaste'
 import { useWikiLink } from './WikiLink'
 
@@ -389,7 +389,8 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
       if ((e.nativeEvent as KeyboardEvent).isComposing) return
       e.preventDefault()
       e.stopPropagation()
-      const insert = '\\\n'
+      // 表セル内では \ + 改行が行区切りになって表が崩れるので <br> を入れる
+      const insert = inTableCell(value, s) ? '<br>' : '\\\n'
       applyEdit(value.slice(0, s) + insert + value.slice(en), s + insert.length)
       return
     }
