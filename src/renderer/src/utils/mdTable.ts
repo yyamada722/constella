@@ -84,7 +84,18 @@ export function inTableCell(value: string, selStart: number): boolean {
     if (!isTableLine(value.slice(blockEnd + 1, nextEnd))) break
     blockEnd = nextEnd
   }
-  return value.slice(blockStart, blockEnd).split('\n').map(splitRow).some(isSepRow)
+  if (!value.slice(blockStart, blockEnd).split('\n').map(splitRow).some(isSepRow)) return false
+  // 区切り行 (| --- |) 自体はセルではない
+  const line = value.slice(lineStart, lineEnd)
+  if (isSepRow(splitRow(line))) return false
+  // caret は行頭の | より後ろ、かつ行末の外側 | より前にあること（\| は区切りに数えない）
+  const col = selStart - lineStart
+  const pipes: number[] = []
+  for (let i = 0; i < line.length; i++) if (line[i] === '|' && !isEscapedAt(line, i)) pipes.push(i)
+  if (pipes.length === 0 || col <= pipes[0]) return false
+  const hasTrailing = /\|\s*$/.test(line) && pipes.length > 1
+  if (hasTrailing && col > pipes[pipes.length - 1]) return false
+  return true
 }
 
 export function tableKeydown(value: string, selStart: number, key: 'Tab' | 'ShiftTab' | 'Enter'): EditResult | null {

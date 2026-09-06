@@ -2579,7 +2579,8 @@ export default function CanvasPage() {
   const handleGroupContextMenu = useCallback((e: React.MouseEvent, group: CanvasGroup) => {
     if (canvasLockedRef.current) return
     e.preventDefault(); e.stopPropagation()
-    setSelectedGroupIds([group.id]); setSelectedIds([]); setSelectedLabelIds([]); setSelectedArrowId(null)
+    // Clear every other selection kind (incl. 駅) so the menu's delete only removes the group.
+    setSelectedGroupIds([group.id]); setSelectedIds([]); setSelectedLabelIds([]); setSelectedStationIds([]); setSelectedArrowId(null)
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 420)), kind: 'group', canvasX: 0, canvasY: 0 })
   }, [])
 
@@ -7561,7 +7562,14 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
                     if (card.type === 'note' && !pickerSearch.trim()) {
                       // Strip only real Markdown markers (heading / quote / list / task / ordered list) so
                       // a leading number that is part of the text ("2026年度計画") survives.
-                      const first = (card.content ?? '').split('\n').map(l => l.replace(/^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)/, '').trim()).find(Boolean)
+                      // Markers can nest ("> - 項目"), so strip repeatedly; also drop a
+                      // trailing "\" left by a Shift+Enter hard break.
+                      const MARKER = /^\s*(?:#{1,6}\s+|>\s*|[-*+]\s+(?:\[[ xX]\]\s*)?|\d+[.)]\s+)/
+                      const first = (card.content ?? '').split('\n').map(l => {
+                        let t = l
+                        for (let i = 0; i < 6 && MARKER.test(t); i++) t = t.replace(MARKER, '')
+                        return t.replace(/\\$/, '').trim()
+                      }).find(Boolean)
                       if (first) onPickerSearch(first.slice(0, 40))
                     }
                   }}
