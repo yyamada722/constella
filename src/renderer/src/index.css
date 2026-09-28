@@ -168,3 +168,12 @@ body {
 .canvas-card-strip.canvas-card-strip-on,
 .canvas-card-strip:hover,
 .canvas-card:hover > .canvas-card-strip { opacity: 1; }
+
+/* キャンバス: 角丸オフ(card.squareCorners)。カード枠と、カード外形に合わせて
+   片側だけ角を丸めている枠部品（ヘッダー rounded-t-xl / 本文ルート rounded-b-xl /
+   状態ストライプ rounded-l-xl）、ヘッダーレス時の本文ラッパー(.canvas-card-body)
+   だけを角張らせる。本文の中身（Markdown の画像など全周 rounded-xl の要素）や
+   小さな rounded / rounded-md のボタン・チップはそのまま。 */
+.canvas-card.canvas-card-square,
+.canvas-card.canvas-card-square > .canvas-card-body,
+.canvas-card.canvas-card-square :is(.rounded-t-xl, .rounded-b-xl, .rounded-l-xl) { border-radius: 0; }

@@ -93,6 +93,11 @@ contextBridge.exposeInMainWorld('api', {
   openFile: (bytes: Uint8Array, name: string, type: string): Promise<void> => ipcRenderer.invoke('file:open-temp', bytes, name, type),
   // Local / server file references (`local:` refs): files stay on the NAS or the
   // local disk; the app stores only the path and reads bytes on demand.
+  // 画像カード: OS クリップボードへ PNG を書く / 保存ダイアログで画像ファイルへ書き出す。
+  clipboard: {
+    writeImage: (bytes: Uint8Array): Promise<boolean> => ipcRenderer.invoke('clipboard:write-image', bytes),
+  },
+  saveImage: (bytes: Uint8Array, defaultName: string): Promise<boolean> => ipcRenderer.invoke('image:save', bytes, defaultName),
   // 計画の PDF 書き出し: 印刷用 HTML → PDF 化と、保存ダイアログ経由の書き出し。
   pdf: {
     render: (

@@ -39,8 +39,8 @@ CREATE TABLE IF NOT EXISTS timeline_bands (ord INTEGER, id TEXT PRIMARY KEY, mas
 CREATE TABLE IF NOT EXISTS ai_conversations (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, messages TEXT, createdAt TEXT, updatedAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_boards (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, name TEXT, color TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_tabs (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, boardId TEXT, name TEXT, createdAt TEXT);
-CREATE TABLE IF NOT EXISTS canvas_cards (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, type TEXT, title TEXT, content TEXT, url TEXT, color TEXT, locked INTEGER, pages TEXT, crop TEXT, bookmarks TEXT, pdf TEXT, frames TEXT, stationId TEXT, refNoteId TEXT, refTaskId TEXT, refSketchId TEXT, refTabId TEXT, refPlanId TEXT, draftWhen TEXT, draftMonth REAL, draftYear REAL, shape TEXT, hideHeader INTEGER, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
-CREATE TABLE IF NOT EXISTS canvas_arrows (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, x1 REAL, y1 REAL, x2 REAL, y2 REAL, fromCardId TEXT, toCardId TEXT, label TEXT, curved INTEGER, color TEXT, width REAL, fromPort TEXT, toPort TEXT, points TEXT, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS canvas_cards (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, type TEXT, title TEXT, content TEXT, url TEXT, color TEXT, locked INTEGER, pages TEXT, crop TEXT, bookmarks TEXT, pdf TEXT, frames TEXT, stationId TEXT, refNoteId TEXT, refTaskId TEXT, refSketchId TEXT, refTabId TEXT, refPlanId TEXT, draftWhen TEXT, draftMonth REAL, draftYear REAL, shape TEXT, hideHeader INTEGER, squareCorners INTEGER, x REAL, y REAL, width REAL, height REAL, createdAt TEXT);
+CREATE TABLE IF NOT EXISTS canvas_arrows (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, x1 REAL, y1 REAL, x2 REAL, y2 REAL, fromCardId TEXT, toCardId TEXT, label TEXT, curved INTEGER, color TEXT, width REAL, fromPort TEXT, toPort TEXT, points TEXT, fromAnchor TEXT, toAnchor TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_groups (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, title TEXT, x REAL, y REAL, width REAL, height REAL, createdAt TEXT, color TEXT, hideHeader INTEGER, opacity REAL, layer TEXT);
 CREATE TABLE IF NOT EXISTS canvas_strokes (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, points TEXT, color TEXT, width REAL, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS canvas_labels (ord INTEGER, id TEXT PRIMARY KEY, tabId TEXT, text TEXT, x REAL, y REAL, fontSize REAL, color TEXT, createdAt TEXT);
@@ -253,6 +253,7 @@ function applySchemaAndMigrations(db: Database): void {
   try { db.run('ALTER TABLE research ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_cards ADD COLUMN shape TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_cards ADD COLUMN hideHeader INTEGER') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_cards ADD COLUMN squareCorners INTEGER') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_groups ADD COLUMN color TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_groups ADD COLUMN hideHeader INTEGER') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_groups ADD COLUMN opacity REAL') } catch { /* column already present */ }
@@ -260,6 +261,8 @@ function applySchemaAndMigrations(db: Database): void {
   try { db.run('ALTER TABLE canvas_arrows ADD COLUMN fromPort TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_arrows ADD COLUMN toPort TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_arrows ADD COLUMN points TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_arrows ADD COLUMN fromAnchor TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE canvas_arrows ADD COLUMN toAnchor TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE plans ADD COLUMN folder TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE plans ADD COLUMN folderId TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE master_projects ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
@@ -566,6 +569,7 @@ function readState(db: Database): AppState | null {
     draftYear: r.draftYear == null ? undefined : Number(r.draftYear),
     shape: optStr(r.shape) as CanvasCard['shape'],
     hideHeader: bool(r.hideHeader) || undefined,
+    squareCorners: bool(r.squareCorners) || undefined,
     x: num(r.x), y: num(r.y), width: num(r.width), height: num(r.height), createdAt: str(r.createdAt),
   }))
 
@@ -578,6 +582,8 @@ function readState(db: Database): AppState | null {
     fromPort: optStr(r.fromPort) as CanvasArrow['fromPort'],
     toPort: optStr(r.toPort) as CanvasArrow['toPort'],
     points: parseJson<{ x: number; y: number }[]>(r.points),
+    fromAnchor: parseJson<{ x: number; y: number }>(r.fromAnchor),
+    toAnchor: parseJson<{ x: number; y: number }>(r.toAnchor),
     createdAt: str(r.createdAt),
   }))
 
@@ -760,7 +766,7 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO canvas_tabs (ord,id,projectId,boardId,name,createdAt) VALUES (?,?,?,?,?,?)',
       state.canvasTabs.map((t, i) => [i, t.id, t.projectId, t.boardId ?? null, t.name, t.createdAt].map(B)))
 
-    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,refSketchId,refTabId,refPlanId,refFileId,draftWhen,draftMonth,draftYear,shape,hideHeader,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    insert('INSERT INTO canvas_cards (ord,id,tabId,type,title,content,url,color,locked,pages,crop,bookmarks,pdf,frames,stationId,refNoteId,refTaskId,refSketchId,refTabId,refPlanId,refFileId,draftWhen,draftMonth,draftYear,shape,hideHeader,squareCorners,x,y,width,height,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.canvasCards.map((c, i) => [i, c.id, c.tabId, c.type, c.title, c.content,
         c.url ?? null, c.color ?? null, c.locked ? 1 : 0, c.pages ? JSON.stringify(c.pages) : null,
         c.crop ? JSON.stringify(c.crop) : null,
@@ -772,13 +778,16 @@ async function doSaveState(state: AppState): Promise<void> {
         c.draftWhen ?? null, c.draftMonth ?? null, c.draftYear ?? null,
         c.shape ?? null,
         c.hideHeader ? 1 : 0,
+        c.squareCorners ? 1 : 0,
         c.x, c.y, c.width, c.height, c.createdAt].map(B)))
 
-    insert('INSERT INTO canvas_arrows (ord,id,tabId,x1,y1,x2,y2,fromCardId,toCardId,label,curved,color,width,fromPort,toPort,points,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+    insert('INSERT INTO canvas_arrows (ord,id,tabId,x1,y1,x2,y2,fromCardId,toCardId,label,curved,color,width,fromPort,toPort,points,fromAnchor,toAnchor,createdAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.canvasArrows.map((a, i) => [i, a.id, a.tabId, a.x1, a.y1, a.x2, a.y2,
         a.fromCardId ?? null, a.toCardId ?? null, a.label ?? null, a.curved ? 1 : 0,
         a.color ?? null, a.width ?? null, a.fromPort ?? null, a.toPort ?? null,
-        a.points && a.points.length ? JSON.stringify(a.points) : null, a.createdAt].map(B)))
+        a.points && a.points.length ? JSON.stringify(a.points) : null,
+        a.fromAnchor ? JSON.stringify(a.fromAnchor) : null, a.toAnchor ? JSON.stringify(a.toAnchor) : null,
+        a.createdAt].map(B)))
 
     insert('INSERT INTO canvas_groups (ord,id,tabId,title,x,y,width,height,createdAt,color,hideHeader,opacity,layer) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
       state.canvasGroups.map((g, i) => [i, g.id, g.tabId, g.title, g.x, g.y, g.width, g.height, g.createdAt, g.color ?? null, g.hideHeader ? 1 : 0, g.opacity ?? null, g.layer ?? null].map(B)))
