@@ -3599,6 +3599,12 @@ export default function CanvasPage() {
     )
   }
 
+  // Arrows drawn ABOVE the cards: pinned ones, plus the arrow whose endpoint is
+  // being re-dragged right now (its anchor is cleared for the drag, and the
+  // loose tip must stay visible while it travels over a picture).
+  const draggingArrowId = isDragging && (dragRef.current?.kind === 'arrow-p1' || dragRef.current?.kind === 'arrow-p2') ? dragRef.current?.arrow?.id : undefined
+  const overlayArrow = (a: CanvasArrow) => hasAnchor(a) || a.id === draggingArrowId
+
   // One arrow element; used by both the under-cards layer and the pinned overlay.
   const renderArrowItem = (a: CanvasArrow) => {
     const ends = resolveArrowEnds(a, cardsById)
@@ -4593,12 +4599,12 @@ export default function CanvasPage() {
                   <path d="M0,0 L5,2.5 L0,5 Z" fill="context-stroke" />
                 </marker>
               </defs>
-              {tabArrows.filter(a => !hasAnchor(a)).map(renderArrowItem)}
+              {tabArrows.filter(a => !overlayArrow(a)).map(renderArrowItem)}
             </svg>
 
             {/* Arrow labels (at midpoints). Pinned arrows' labels are rendered
                 after the cards (next to the pinned-arrow overlay). */}
-            {tabArrows.filter(a => !hasAnchor(a)).map(renderArrowLabel)}
+            {tabArrows.filter(a => !overlayArrow(a)).map(renderArrowLabel)}
 
             {tabCards.map(card => (
               <CanvasCardComponent
@@ -4634,7 +4640,7 @@ export default function CanvasPage() {
             {/* Arrow overlay (above cards): pinned arrows + the live drawing
                 preview, so a tip aimed at a spot on a picture stays visible. */}
             <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
-              {tabArrows.filter(hasAnchor).map(renderArrowItem)}
+              {tabArrows.filter(overlayArrow).map(renderArrowItem)}
               {drawArrow && (
                 <line
                   x1={drawArrow.x1} y1={drawArrow.y1} x2={drawArrow.x2} y2={drawArrow.y2}
@@ -4644,7 +4650,7 @@ export default function CanvasPage() {
                 />
               )}
             </svg>
-            {tabArrows.filter(hasAnchor).map(renderArrowLabel)}
+            {tabArrows.filter(overlayArrow).map(renderArrowLabel)}
 
             {/* Connection ports — hidden normally. Shown on EVERY card while an
                 arrow is being drawn / an endpoint re-attached (snap targets), or
