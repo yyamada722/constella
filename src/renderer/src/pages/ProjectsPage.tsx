@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip } from 'lucide-react'
+import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip, SquareTerminal } from 'lucide-react'
 import { useApp } from '../store'
 import { Task, Project, BoardColor } from '../types'
 import { generateId } from '../utils'
@@ -13,6 +13,7 @@ import DoingTimeField from '../components/DoingTimeField'
 import DoingTimeChip from '../components/DoingTimeChip'
 import NotePanel from '../components/NotePanel'
 import { confirmDialog, chooseDialog } from '../components/ConfirmDialog'
+import TaskScriptModal from '../components/TaskScriptModal'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
 import GanttView from './GanttView'
 import CalendarView from './CalendarView'
@@ -217,6 +218,8 @@ export default function ProjectsPage() {
   useEffect(() => { try { localStorage.setItem('constella.hideDone', hideDone ? '1' : '0') } catch { /* ignore */ } }, [hideDone])
   // 一括追加モーダル — プロンプトテンプレートをコピーしてAI出力（JSON or マークダウン）を貼り付け、解釈してADD_TASK連発する。
   const [bulkOpen, setBulkOpen] = useState(false)
+  // 一括編集（スクリプト）モーダル — 条件に合うタスクの状態をまとめて書き換える。
+  const [scriptOpen, setScriptOpen] = useState(false)
   const [bulkText, setBulkText] = useState('')
   const [bulkNotice, setBulkNotice] = useState<string | null>(null)
   const bulkParsed = useMemo(() => parseBulkInput(bulkText), [bulkText])
@@ -679,6 +682,13 @@ export default function ProjectsPage() {
               >
                 <ListPlus size={13} /> 一括追加
               </button>
+              <button
+                onClick={() => setScriptOpen(true)}
+                title="条件に合うタスクの状態をスクリプトでまとめて変更"
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-200 text-xs text-slate-600 hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300 transition-colors whitespace-nowrap shrink-0"
+              >
+                <SquareTerminal size={13} /> 一括編集
+              </button>
             </>
           )}
           <div className="ml-auto flex items-center rounded-md border border-slate-200 overflow-hidden shrink-0">
@@ -866,6 +876,10 @@ export default function ProjectsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {scriptOpen && (
+        <TaskScriptModal boards={boards} currentBoardId={selectedProjectId} dispatch={dispatch} onClose={() => setScriptOpen(false)} />
       )}
 
       {/* Board-delete undo toast — bottom-center, auto-hides after 6s. */}

@@ -175,6 +175,11 @@ export interface CanvasArrow {
   toCardId?: string
   fromPort?: PortDir // when set (with fromCardId), the end docks to that fixed port instead of the auto border point
   toPort?: PortDir
+  // ポイント指し: when set (with fromCardId/toCardId), the end is pinned to this
+  // normalized (0-1) position INSIDE the card — e.g. a spot on a picture — and
+  // follows the card as it moves/resizes. Takes precedence over port/border docking.
+  fromAnchor?: { x: number; y: number }
+  toAnchor?: { x: number; y: number }
   points?: { x: number; y: number }[] // bend waypoints between the two ends (canvas coords, in order)
   label?: string
   curved?: boolean
@@ -375,6 +380,7 @@ export interface CanvasCard {
   draftYear?: number // 'taskDraft' cards: explicit calendar year for draftMonth (undefined = auto: this year, else next)
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
   hideHeader?: boolean // media cards (image/video/pdf/audio/sequence): hide the title header; a hover-revealed grab strip takes its place
+  squareCorners?: boolean // draw the card with square (non-rounded) corners
 
   x: number
   y: number

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, clipboard, nativeImage } from 'electron'
 import { join, dirname, normalize, extname } from 'path'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
 import { createServer, Server } from 'http'
@@ -321,6 +321,40 @@ ipcMain.handle('pdf:save', async (_e, bytes: Uint8Array, defaultName: string): P
     title: 'PDFに書き出し',
     defaultPath: safe + '.pdf',
     filters: [{ name: 'PDF', extensions: ['pdf'] }],
+  })
+  if (r.canceled || !r.filePath) return false
+  await writeFile(r.filePath, Buffer.from(bytes))
+  shell.showItemInFolder(r.filePath)
+  return true
+})
+
+// 画像カードの「画像をコピー」: PNG バイト列を OS クリップボードへ（他アプリへ貼れる）。
+ipcMain.handle('clipboard:write-image', async (_e, bytes: Uint8Array): Promise<boolean> => {
+  const img = nativeImage.createFromBuffer(Buffer.from(bytes))
+  if (img.isEmpty()) return false
+  clipboard.writeImage(img)
+  return true
+})
+
+// 画像カードの「画像を書き出し」: 保存ダイアログ経由でファイルへ。拡張子は名前から
+// 取り、画像系の許可リスト外なら .png に丸める（file:open-temp と同じ守り）。
+ipcMain.handle('image:save', async (_e, bytes: Uint8Array, defaultName: string): Promise<boolean> => {
+  // E2E hook: ダイアログを出せない自動テストでは環境変数のパスへ直接保存する。
+  if (process.env.CONSTELLA_IMAGE_SAVE_TO) {
+    await writeFile(process.env.CONSTELLA_IMAGE_SAVE_TO, Buffer.from(bytes))
+    return true
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const raw = (defaultName || '画像').replace(/[\\/:*?"<>|]/g, '_')
+  const dot = raw.lastIndexOf('.')
+  let stem = (dot > 0 ? raw.slice(0, dot) : raw).replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 80)
+  if (!stem || RESERVED.test(stem)) stem = '画像'
+  const givenExt = dot > 0 ? raw.slice(dot).toLowerCase() : ''
+  const ext = TYPE_EXTS.image.includes(givenExt) ? givenExt : '.png'
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: '画像を書き出し',
+    defaultPath: stem + ext,
+    filters: [{ name: '画像', extensions: [ext.slice(1)] }, { name: 'すべてのファイル', extensions: ['*'] }],
   })
   if (r.canceled || !r.filePath) return false
   await writeFile(r.filePath, Buffer.from(bytes))

@@ -766,22 +766,30 @@ function portPoint(card: CanvasCard, dir: PortDir): { x: number; y: number } {
 // Resolve an arrow's visual endpoints: a port-anchored end sits at that fixed
 // port; a portless attached end follows its card (clipped to border toward the
 // other end); a free end keeps its stored coordinates.
+// A pinned (ポイント指し) end: normalized anchor → canvas point inside the card.
+function anchorPoint(card: CanvasCard, a: { x: number; y: number }) {
+  return { x: card.x + card.width * a.x, y: card.y + card.height * a.y }
+}
+const hasAnchor = (a: CanvasArrow) => !!((a.fromCardId && a.fromAnchor) || (a.toCardId && a.toAnchor))
+
 function resolveArrowEnds(arrow: CanvasArrow, byId: Map<string, CanvasCard>) {
   const fc = arrow.fromCardId ? byId.get(arrow.fromCardId) : undefined
   const tc = arrow.toCardId ? byId.get(arrow.toCardId) : undefined
+  const fPinned = !!(fc && arrow.fromAnchor)
+  const tPinned = !!(tc && arrow.toAnchor)
   let p1 = fc
-    ? (arrow.fromPort ? portPoint(fc, arrow.fromPort) : { x: fc.x + fc.width / 2, y: fc.y + fc.height / 2 })
+    ? (fPinned ? anchorPoint(fc, arrow.fromAnchor!) : arrow.fromPort ? portPoint(fc, arrow.fromPort) : { x: fc.x + fc.width / 2, y: fc.y + fc.height / 2 })
     : { x: arrow.x1, y: arrow.y1 }
   let p2 = tc
-    ? (arrow.toPort ? portPoint(tc, arrow.toPort) : { x: tc.x + tc.width / 2, y: tc.y + tc.height / 2 })
+    ? (tPinned ? anchorPoint(tc, arrow.toAnchor!) : arrow.toPort ? portPoint(tc, arrow.toPort) : { x: tc.x + tc.width / 2, y: tc.y + tc.height / 2 })
     : { x: arrow.x2, y: arrow.y2 }
   // A portless attached end aims at the NEAREST waypoint (not the far end) so
   // the border exit follows the bent path's first segment.
   const wps = arrow.points ?? []
   const t1 = wps[0] ?? p2
   const t2 = wps[wps.length - 1] ?? p1
-  if (fc && !arrow.fromPort) p1 = cardBorderPoint(fc, t1.x, t1.y)
-  if (tc && !arrow.toPort) p2 = cardBorderPoint(tc, wps.length ? t2.x : p1.x, wps.length ? t2.y : p1.y)
+  if (fc && !arrow.fromPort && !fPinned) p1 = cardBorderPoint(fc, t1.x, t1.y)
+  if (tc && !arrow.toPort && !tPinned) p2 = cardBorderPoint(tc, wps.length ? t2.x : p1.x, wps.length ? t2.y : p1.y)
   return { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
 }
 
@@ -963,6 +971,36 @@ export default function CanvasPage() {
   // port the in-progress arrow STARTED from (committed on mouseup).
   const [snapPort, setSnapPort] = useState<{ cardId: string; dir: PortDir } | null>(null)
   const drawArrowFromRef = useRef<{ cardId: string; dir: PortDir } | null>(null)
+  // ポイント指し: Alt を押しながら矢印を始める/落とすと、カードの枠やポートでは
+  // なくカード内のその一点に端を固定する。Alt の状態はキー操作とマウス移動の
+  // 両方から追う（mouseup ハンドラはイベントを受け取らないため）。
+  const altKeyRef = useRef(false)
+  // Alt was used for a canvas gesture (arrow draw / endpoint drag): swallow the
+  // matching Alt keyup, otherwise Windows takes a bare Alt release as "focus the
+  // menu bar" and the next keystroke goes to the menu instead of the canvas.
+  const altGestureRef = useRef(false)
+  const drawArrowPinFromRef = useRef<{ cardId: string; anchor: { x: number; y: number } } | null>(null)
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key !== 'Alt') return
+      altKeyRef.current = true
+      if (drawArrowRef.current || dragRef.current?.kind === 'arrow-p1' || dragRef.current?.kind === 'arrow-p2') { altGestureRef.current = true; e.preventDefault() }
+    }
+    const up = (e: KeyboardEvent) => {
+      if (e.key !== 'Alt') return
+      altKeyRef.current = false
+      if (altGestureRef.current) { altGestureRef.current = false; e.preventDefault() }
+    }
+    const blur = () => { altKeyRef.current = false; altGestureRef.current = false }
+    window.addEventListener('keydown', down, true)
+    window.addEventListener('keyup', up, true)
+    window.addEventListener('blur', blur)
+    return () => { window.removeEventListener('keydown', down, true); window.removeEventListener('keyup', up, true); window.removeEventListener('blur', blur) }
+  }, [])
+  const normAnchor = (card: CanvasCard, x: number, y: number) => ({
+    x: Math.min(1, Math.max(0, (x - card.x) / card.width)),
+    y: Math.min(1, Math.max(0, (y - card.y) / card.height)),
+  })
   // Shape card the pointer is hovering (select tool) — its ports show as
   // draggable connection sources. Cleared with a short delay so moving from
   // the card body onto a port dot (half outside the bbox) doesn't hide them.
@@ -1549,9 +1587,12 @@ export default function CanvasPage() {
     }
     if (!canvasLocked && tool === 'arrow') {
       const p = toCanvas(e.clientX, e.clientY)
-      // Start on (or near) a port → the arrow's tail docks to that fixed port.
-      const snap = nearestPort(p.x, p.y, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+      // Alt+press inside a card → the tail is pinned to that exact point
+      // (ポイント指し). Otherwise start on (or near) a port → dock to it.
+      const pinCard = e.altKey ? cardAtPoint(p.x, p.y) : undefined
+      const snap = pinCard ? null : nearestPort(p.x, p.y, PORT_SNAP_SCREEN / viewportRef.current.zoom)
       drawArrowFromRef.current = snap ? { cardId: snap.card.id, dir: snap.dir } : null
+      drawArrowPinFromRef.current = pinCard ? { cardId: pinCard.id, anchor: normAnchor(pinCard, p.x, p.y) } : null
       const sx = snap ? snap.x : p.x, sy = snap ? snap.y : p.y
       const a = { x1: sx, y1: sy, x2: sx, y2: sy }
       drawArrowRef.current = a
@@ -1694,6 +1735,9 @@ export default function CanvasPage() {
   const handleCardHeaderDown = useCallback((e: React.MouseEvent, card: CanvasCard) => {
     if (e.button !== 0) return
     e.stopPropagation()
+    // Shift+click on the header toggles membership in the multi-selection (same
+    // as Shift+click on the body) instead of starting a drag.
+    if (e.shiftKey) { selectCard(card.id, true); return }
     // Keep the multi-selection (cards + labels + 駅 + グループ枠 + 矢印) when grabbing one of its members.
     const inMulti = selectedIds.includes(card.id) && (selectedIds.length > 1 || selectedLabelIds.length > 0 || selectedStationIds.length > 0 || selectedGroupIds.length > 0 || selectedArrowIds.length > 0)
     const movingCards = inMulti ? selectedIds : [card.id]
@@ -1778,10 +1822,13 @@ export default function CanvasPage() {
       handleMouseUpRef.current()
       return
     }
+    altKeyRef.current = e.altKey
+    if (e.altKey && (drawArrowRef.current || dragRef.current?.kind === 'arrow-p1' || dragRef.current?.kind === 'arrow-p2')) altGestureRef.current = true
     if (drawArrowRef.current) {
       const p = toCanvas(e.clientX, e.clientY)
-      // Snap the live head to a nearby port (highlighted via snapPort).
-      const snap = nearestPort(p.x, p.y, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+      // Snap the live head to a nearby port (highlighted via snapPort) — unless
+      // Alt is held, which means "pin to this exact point".
+      const snap = e.altKey ? null : nearestPort(p.x, p.y, PORT_SNAP_SCREEN / viewportRef.current.zoom)
       const a = { ...drawArrowRef.current, x2: snap ? snap.x : p.x, y2: snap ? snap.y : p.y }
       drawArrowRef.current = a
       setDrawArrow(a)
@@ -1869,12 +1916,12 @@ export default function CanvasPage() {
       dispatch({ type: 'RESIZE_CANVAS_CARD', payload: { id: d.cardId, width: w, height: h } })
     } else if ((d.kind === 'arrow-p1' || d.kind === 'arrow-p2') && d.arrow) {
       const p = toCanvas(e.clientX, e.clientY)
-      const snap = nearestPort(p.x, p.y, PORT_SNAP_SCREEN / zoom)
+      const snap = e.altKey ? null : nearestPort(p.x, p.y, PORT_SNAP_SCREEN / zoom)
       const px = snap ? snap.x : p.x, py = snap ? snap.y : p.y
       setSnapPort(snap ? { cardId: snap.card.id, dir: snap.dir } : null)
       const upd = d.kind === 'arrow-p1'
-        ? { x1: px, y1: py, fromCardId: undefined, fromPort: undefined }
-        : { x2: px, y2: py, toCardId: undefined, toPort: undefined }
+        ? { x1: px, y1: py, fromCardId: undefined, fromPort: undefined, fromAnchor: undefined }
+        : { x2: px, y2: py, toCardId: undefined, toPort: undefined, toAnchor: undefined }
       dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...d.arrow, ...upd } })
     } else if (d.kind === 'arrow-way' && d.arrow && d.wayIndex != null) {
       const p = toCanvas(e.clientX, e.clientY)
@@ -1972,9 +2019,13 @@ export default function CanvasPage() {
     if (drawArrowRef.current) {
       const a = drawArrowRef.current
       const fromSnap = drawArrowFromRef.current
+      const pinFrom = drawArrowPinFromRef.current
       const isTaskLink = taskLinkDragRef.current
+      // Alt at release → the head is pinned to the exact point inside the card.
+      const pinTo = altKeyRef.current && !isTaskLink
       drawArrowRef.current = null
       drawArrowFromRef.current = null
+      drawArrowPinFromRef.current = null
       taskLinkDragRef.current = false
       setTaskLinkDrag(false)
       setDrawArrow(null)
@@ -1982,8 +2033,8 @@ export default function CanvasPage() {
       const len = Math.hypot(a.x2 - a.x1, a.y2 - a.y1)
       if (len >= 8) {
         // Port-snapped ends dock to their port; otherwise fall back to the
-        // card under the endpoint (auto border clipping).
-        const toSnap = nearestPort(a.x2, a.y2, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+        // card under the endpoint (auto border clipping, or the exact point when pinned).
+        const toSnap = pinTo ? null : nearestPort(a.x2, a.y2, PORT_SNAP_SCREEN / viewportRef.current.zoom)
         const fromCard = fromSnap ? tabCardsRef.current.find(c => c.id === fromSnap.cardId) : cardAtPoint(a.x1, a.y1)
         const toCard = toSnap ? toSnap.card : cardAtPoint(a.x2, a.y2)
         // タスク親子付けライン is not a free drawing: it exists only when the
@@ -2010,6 +2061,8 @@ export default function CanvasPage() {
           fromCardId: fromCard?.id, toCardId: toCard?.id,
           fromPort: fromSnap && fromCard ? fromSnap.dir : undefined,
           toPort: toSnap && toCard ? toSnap.dir : undefined,
+          ...(pinFrom && fromCard && fromCard.id === pinFrom.cardId && !isTaskLink ? { fromAnchor: pinFrom.anchor } : {}),
+          ...(pinTo && toCard ? { toAnchor: normAnchor(toCard, a.x2, a.y2) } : {}),
           ...(isTaskLink ? { color: TASK_LINK_COLOR, width: TASK_LINK_WIDTH } : {}),
           createdAt: new Date().toISOString(),
         }
@@ -2039,12 +2092,18 @@ export default function CanvasPage() {
       if (arrow) {
         const ex = d.kind === 'arrow-p1' ? arrow.x1 : arrow.x2
         const ey = d.kind === 'arrow-p1' ? arrow.y1 : arrow.y2
-        // Dropped on a port → dock there; inside a card → auto border attach.
-        const snap = nearestPort(ex, ey, PORT_SNAP_SCREEN / viewportRef.current.zoom)
+        // Dropped on a port → dock there; inside a card → auto border attach;
+        // with Alt (or when this end was already pinned and lands inside a
+        // card without a port) → pin to that exact point (ポイント指し).
+        const wasPinned = d.kind === 'arrow-p1' ? !!(d.arrow.fromCardId && d.arrow.fromAnchor) : !!(d.arrow.toCardId && d.arrow.toAnchor)
+        const alt = altKeyRef.current
+        const snap = alt ? null : nearestPort(ex, ey, PORT_SNAP_SCREEN / viewportRef.current.zoom)
         const card = snap ? snap.card : cardAtPoint(ex, ey)
+        const pin = !!card && !snap && (alt || wasPinned)
+        const anchor = pin && card ? normAnchor(card, ex, ey) : undefined
         const upd = d.kind === 'arrow-p1'
-          ? { fromCardId: card?.id, fromPort: snap && card ? snap.dir : undefined }
-          : { toCardId: card?.id, toPort: snap && card ? snap.dir : undefined }
+          ? { fromCardId: card?.id, fromPort: snap && card ? snap.dir : undefined, fromAnchor: anchor }
+          : { toCardId: card?.id, toPort: snap && card ? snap.dir : undefined, toAnchor: anchor }
         // Endpoint re-docking is geometry only — parent-child relations are
         // written EXCLUSIVELY by the タスク端子 gesture, so tidying up old
         // decorative arrows can never silently rewrite the task tree.
@@ -2385,6 +2444,12 @@ export default function CanvasPage() {
       labelClipboardRef.current = selLabels.map(l => ({ ...l }))
       groupClipboardRef.current = selGroups.map(g => ({ ...g }))
       internalCopyFreshRef.current = true
+      // 画像カード1枚だけのコピーは OS クリップボードにも画像を載せる（他アプリへ
+      // 貼れる）。アプリ内の Ctrl+V は「新鮮なカードコピー」が優先されるので、
+      // カード複製の挙動は変わらない。
+      if (sel.length === 1 && sel[0].type === 'image' && sel[0].url && selStations.length + selLabels.length + selGroups.length + selectedArrowIds.length === 0) {
+        copyCardImage(sel[0]).catch(() => { /* best-effort */ })
+      }
     }
   }, [tabCards, selectedIds, tabStations, selectedStationIds, tabRails, tabLabels, selectedLabelIds, tabGroups, selectedGroupIds, tabArrows, selectedArrowIds])
 
@@ -2515,6 +2580,29 @@ export default function CanvasPage() {
   const setHeaderHidden = useCallback((hidden: boolean) => {
     tabCards.filter(c => selectedIds.includes(c.id) && canHideHeader(c) && !c.locked).forEach(c => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...c, hideHeader: hidden || undefined } }))
   }, [tabCards, selectedIds, dispatch])
+
+  // 角丸のオン/オフ（選択中の図形以外・未ロックのカード全部に適用）。
+  const setSquareCorners = useCallback((square: boolean) => {
+    tabCards.filter(c => selectedIds.includes(c.id) && c.type !== 'shape' && !c.locked).forEach(c => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...c, squareCorners: square || undefined } }))
+  }, [tabCards, selectedIds, dispatch])
+
+  // 画像カードの高さを、現在の幅で画像（切り抜き後）の比率にぴったり合わせる。
+  // 複数枚はまとめて 1 undo ステップ。
+  const fitCardsToImage = useCallback((cards: CanvasCard[]) => {
+    const targets = cards.filter(c => c.type === 'image' && c.url && !c.locked)
+    if (targets.length === 0) return
+    Promise.all(targets.map(c => fitHeightToImage(c).catch(() => null))).then(hs => {
+      const actions: Action[] = []
+      targets.forEach((c, i) => {
+        const h = hs[i]
+        if (h == null || Math.abs(h - c.height) < 1) return
+        actions.push({ type: 'UPDATE_CANVAS_CARD', payload: { ...c, height: h } })
+      })
+      if (actions.length === 1) dispatch(actions[0])
+      else if (actions.length > 1) dispatch({ type: 'BATCH', payload: actions })
+    })
+  }, [dispatch])
+  const fitCardToImage = useCallback((card: CanvasCard) => fitCardsToImage([card]), [fitCardsToImage])
 
   // Context-menu "名前を変更": the title input lives inside the card component,
   // so we hand it a one-shot flag and it clears the flag when editing ends.
@@ -2941,9 +3029,13 @@ export default function CanvasPage() {
       const items = e.clipboardData?.items
       const imgItem = items && Array.from(items).find(i => i.kind === 'file' && i.type.startsWith('image/'))
       const hasCards = clipboardHasContent()
-      // A fresh in-app card copy wins over a stale OS-clipboard image (keeps card duplication working).
-      if (imgItem && !(internalCopyFreshRef.current && hasCards)) {
-        const file = imgItem.getAsFile()
+      // A fresh in-app card copy wins over a stale OS-clipboard image (keeps card
+      // duplication working). The image we put there ourselves (single image
+      // card Ctrl+C) counts as "ours" even after a window blur — the OS clipboard
+      // may hand it back re-encoded, so accept a modest size tolerance.
+      const file = imgItem?.getAsFile() ?? null
+      const ownImage = !!file && ownClipboardPngSize > 0 && Math.abs(file.size - ownClipboardPngSize) <= ownClipboardPngSize * 0.05
+      if (imgItem && !((internalCopyFreshRef.current || ownImage) && hasCards)) {
         if (file) {
           e.preventDefault()
           const rect = canvasRef.current?.getBoundingClientRect()
@@ -3475,6 +3567,63 @@ export default function CanvasPage() {
   )
 
   const unassignedTabs = projectTabs.filter(t => !t.boardId || !projectBoards.some(b => b.id === t.boardId))
+
+  // One arrow label; pinned arrows' labels render above the cards like their paths.
+  const renderArrowLabel = (a: CanvasArrow) => {
+    const editing = editingArrowId === a.id
+    if (!editing && !a.label) return null
+    const g = arrowGeometry(resolveArrowEnds(a, cardsById), a.curved, a.points)
+    return (
+      <div key={a.id} className="absolute" style={{ left: g.lx, top: g.ly, transform: 'translate(-50%, -50%)' }} onMouseDown={ev => ev.stopPropagation()}>
+        {editing ? (
+          <input
+            autoFocus
+            type="text"
+            value={a.label ?? ''}
+            onChange={ev => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...a, label: ev.target.value } })}
+            onBlur={() => setEditingArrowId(null)}
+            onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === 'Escape') { ev.stopPropagation(); ev.currentTarget.blur() } }}
+            placeholder="ラベル"
+            className="text-[11px] text-center bg-white border border-indigo-400 rounded px-1 outline-none shadow-sm"
+            style={{ width: `${Math.max(4, (a.label?.length ?? 0) + 2)}ch` }}
+          />
+        ) : (
+          <span
+            onDoubleClick={ev => { ev.stopPropagation(); if (canvasLocked) return; setSelectedArrowId(a.id); setEditingArrowId(a.id) }}
+            className="inline-block text-[11px] text-slate-600 bg-white/90 border border-slate-200 rounded px-1 cursor-text whitespace-nowrap shadow-sm"
+          >
+            {a.label}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  // One arrow element; used by both the under-cards layer and the pinned overlay.
+  const renderArrowItem = (a: CanvasArrow) => {
+    const ends = resolveArrowEnds(a, cardsById)
+    return (
+      <ArrowItem
+        key={a.id}
+        arrow={a}
+        ends={ends}
+        d={arrowGeometry(ends, a.curved, a.points).d}
+        selected={selectedArrowIds.includes(a.id)}
+        solo={arrowSolo && selectedArrowId === a.id}
+        interactive={tool === 'select'}
+        onSelect={additive => {
+          if (additive) { setSelectedArrowIds(prev => prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id]); return }
+          setSelectedArrowId(a.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([]); setSelectedStationIds([])
+        }}
+        onEndDown={handleArrowEndDown}
+        onWayDown={handleWayDown}
+        onWayInsert={handleWayInsert}
+        onWayRemove={handleWayRemove}
+        onEditLabel={() => { if (canvasLocked) return; setSelectedArrowId(a.id); setEditingArrowId(a.id) }}
+        onContextMenu={e => handleArrowContextMenu(e, a)}
+      />
+    )
+  }
 
   return (
     <div className="flex h-full">
@@ -4433,7 +4582,9 @@ export default function CanvasPage() {
               )
             })()}
 
-            {/* Arrow layer (behind cards) */}
+            {/* Arrow layer (behind cards). Arrows with a pinned end (ポイント指し —
+                the tip sits INSIDE a card) are drawn in a second layer above the
+                cards instead (see below), or the picture would hide the tip. */}
             <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
               <defs>
                 {/* markerUnits=strokeWidth → arrowhead scales with the line thickness;
@@ -4442,70 +4593,12 @@ export default function CanvasPage() {
                   <path d="M0,0 L5,2.5 L0,5 Z" fill="context-stroke" />
                 </marker>
               </defs>
-              {tabArrows.map(a => {
-                const ends = resolveArrowEnds(a, cardsById)
-                return (
-                  <ArrowItem
-                    key={a.id}
-                    arrow={a}
-                    ends={ends}
-                    d={arrowGeometry(ends, a.curved, a.points).d}
-                    selected={selectedArrowIds.includes(a.id)}
-                    solo={arrowSolo && selectedArrowId === a.id}
-                    interactive={tool === 'select'}
-                    onSelect={additive => {
-                      if (additive) { setSelectedArrowIds(prev => prev.includes(a.id) ? prev.filter(x => x !== a.id) : [...prev, a.id]); return }
-                      setSelectedArrowId(a.id); setSelectedIds([]); setSelectedLabelIds([]); setSelectedGroupIds([]); setSelectedStationIds([])
-                    }}
-                    onEndDown={handleArrowEndDown}
-                    onWayDown={handleWayDown}
-                    onWayInsert={handleWayInsert}
-                    onWayRemove={handleWayRemove}
-                    onEditLabel={() => { if (canvasLocked) return; setSelectedArrowId(a.id); setEditingArrowId(a.id) }}
-                    onContextMenu={e => handleArrowContextMenu(e, a)}
-                  />
-                )
-              })}
-              {drawArrow && (
-                <line
-                  x1={drawArrow.x1} y1={drawArrow.y1} x2={drawArrow.x2} y2={drawArrow.y2}
-                  stroke={taskLinkDrag ? TASK_LINK_COLOR : '#6366f1'}
-                  strokeWidth={taskLinkDrag ? TASK_LINK_WIDTH : 2}
-                  strokeDasharray="5 4" markerEnd="url(#arrowhead)"
-                />
-              )}
+              {tabArrows.filter(a => !hasAnchor(a)).map(renderArrowItem)}
             </svg>
 
-            {/* Arrow labels (at midpoints) */}
-            {tabArrows.map(a => {
-              const editing = editingArrowId === a.id
-              if (!editing && !a.label) return null
-              const g = arrowGeometry(resolveArrowEnds(a, cardsById), a.curved, a.points)
-              return (
-                <div key={a.id} className="absolute" style={{ left: g.lx, top: g.ly, transform: 'translate(-50%, -50%)' }} onMouseDown={ev => ev.stopPropagation()}>
-                  {editing ? (
-                    <input
-                      autoFocus
-                      type="text"
-                      value={a.label ?? ''}
-                      onChange={ev => dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...a, label: ev.target.value } })}
-                      onBlur={() => setEditingArrowId(null)}
-                      onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === 'Escape') { ev.stopPropagation(); ev.currentTarget.blur() } }}
-                      placeholder="ラベル"
-                      className="text-[11px] text-center bg-white border border-indigo-400 rounded px-1 outline-none shadow-sm"
-                      style={{ width: `${Math.max(4, (a.label?.length ?? 0) + 2)}ch` }}
-                    />
-                  ) : (
-                    <span
-                      onDoubleClick={ev => { ev.stopPropagation(); if (canvasLocked) return; setSelectedArrowId(a.id); setEditingArrowId(a.id) }}
-                      className="inline-block text-[11px] text-slate-600 bg-white/90 border border-slate-200 rounded px-1 cursor-text whitespace-nowrap shadow-sm"
-                    >
-                      {a.label}
-                    </span>
-                  )}
-                </div>
-              )
-            })}
+            {/* Arrow labels (at midpoints). Pinned arrows' labels are rendered
+                after the cards (next to the pinned-arrow overlay). */}
+            {tabArrows.filter(a => !hasAnchor(a)).map(renderArrowLabel)}
 
             {tabCards.map(card => (
               <CanvasCardComponent
@@ -4537,6 +4630,21 @@ export default function CanvasPage() {
                 onRenameDone={clearRename}
               />
             ))}
+
+            {/* Arrow overlay (above cards): pinned arrows + the live drawing
+                preview, so a tip aimed at a spot on a picture stays visible. */}
+            <svg className="absolute top-0 left-0 overflow-visible" style={{ width: 1, height: 1, pointerEvents: 'none' }}>
+              {tabArrows.filter(hasAnchor).map(renderArrowItem)}
+              {drawArrow && (
+                <line
+                  x1={drawArrow.x1} y1={drawArrow.y1} x2={drawArrow.x2} y2={drawArrow.y2}
+                  stroke={taskLinkDrag ? TASK_LINK_COLOR : '#6366f1'}
+                  strokeWidth={taskLinkDrag ? TASK_LINK_WIDTH : 2}
+                  strokeDasharray="5 4" markerEnd="url(#arrowhead)"
+                />
+              )}
+            </svg>
+            {tabArrows.filter(hasAnchor).map(renderArrowLabel)}
 
             {/* Connection ports — hidden normally. Shown on EVERY card while an
                 arrow is being drawn / an endpoint re-attached (snap targets), or
@@ -4792,6 +4900,15 @@ export default function CanvasPage() {
                   {selArrow && (selArrow.points?.length ?? 0) > 0 && (
                     <button onClick={() => { dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selArrow, points: undefined } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Spline size={14} /> 折れ点をすべて削除</button>
                   )}
+                  {selArrow && selArrow.toCardId && selArrow.toAnchor && (
+                    <button onClick={() => { dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selArrow, toAnchor: undefined } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><MousePointer2 size={14} /> 先端のポイント固定を解除</button>
+                  )}
+                  {selArrow && selArrow.fromCardId && selArrow.fromAnchor && (
+                    <button onClick={() => { dispatch({ type: 'UPDATE_CANVAS_ARROW', payload: { ...selArrow, fromAnchor: undefined } }); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><MousePointer2 size={14} /> 始点のポイント固定を解除</button>
+                  )}
+                  {selArrow && !(selArrow.toCardId && selArrow.toAnchor) && (
+                    <div className="px-3 py-1 text-[10px] text-slate-400">Alt を押しながら端をカード内へ落とすと、その一点を指せます</div>
+                  )}
                   <div className="h-px bg-slate-200 my-1" />
                   <button onClick={() => { setContextMenu(null); requestDeleteSelection() }} className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600 flex items-center justify-between">
                     <span className="flex items-center gap-2"><Trash2 size={14} /> 削除</span><kbd className="text-[10px] text-red-300">Del</kbd>
@@ -4898,6 +5015,34 @@ export default function CanvasPage() {
                       <button onClick={() => { setHeaderHidden(!allHidden); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2">
                         {allHidden ? <><Eye size={14} /> ヘッダーを表示</> : <><EyeOff size={14} /> ヘッダーを隠す</>}
                       </button>
+                    )
+                  })()}
+                  {selCards.some(c => c.type !== 'shape' && !c.locked) && (() => {
+                    const cards = selCards.filter(c => c.type !== 'shape' && !c.locked)
+                    const allSquare = cards.every(c => c.squareCorners)
+                    return (
+                      <button onClick={() => { setSquareCorners(!allSquare); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2">
+                        <Frame size={14} /> {allSquare ? '角丸にする' : '角丸をなくす'}
+                      </button>
+                    )
+                  })()}
+                  {selCards.length === 1 && selCards[0].type === 'image' && selCards[0].url && (
+                    <>
+                      <div className="h-px bg-slate-200 my-1" />
+                      <button onClick={() => { copyCardImage(selCards[0]); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Copy size={14} /> 画像をコピー</button>
+                      <button onClick={() => { exportCardImage(selCards[0]); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><ImageDown size={14} /> 画像を書き出し…</button>
+                    </>
+                  )}
+                  {(() => {
+                    const fitTargets = selCards.filter(c => c.type === 'image' && c.url && !c.locked)
+                    if (fitTargets.length === 0) return null
+                    return (
+                      <>
+                        {selCards.length !== 1 && <div className="h-px bg-slate-200 my-1" />}
+                        <button onClick={() => { fitCardsToImage(fitTargets); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2">
+                          <Maximize size={14} /> 画像の比率に合わせる{fitTargets.length > 1 ? `（${fitTargets.length}枚）` : ''}
+                        </button>
+                      </>
                     )
                   })()}
                   <button onClick={() => { duplicateSelection(); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center justify-between">
@@ -5087,6 +5232,22 @@ export default function CanvasPage() {
                               <button onClick={() => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...propCard, hideHeader: propCard.hideHeader ? undefined : true } })} className="w-full text-left px-2 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-white flex items-center gap-1.5">
                                 {propCard.hideHeader ? <><Eye size={12} /> ヘッダーを表示</> : <><EyeOff size={12} /> ヘッダーを隠す</>}
                               </button>
+                            )}
+                            {propCard.type !== 'shape' && !propCard.locked && (
+                              <button onClick={() => dispatch({ type: 'UPDATE_CANVAS_CARD', payload: { ...propCard, squareCorners: propCard.squareCorners ? undefined : true } })} className="w-full text-left px-2 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-white flex items-center gap-1.5">
+                                <Frame size={12} /> {propCard.squareCorners ? '角丸にする' : '角丸をなくす'}
+                              </button>
+                            )}
+                            {propCard.type === 'image' && propCard.url && (
+                              <>
+                                {!propCard.locked && (
+                                  <button onClick={() => fitCardToImage(propCard)} className="w-full text-left px-2 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-white flex items-center gap-1.5"><Maximize size={12} /> 画像の比率に合わせる</button>
+                                )}
+                                <div className="flex gap-1.5">
+                                  <button onClick={() => copyCardImage(propCard)} className="flex-1 text-left px-2 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-white flex items-center gap-1.5"><Copy size={12} /> 画像をコピー</button>
+                                  <button onClick={() => exportCardImage(propCard)} className="flex-1 text-left px-2 py-1.5 rounded border border-slate-200 text-slate-600 hover:bg-white flex items-center gap-1.5"><ImageDown size={12} /> 書き出し…</button>
+                                </div>
+                              </>
                             )}
                             <button onClick={requestDeleteSelection} className="w-full text-left px-2 py-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5"><Trash2 size={12} /> カードを削除</button>
                           </div>
@@ -5479,6 +5640,13 @@ const ArrowItem = memo(function ArrowItem({ arrow, ends, d, selected, solo, inte
         stroke={color} strokeWidth={selected ? width + 1 : width} markerEnd="url(#arrowhead)"
         style={{ pointerEvents: 'none' }}
       />
+      {/* ポイント指し marker: a small target ring where an end is pinned inside a card. */}
+      {arrow.fromCardId && arrow.fromAnchor && (
+        <circle cx={ends.x1} cy={ends.y1} r={width + 3} fill="none" stroke={color} strokeWidth={1.5} opacity={0.85} style={{ pointerEvents: 'none' }} />
+      )}
+      {arrow.toCardId && arrow.toAnchor && (
+        <circle cx={ends.x2} cy={ends.y2} r={width + 4} fill="none" stroke={color} strokeWidth={1.5} opacity={0.85} style={{ pointerEvents: 'none' }} />
+      )}
       {interactive && (
         <path
           d={d} fill="none"
@@ -5752,6 +5920,114 @@ async function openCardSource(card: CanvasCard): Promise<void> {
   } else {
     console.warn('open source: unsupported url scheme', u)
   }
+}
+
+// ── 画像カードのコピー / 書き出し / 比率フィット ──
+
+type ImageApi = {
+  clipboard?: { writeImage: (bytes: Uint8Array) => Promise<boolean> }
+  saveImage?: (bytes: Uint8Array, defaultName: string) => Promise<boolean>
+}
+const imageApi = (): ImageApi | undefined => (window as unknown as { api?: ImageApi }).api
+
+// The card's picture bytes, whatever the reference scheme (idb: / local: / http).
+async function cardImageBlob(card: CanvasCard): Promise<Blob | null> {
+  const u = card.url
+  if (!u) return null
+  try {
+    if (isMediaRef(u)) return await getMediaBlob(u)
+    if (isLocalRef(u)) return await getLocalBlob(u)
+    const r = await fetch(u)
+    return r.ok ? await r.blob() : null
+  } catch { return null }
+}
+
+function loadImageEl(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob)
+    const img = new Image()
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img) }
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')) }
+    img.src = url
+  })
+}
+
+// The picture as displayed (crop applied) rasterized to PNG. Without a crop the
+// original bytes are returned untouched when they are already PNG.
+async function cardImagePng(card: CanvasCard, blob: Blob): Promise<Blob | null> {
+  if (!card.crop && blob.type === 'image/png') return blob
+  const img = await loadImageEl(blob)
+  const nw = img.naturalWidth, nh = img.naturalHeight
+  const c = card.crop ?? { x: 0, y: 0, w: 1, h: 1 }
+  const sx = Math.round(c.x * nw), sy = Math.round(c.y * nh)
+  const sw = Math.max(1, Math.round(c.w * nw)), sh = Math.max(1, Math.round(c.h * nh))
+  const cv = document.createElement('canvas')
+  cv.width = sw; cv.height = sh
+  const ctx = cv.getContext('2d')
+  if (!ctx) return null
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh)
+  return await new Promise<Blob | null>(res => cv.toBlob(res, 'image/png'))
+}
+
+// Size of the PNG this app last wrote to the OS clipboard. The paste handler
+// uses it to tell "our own Ctrl+C image" from a picture copied in another app,
+// so an in-app card paste keeps winning even after the window lost focus.
+let ownClipboardPngSize = -1
+
+// Copy the displayed picture to the OS clipboard (Electron: native clipboard via
+// main; browser preview: Clipboard API, PNG only).
+async function copyCardImage(card: CanvasCard): Promise<boolean> {
+  const blob = await cardImageBlob(card)
+  if (!blob) return false
+  const png = await cardImagePng(card, blob)
+  if (!png) return false
+  const api = imageApi()
+  let ok: boolean
+  if (api?.clipboard) ok = await api.clipboard.writeImage(new Uint8Array(await png.arrayBuffer()))
+  else {
+    try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]); ok = true }
+    catch { ok = false }
+  }
+  if (ok) ownClipboardPngSize = png.size
+  return ok
+}
+
+// Save the picture to a file: the original bytes when uncropped (keeps JPEG/GIF/…
+// as-is), a PNG of the visible region when cropped.
+async function exportCardImage(card: CanvasCard): Promise<boolean> {
+  const blob = await cardImageBlob(card)
+  if (!blob) return false
+  const stem = cardFileName(card).replace(/\.\w{1,5}$/, '')
+  const out = card.crop ? await cardImagePng(card, blob) : blob
+  if (!out) return false
+  // Extension follows the bytes actually written: the card's stored name may
+  // carry no extension (cardFileName then guesses .png even for JPEG bytes).
+  const MIME_EXT: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp', 'image/bmp': '.bmp', 'image/svg+xml': '.svg', 'image/avif': '.avif' }
+  const ext = MIME_EXT[out.type] ?? (/\.\w{1,5}$/.exec(cardFileName(card))?.[0] ?? '.png')
+  const name = stem + ext
+  const api = imageApi()
+  if (api?.saveImage) return await api.saveImage(new Uint8Array(await out.arrayBuffer()), name)
+  const url = URL.createObjectURL(out)
+  const a = document.createElement('a')
+  a.href = url; a.download = name; a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  return true
+}
+
+// Height that makes the card body match the picture's (cropped) aspect at the
+// current width. The header/border chrome is measured from the live DOM so the
+// fit is exact whether or not the header is hidden.
+async function fitHeightToImage(card: CanvasCard): Promise<number | null> {
+  const blob = await cardImageBlob(card)
+  if (!blob) return null
+  const img = await loadImageEl(blob).catch(() => null)
+  if (!img || !img.naturalWidth || !img.naturalHeight) return null
+  const c = card.crop ?? { x: 0, y: 0, w: 1, h: 1 }
+  const aspect = (c.w * img.naturalWidth) / (c.h * img.naturalHeight)
+  const body = document.querySelector<HTMLElement>(`[data-card-id="${card.id}"] .canvas-card-body`)
+  const chrome = body ? card.height - body.offsetHeight : (card.hideHeader ? 2 : 36)
+  const bodyW = body ? body.offsetWidth : card.width - 2
+  return Math.max(60, Math.round(chrome + bodyW / aspect))
 }
 
 export type WebFrameHandle = {
@@ -6051,6 +6327,13 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
 }) {
   const [dragOver, setDragOver] = useState(false)
   const [cropping, setCropping] = useState(false)
+  // Brief ✓ / ✕ feedback on the hover copy button.
+  const [copied, setCopied] = useState<'ok' | 'ng' | null>(null)
+  useEffect(() => {
+    if (!copied) return
+    const t = setTimeout(() => setCopied(null), 1400)
+    return () => clearTimeout(t)
+  }, [copied])
   const { url: src, status } = useMediaState(card.url)
 
   const onPaste = (e: React.ClipboardEvent) => {
@@ -6110,15 +6393,36 @@ const ImageCardBody = memo(function ImageCardBody({ card, onUpdate, fixedHeight,
           )}
         </div>
       )}
-      {card.url && src && !locked && (
-        <button
+      {card.url && src && (
+        <div
+          className="absolute top-1 right-1 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+          data-export-hide="1"
           onMouseDown={e => e.stopPropagation()}
-          onClick={e => { e.stopPropagation(); setCropping(true) }}
-          title="表示範囲を切り抜き"
-          className="absolute top-1 right-1 flex items-center gap-1 px-2 py-1 rounded bg-white/85 text-slate-600 hover:text-teal-600 text-[11px] shadow opacity-0 group-hover:opacity-100 transition-opacity"
         >
-          <Crop size={12} /> 切り抜き
-        </button>
+          <button
+            onClick={e => { e.stopPropagation(); copyCardImage(card).then(ok => setCopied(ok ? 'ok' : 'ng')) }}
+            title="画像をコピー（表示中の範囲）"
+            className={`flex items-center gap-1 px-1.5 py-1 rounded bg-white/85 text-[11px] shadow transition-colors ${copied === 'ok' ? 'text-emerald-600' : copied === 'ng' ? 'text-rose-500' : 'text-slate-600 hover:text-indigo-600'}`}
+          >
+            {copied === 'ok' ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+          <button
+            onClick={e => { e.stopPropagation(); exportCardImage(card) }}
+            title="画像を書き出し…"
+            className="flex items-center gap-1 px-1.5 py-1 rounded bg-white/85 text-slate-600 hover:text-indigo-600 text-[11px] shadow transition-colors"
+          >
+            <ImageDown size={12} />
+          </button>
+          {!locked && (
+            <button
+              onClick={e => { e.stopPropagation(); setCropping(true) }}
+              title="表示範囲を切り抜き"
+              className="flex items-center gap-1 px-2 py-1 rounded bg-white/85 text-slate-600 hover:text-teal-600 text-[11px] shadow transition-colors"
+            >
+              <Crop size={12} /> 切り抜き
+            </button>
+          )}
+        </div>
       )}
       {cropping && src && (
         <ImageCropper
@@ -7074,8 +7378,11 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
     <div
       // shadow-lg + backdrop-blur-sm だと重なった隣のカードに影とブラーが大きく
       // かかって「にじみ」に見えるため、影は小さめ・ブラーなしに抑える。
-      className={`canvas-card absolute rounded-xl border shadow-md transition-shadow flex flex-col ${theme.bg} ${theme.border} ${isSelected ? 'ring-2 ring-indigo-500 shadow-indigo-500/20' : 'hover:shadow-lg'}`}
+      // 角丸オフ(card.squareCorners)は .canvas-card-square で配下の rounded-*-xl
+      // をまとめて 0 にする（index.css）— 本文側の rounded-b-xl も一緒に落ちる。
+      className={`canvas-card absolute rounded-xl border shadow-md transition-shadow flex flex-col ${card.squareCorners ? 'canvas-card-square' : ''} ${theme.bg} ${theme.border} ${isSelected ? 'ring-2 ring-indigo-500 shadow-indigo-500/20' : 'hover:shadow-lg'}`}
       style={{ left: card.x, top: card.y, width: card.width, height: card.height }}
+      data-card-id={card.id}
       onMouseDown={e => { if (e.button === 0) { e.stopPropagation(); onSelect(e.shiftKey) } }}
       onContextMenu={onContextMenu}
     >
@@ -7142,13 +7449,15 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
       </div>
       )}
 
-      {/* Headerless media card: a translucent grab strip over the top edge,
-          revealed on hover / while selected (see .canvas-card-strip in index.css).
-          It carries the same tools as the header — drag, title, file pick,
-          source link — plus a way back to the normal header. */}
+      {/* Headerless media card: a translucent grab strip sitting just ABOVE the
+          card's top edge, revealed on hover / while selected (see
+          .canvas-card-strip in index.css). It lives outside the picture so the
+          in-picture hover tools (切り抜き / コピー / 書き出し, top-right) stay
+          clickable. It carries the same tools as the header — drag, title, file
+          pick, source link — plus a way back to the normal header. */}
       {headerless && (
         <div
-          className={`canvas-card-strip absolute top-0 inset-x-0 h-7 px-2 rounded-t-xl flex items-center gap-1.5 select-none bg-white/85 border-b ${theme.border} ${isSelected || editingTitle ? 'canvas-card-strip-on' : ''}`}
+          className={`canvas-card-strip absolute -top-7 inset-x-0 h-7 px-2 rounded-t-xl flex items-center gap-1.5 select-none bg-white/90 border border-b-0 shadow-sm ${theme.border} ${isSelected || editingTitle ? 'canvas-card-strip-on' : ''}`}
           data-export-hide="1"
           style={{ cursor: locked ? 'default' : 'grab', zIndex: 1 }}
           onMouseDown={e => onHeaderDown(e, card)}
@@ -7210,7 +7519,7 @@ const CanvasCardComponent = memo(function CanvasCardComponent({ card, viewLocked
         </div>
       )}
 
-      <div className={`flex-1 overflow-hidden flex flex-col min-h-0 ${headerless ? 'rounded-xl' : ''}`}>
+      <div className={`canvas-card-body flex-1 overflow-hidden flex flex-col min-h-0 ${headerless ? 'rounded-xl' : ''}`}>
         {hasPages ? (
           <>
             {/* Page tabs inside card */}
