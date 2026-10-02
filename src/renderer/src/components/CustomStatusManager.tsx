@@ -86,8 +86,10 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     if (n > 0 && !(await confirmDialog(`ステータス「${def.name}」を削除しますか？\n使用中の ${n} 件のタスクからも外れます（基本状態「${BASE_LABEL[def.base]}」は維持）。`, { danger: true, confirmLabel: '削除' }))) return
     const cur = projectRef.current
     const curDefs = cur.customStatuses ?? []
-    if (!curDefs.some(d => d.id === def.id)) return // 待っている間に消えていた
-    const tasks = cur.tasks.map(t => t.status === def.base && t.tags.includes(def.name) ? { ...t, tags: t.tags.filter(x => x !== def.name) } : t)
+    const live = curDefs.find(d => d.id === def.id)
+    if (!live) return // 待っている間に消えていた
+    // 名前・基本状態も待っている間に変わり得るので最新の定義で照合する。
+    const tasks = cur.tasks.map(t => t.status === live.base && t.tags.includes(live.name) ? { ...t, tags: t.tags.filter(x => x !== live.name) } : t)
     commit(curDefs.filter(d => d.id !== def.id), tasks)
   }
 
