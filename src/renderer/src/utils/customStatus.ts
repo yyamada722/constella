@@ -46,27 +46,31 @@ export function applyStep(task: Task, defs: CustomStatus[] | undefined, step: St
   return { ...task, status: step.status, tags }
 }
 
-/** 不変条件: 基本状態と食い違う状態タグ / 2つ目以降の状態タグを落とす。
- *  どの経路 (ドラッグ・ガント・一括編集) で状態が変わっても reducer がこれを通す。 */
-export function normalizeCustomStatus(task: Task, defs: CustomStatus[] | undefined): Task {
+/** 不変条件の正規化。登録名と同じタグでも、基本状態が違うタスクでは「普通のタグ」として扱う
+ *  (ユーザーが元々付けていたタグを黙って消さないため)。消すのは次の2つだけ:
+ *  - 状態遷移 (prevStatus → task.status) 時の、旧基本状態に属する状態タグ
+ *  - 現在の基本状態に属する状態タグが複数あるとき、customStatusOf が選ぶもの (定義順で先)
+ *    以外 — 表示と正規化の結果を一致させる
+ *  reducer (ADD_TASK / UPDATE_TASK / SET_PROJECT_TASKS) がどの経路でもこれを通す。 */
+export function normalizeCustomStatus(task: Task, defs: CustomStatus[] | undefined, prevStatus?: Task['status']): Task {
   if (!defs?.length || task.tags.length === 0) return task
   const byName = new Map(defs.map(d => [d.name, d]))
-  let kept = false
+  const chosen = customStatusOf(task, defs)
+  const transitioned = prevStatus !== undefined && prevStatus !== task.status
   const tags = task.tags.filter(t => {
     const d = byName.get(t)
     if (!d) return true
-    if (d.base !== task.status || kept) return false
-    kept = true
-    return true
+    if (d.base === task.status) return d === chosen
+    return !(transitioned && d.base === prevStatus)
   })
   return tags.length === task.tags.length ? task : { ...task, tags }
 }
 
-/** 表示用: 状態タグ以外のタグ。 */
-export function plainTags(tags: string[], defs: CustomStatus[] | undefined): string[] {
-  if (!defs?.length) return tags
-  const names = new Set(defs.map(d => d.name))
-  return tags.filter(t => !names.has(t))
+/** 表示用: 状態タグ以外のタグ (現在の基本状態に属する登録タグだけを除く)。 */
+export function plainTags(task: Pick<Task, 'status' | 'tags'>, defs: CustomStatus[] | undefined): string[] {
+  if (!defs?.length) return task.tags
+  const names = new Set(defs.filter(d => d.base === task.status).map(d => d.name))
+  return task.tags.filter(t => !names.has(t))
 }
 
 // ── 色 ────────────────────────────────────────────────────────────────

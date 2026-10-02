@@ -506,12 +506,13 @@ function reducer(state: AppState, action: Action): AppState {
     case 'ADD_TASK': {
       // Normalize completedAt / the 進行中 clock for tasks born 'done' or
       // 'in-progress' (bulk import, AI add) — same rules as every other path.
-      const task = applyStatusBookkeeping(undefined, action.payload.task)
+      // 状態タグも正規化 (一括追加/AI 由来のタグに複数の状態タグが混じる場合など)。
+      const born = applyStatusBookkeeping(undefined, action.payload.task)
       return {
         ...state,
         projects: state.projects.map(p =>
           p.id === action.payload.projectId
-            ? { ...p, tasks: [...p.tasks, task] }
+            ? { ...p, tasks: [...p.tasks, normalizeCustomStatus(born, p.customStatuses)] }
             : p
         ),
       }
@@ -525,7 +526,7 @@ function reducer(state: AppState, action: Action): AppState {
           if (p.id !== action.payload.projectId) return p
           return {
             ...p,
-            tasks: p.tasks.map(t => t.id === action.payload.task.id ? normalizeCustomStatus(applyStatusBookkeeping(t, action.payload.task), p.customStatuses) : t),
+            tasks: p.tasks.map(t => t.id === action.payload.task.id ? normalizeCustomStatus(applyStatusBookkeeping(t, action.payload.task), p.customStatuses, t.status) : t),
           }
         }),
       }
@@ -552,7 +553,7 @@ function reducer(state: AppState, action: Action): AppState {
       const prevProject = state.projects.find(p => p.id === action.payload.projectId)
       const prevById = new Map((prevProject?.tasks ?? []).map(t => [t.id, t]))
       // 状態タグ (カスタムステータス) も基本状態と食い違うものはここで外す。
-      const tasks = action.payload.tasks.map(next => normalizeCustomStatus(applyStatusBookkeeping(prevById.get(next.id), next), prevProject?.customStatuses))
+      const tasks = action.payload.tasks.map(next => normalizeCustomStatus(applyStatusBookkeeping(prevById.get(next.id), next), prevProject?.customStatuses, prevById.get(next.id)?.status))
       return {
         ...state,
         projects: state.projects.map(p =>

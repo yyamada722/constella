@@ -22,7 +22,7 @@ export default function CustomStatusManager({ project }: { project: Project }) {
   const [error, setError] = useState('')
   const defs = project.customStatuses ?? []
 
-  const usage = (name: string) => project.tasks.filter(t => t.tags.includes(name)).length
+  const usage = (def: CustomStatus) => project.tasks.filter(t => t.status === def.base && t.tags.includes(def.name)).length
 
   // 定義更新 → タスク更新を BATCH で 1 undo に。タスク側は SET_PROJECT_TASKS を
   // 通すので状態遷移の記帳 (完了日時・進行中時計) と状態タグ正規化が新定義で走る。
@@ -49,7 +49,9 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     if (!name || name === def.name) return
     if (defs.some(d => d.id !== def.id && d.name === name)) { setError(`「${name}」は既にあります`); return }
     setError('')
-    const tasks = project.tasks.map(t => t.tags.includes(def.name)
+    // 対象は「このステータスとして効いているタスク」だけ。基本状態が違うタスクの
+    // 同名タグは普通のタグなので触らない。
+    const tasks = project.tasks.map(t => t.status === def.base && t.tags.includes(def.name)
       ? { ...t, tags: Array.from(new Set(t.tags.map(x => x === def.name ? name : x))) }
       : t)
     commit(defs.map(d => d.id === def.id ? { ...d, name } : d), tasks)
@@ -67,9 +69,9 @@ export default function CustomStatusManager({ project }: { project: Project }) {
   }
 
   async function remove(def: CustomStatus) {
-    const n = usage(def.name)
+    const n = usage(def)
     if (n > 0 && !(await confirmDialog(`ステータス「${def.name}」を削除しますか？\n使用中の ${n} 件のタスクからも外れます（基本状態「${BASE_LABEL[def.base]}」は維持）。`, { danger: true, confirmLabel: '削除' }))) return
-    const tasks = project.tasks.map(t => t.tags.includes(def.name) ? { ...t, tags: t.tags.filter(x => x !== def.name) } : t)
+    const tasks = project.tasks.map(t => t.status === def.base && t.tags.includes(def.name) ? { ...t, tags: t.tags.filter(x => x !== def.name) } : t)
     commit(defs.filter(d => d.id !== def.id), tasks)
   }
 
@@ -119,7 +121,7 @@ export default function CustomStatusManager({ project }: { project: Project }) {
                         >
                           {(['todo', 'in-progress', 'done'] as const).map(b => <option key={b} value={b}>{BASE_LABEL[b]}</option>)}
                         </select>
-                        <span className="text-[10px] text-slate-400 w-6 text-right tabular-nums" title="使用中のタスク数">{usage(def.name)}</span>
+                        <span className="text-[10px] text-slate-400 w-6 text-right tabular-nums" title="使用中のタスク数">{usage(def)}</span>
                         <button onClick={() => remove(def)} title="削除" className="p-0.5 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-50">
                           <Trash2 size={12} />
                         </button>

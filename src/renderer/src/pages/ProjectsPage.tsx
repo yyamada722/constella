@@ -379,14 +379,16 @@ export default function ProjectsPage() {
     setShowNewProject(false)
   }
 
-  function addTask(status: Task['status'], parentId?: string) {
+  // customName: 列がカスタムステータスで絞り込まれているとき、その状態タグを付けて
+  // 作る (付けないと絞り込みから外れて「追加したのに消えた」ように見える)。
+  function addTask(status: Task['status'], parentId?: string, customName?: string) {
     if (!selectedProjectId) return
     const task: Task = {
       id: generateId(),
       title: parentId ? '新しいサブタスク' : '新しいタスク',
       description: '',
       status,
-      tags: [],
+      tags: customName ? [customName] : [],
       createdAt: new Date().toISOString(),
       ...(parentId ? { parentId } : {}),
     }
@@ -728,13 +730,16 @@ export default function ProjectsPage() {
                 // flat mode: every task ranked by its own status (children visible too).
                 const colDefs = (selectedProject.customStatuses ?? []).filter(d => d.base === col.key)
                 const subId = colDefs.some(d => d.id === subFilter[col.key]) ? subFilter[col.key]! : ''
-                // A sub-status filter narrows to the matching tasks themselves; in tree
-                // mode a matching subtask then surfaces as its own card (rootsOf treats
-                // a task whose parent is filtered out as a root).
-                const colSource = subId ? allFiltered.filter(t => customStatusOf(t, colDefs)?.id === subId) : allFiltered
-                const tasks = kanbanMode === 'tree'
-                  ? rootsOf(colSource).filter(t => aggregateFor(all, t).status === col.key)
-                  : colSource.filter(t => t.status === col.key)
+                // A sub-status filter narrows to the matching tasks themselves and shows
+                // them as a flat list (each its own card, no recursive children) — so
+                // non-matching descendants never leak into the narrowed result.
+                const subDef = colDefs.find(d => d.id === subId)
+                const cardMode: KanbanMode = subDef ? 'flat' : kanbanMode
+                const tasks = subDef
+                  ? allFiltered.filter(t => customStatusOf(t, colDefs)?.id === subDef.id)
+                  : kanbanMode === 'tree'
+                    ? rootsOf(allFiltered).filter(t => aggregateFor(all, t).status === col.key)
+                    : allFiltered.filter(t => t.status === col.key)
                 return (
                   <div
                     key={col.key}
@@ -778,7 +783,7 @@ export default function ProjectsPage() {
                           boardTasks={all}
                           customStatuses={selectedProject.customStatuses}
                           otherBoards={boards.filter(b => b.id !== selectedProject!.id)}
-                          mode={kanbanMode}
+                          mode={cardMode}
                           columnStatus={col.key}
                           selectedTaskId={selectedTaskId}
                           onSelectTask={setSelectedTaskId}
@@ -794,7 +799,7 @@ export default function ProjectsPage() {
                         />
                       ))}
                       <button
-                        onClick={() => addTask(col.key)}
+                        onClick={() => addTask(col.key, undefined, subDef?.name)}
                         className="w-full py-2 rounded-lg border border-dashed border-slate-300 text-slate-500 text-sm hover:border-slate-400 hover:text-slate-500 transition-colors"
                       >
                         ＋ 追加
@@ -1233,7 +1238,7 @@ function TaskCard({ task, boardTasks, customStatuses, otherBoards, mode, columnS
         )}
         <div className="flex items-center gap-1.5 text-[11px] text-slate-500 flex-wrap">
           <span className="shrink-0">タグ</span>
-          {plainTags(task.tags, customStatuses).map(t => (
+          {plainTags(task, customStatuses).map(t => (
             <button
               key={t}
               onClick={() => onUpdate({ ...task, tags: task.tags.filter(x => x !== t) })}
@@ -1502,9 +1507,9 @@ function TaskCard({ task, boardTasks, customStatuses, otherBoards, mode, columnS
         </div>
       )}
       {/* "AI" は title 横の Sparkles アイコンで表現するので tag chips から除外。 */}
-      {plainTags(task.tags, customStatuses).filter(t => t !== 'AI').length > 0 && (
+      {plainTags(task, customStatuses).filter(t => t !== 'AI').length > 0 && (
         <div className="flex gap-1 mt-2 flex-wrap">
-          {plainTags(task.tags, customStatuses).filter(t => t !== 'AI').map(tag => (
+          {plainTags(task, customStatuses).filter(t => t !== 'AI').map(tag => (
             <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-400/10 text-emerald-600">{tag}</span>
           ))}
         </div>
