@@ -20,6 +20,8 @@ export default function CustomStatusManager({ project }: { project: Project }) {
   const [newName, setNewName] = useState('')
   const [newBase, setNewBase] = useState<Task['status']>('in-progress')
   const [error, setError] = useState('')
+  // 画面右端に近いときは右揃えで開く (狭いウィンドウではみ出さないように)。
+  const [alignRight, setAlignRight] = useState(false)
   const defs = project.customStatuses ?? []
   // 最新のボード。確認ダイアログ (await) の間に同期などでボードが差し替わっても、
   // 古いスナップショットで上書きしないよう commit / remove はここから読む。
@@ -98,14 +100,18 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     <div className="relative shrink-0">
       <button
         ref={triggerRef}
-        onClick={() => setOpen(v => !v)}
+        onClick={() => {
+          const r = triggerRef.current?.getBoundingClientRect()
+          if (r) setAlignRight(r.left + 340 > window.innerWidth - 8)
+          setOpen(v => !v)
+        }}
         title="カスタムステータス（状態タグ）を管理"
         className={`flex items-center gap-1 px-2.5 py-1 rounded-md border text-xs transition-colors whitespace-nowrap ${open ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300'}`}
       >
         <Tags size={13} /> ステータス{defs.length > 0 && <span className="text-[10px] text-slate-400">({defs.length})</span>}
       </button>
       {open && (
-        <div ref={popRef} className="absolute left-0 top-full mt-1 z-30 w-[340px] bg-white border border-slate-200 rounded-lg shadow-xl p-3 space-y-2">
+        <div ref={popRef} className={`absolute ${alignRight ? 'right-0' : 'left-0'} top-full mt-1 z-30 w-[340px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-8rem)] overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl p-3 space-y-2`}>
           <p className="text-[11px] text-slate-500 leading-relaxed">
             基本状態（未着手 / 進行中 / 完了）を細分化する「状態タグ」です。タスクにはタグとして付き、カードのステータスピル横の ▾ から選べます。色の丸をクリックすると任意の色を設定できます。
           </p>

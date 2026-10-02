@@ -431,9 +431,14 @@ export default function ProjectsPage() {
     const dragged = selectedProject.tasks.find(t => t.id === taskId)
     if (!dragged) return
     const placed: Task = beforeId ? dragged : { ...dragged, parentId: undefined }
+    // 列をまたぐ通常ドロップは基本状態そのもの (customId: null) へ — ピルで基本状態を
+    // 選んだときと同じく、移動先の状態タグを残して勝手に細分へ入らないようにする。
+    // 同じ列内の並べ替えは状態を変えないので触らない。
     const moved: Task = customId
       ? applyStep(placed, selectedProject.customStatuses, { status: toStatus, customId })
-      : { ...placed, status: toStatus }
+      : placed.status !== toStatus
+        ? applyStep(placed, selectedProject.customStatuses, { status: toStatus, customId: null })
+        : placed
     let idx: number
     if (beforeId) {
       idx = without.findIndex(t => t.id === beforeId)
