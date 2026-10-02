@@ -447,15 +447,20 @@ export default function ProjectsPage() {
 
   // Make the dragged task a child of `parentId`. Validates against self / cycle and
   // is a no-op when the dragged is already a child of this parent.
-  function nestTaskInto(parentId: string) {
+  // customId: 絞り込み列でのネスト時はその状態を付ける (dropTask と同じ理由)。
+  function nestTaskInto(parentId: string, customId?: string) {
     const taskId = dragIdRef.current
     dragIdRef.current = null
     setDragOverCol(null)
     if (!selectedProject || !taskId || taskId === parentId) return
     if (wouldCycle(selectedProject.tasks, taskId, parentId)) return
     const dragged = selectedProject.tasks.find(t => t.id === taskId)
-    if (!dragged || dragged.parentId === parentId) return
-    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProject.id, task: { ...dragged, parentId } } })
+    if (!dragged) return
+    const def = customId ? selectedProject.customStatuses?.find(d => d.id === customId) : undefined
+    if (dragged.parentId === parentId && (!def || customStatusOf(dragged, selectedProject.customStatuses)?.id === def.id)) return
+    const nested: Task = { ...dragged, parentId }
+    const task = def ? applyStep(nested, selectedProject.customStatuses, { status: def.base, customId: def.id }) : nested
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProject.id, task } })
   }
 
   // Move a task and its entire subtree to another board within the same master project.
@@ -796,7 +801,7 @@ export default function ProjectsPage() {
                           onAddSubtask={(parentId) => addTask('todo', parentId)}
                           onDragStart={(id) => { dragIdRef.current = id }}
                           onDropBefore={(id, status) => dropTask(status, id, subDef?.id)}
-                          onNestInto={nestTaskInto}
+                          onNestInto={(pid) => nestTaskInto(pid, subDef?.id)}
                           onMoveToBoard={moveTaskToBoard}
                           onDuplicateToBoard={duplicateTaskToBoard}
                         />
