@@ -64,8 +64,14 @@ export default function CustomStatusManager({ project }: { project: Project }) {
   // 基本状態を変えたら、そのタグを持つタスクも新しい基本状態へ寄せる
   // (そうしないと reducer の正規化で次の更新時にタグが外れてしまう)。
   function changeBase(def: CustomStatus, base: Task['status']) {
-    const tasks = project.tasks.map(t => t.tags.includes(def.name) && t.status === def.base ? { ...t, status: base } : t)
-    commit(defs.map(d => d.id === def.id ? { ...d, base } : d), tasks)
+    // 移動先の基本状態に既にある別の状態タグは外す — 残すと定義順で優先されて
+    // このステータスの方が正規化で消えてしまう。
+    const nextDefs = defs.map(d => d.id === def.id ? { ...d, base } : d)
+    const competing = new Set(nextDefs.filter(d => d.base === base && d.id !== def.id).map(d => d.name))
+    const tasks = project.tasks.map(t => t.tags.includes(def.name) && t.status === def.base
+      ? { ...t, status: base, tags: t.tags.filter(x => !competing.has(x)) }
+      : t)
+    commit(nextDefs, tasks)
   }
 
   async function remove(def: CustomStatus) {

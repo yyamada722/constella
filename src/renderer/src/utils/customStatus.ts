@@ -37,9 +37,10 @@ export function currentStep(task: Pick<Task, 'status' | 'tags'>, defs: CustomSta
   return { status: task.status, customId: customStatusOf(task, defs)?.id ?? null }
 }
 
-/** ステップを適用: 状態タグを全部外してから選んだものだけ付ける。 */
+/** ステップを適用: 遷移元・遷移先の基本状態に属する状態タグを外してから選んだものだけ
+ *  付ける。無関係な基本状態の同名タグは普通のタグなので残す。 */
 export function applyStep(task: Task, defs: CustomStatus[] | undefined, step: StatusStep): Task {
-  const names = new Set((defs ?? []).map(d => d.name))
+  const names = new Set((defs ?? []).filter(d => d.base === task.status || d.base === step.status).map(d => d.name))
   const def = step.customId ? defs?.find(d => d.id === step.customId) : undefined
   const tags = task.tags.filter(t => !names.has(t))
   if (def && def.base === step.status) tags.push(def.name)

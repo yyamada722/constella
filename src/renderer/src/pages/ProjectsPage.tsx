@@ -420,7 +420,9 @@ export default function ProjectsPage() {
   // Drag-and-drop reorder: move a task to a status, optionally before a given task.
   // Dropping onto column whitespace (beforeId === null) also CLEARS parentId — this is
   // how users un-nest via D&D ("drag to column = make root + change status").
-  function dropTask(toStatus: Task['status'], beforeId: string | null) {
+  // customId: カスタムステータスで絞り込まれた列へのドロップ時、その状態を付ける
+  // (付けないとドロップしたタスクが絞り込みから外れて消えたように見える)。
+  function dropTask(toStatus: Task['status'], beforeId: string | null, customId?: string) {
     const taskId = dragIdRef.current
     dragIdRef.current = null
     setDragOverCol(null)
@@ -428,9 +430,10 @@ export default function ProjectsPage() {
     const without = selectedProject.tasks.filter(t => t.id !== taskId)
     const dragged = selectedProject.tasks.find(t => t.id === taskId)
     if (!dragged) return
-    const moved: Task = beforeId
-      ? { ...dragged, status: toStatus }
-      : { ...dragged, status: toStatus, parentId: undefined }
+    const placed: Task = beforeId ? dragged : { ...dragged, parentId: undefined }
+    const moved: Task = customId
+      ? applyStep(placed, selectedProject.customStatuses, { status: toStatus, customId })
+      : { ...placed, status: toStatus }
     let idx: number
     if (beforeId) {
       idx = without.findIndex(t => t.id === beforeId)
@@ -746,7 +749,7 @@ export default function ProjectsPage() {
                     className="flex-1 min-w-[250px] flex flex-col"
                     onDragOver={e => { e.preventDefault(); setDragOverCol(col.key) }}
                     onDragLeave={e => { if (e.currentTarget === e.target) setDragOverCol(null) }}
-                    onDrop={e => { e.preventDefault(); dropTask(col.key, null) }}
+                    onDrop={e => { e.preventDefault(); dropTask(col.key, null, subDef?.id) }}
                   >
                     <div className={`mb-3 pb-2 border-b-2 ${col.color}`}>
                       <div className="flex items-center justify-between">
@@ -792,7 +795,7 @@ export default function ProjectsPage() {
                           onUpdate={updateTask}
                           onAddSubtask={(parentId) => addTask('todo', parentId)}
                           onDragStart={(id) => { dragIdRef.current = id }}
-                          onDropBefore={(id, status) => dropTask(status, id)}
+                          onDropBefore={(id, status) => dropTask(status, id, subDef?.id)}
                           onNestInto={nestTaskInto}
                           onMoveToBoard={moveTaskToBoard}
                           onDuplicateToBoard={duplicateTaskToBoard}
