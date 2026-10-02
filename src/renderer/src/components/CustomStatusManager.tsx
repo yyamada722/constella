@@ -3,7 +3,7 @@ import { Tags, Trash2, Plus } from 'lucide-react'
 import { useApp } from '../store'
 import { CustomStatus, Project, Task } from '../types'
 import { generateId } from '../utils'
-import { DEFAULT_STATUS_HEX, STATUS_HEX_PRESETS, statusHex, statusChipStyle } from '../utils/customStatus'
+import { DEFAULT_STATUS_HEX, STATUS_HEX_PRESETS, statusHex, statusChipStyle, customStatusOf } from '../utils/customStatus'
 import { confirmDialog } from './ConfirmDialog'
 import { usePopoverDismiss } from './usePopoverDismiss'
 
@@ -21,15 +21,19 @@ export default function CustomStatusManager({ project }: { project: Project }) {
   const [newBase, setNewBase] = useState<Task['status']>('in-progress')
   const [error, setError] = useState('')
   const defs = project.customStatuses ?? []
+  // 最新のボード。確認ダイアログ (await) の間に同期などでボードが差し替わっても、
+  // 古いスナップショットで上書きしないよう commit / remove はここから読む。
+  const projectRef = useRef(project); projectRef.current = project
 
-  const usage = (def: CustomStatus) => project.tasks.filter(t => t.status === def.base && t.tags.includes(def.name)).length
+  const usage = (def: CustomStatus) => project.tasks.filter(t => customStatusOf(t, defs)?.id === def.id).length
 
   // 定義更新 → タスク更新を BATCH で 1 undo に。タスク側は SET_PROJECT_TASKS を
   // 通すので状態遷移の記帳 (完了日時・進行中時計) と状態タグ正規化が新定義で走る。
   function commit(nextDefs: CustomStatus[], tasks?: Task[]) {
-    const meta = { type: 'UPDATE_PROJECT' as const, payload: { ...project, customStatuses: nextDefs.length ? nextDefs : undefined } }
+    const cur = projectRef.current
+    const meta = { type: 'UPDATE_PROJECT' as const, payload: { ...cur, customStatuses: nextDefs.length ? nextDefs : undefined } }
     if (!tasks) { dispatch(meta); return }
-    dispatch({ type: 'BATCH', payload: [meta, { type: 'SET_PROJECT_TASKS', payload: { projectId: project.id, tasks } }] })
+    dispatch({ type: 'BATCH', payload: [meta, { type: 'SET_PROJECT_TASKS', payload: { projectId: cur.id, tasks } }] })
   }
 
   function add() {
@@ -44,10 +48,12 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     setNewName(''); setError('')
   }
 
-  function rename(def: CustomStatus, raw: string) {
+  // 却下時は入力欄を元の名前に戻す (非制御 input なので放置すると表示だけ食い違う)。
+  function rename(def: CustomStatus, raw: string, input?: HTMLInputElement) {
     const name = raw.trim().replace(/^#/, '')
-    if (!name || name === def.name) return
-    if (defs.some(d => d.id !== def.id && d.name === name)) { setError(`「${name}」は既にあります`); return }
+    const reject = () => { if (input) input.value = def.name }
+    if (!name || name === def.name) { reject(); return }
+    if (defs.some(d => d.id !== def.id && d.name === name)) { setError(`「${name}」は既にあります`); reject(); return }
     setError('')
     // 対象は「このステータスとして効いているタスク」だけ。基本状態が違うタスクの
     // 同名タグは普通のタグなので触らない。
@@ -68,7 +74,8 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     // このステータスの方が正規化で消えてしまう。
     const nextDefs = defs.map(d => d.id === def.id ? { ...d, base } : d)
     const competing = new Set(nextDefs.filter(d => d.base === base && d.id !== def.id).map(d => d.name))
-    const tasks = project.tasks.map(t => t.tags.includes(def.name) && t.status === def.base
+    // 動かすのは、いまこのステータスとして表示されているタスクだけ。
+    const tasks = project.tasks.map(t => customStatusOf(t, defs)?.id === def.id
       ? { ...t, status: base, tags: t.tags.filter(x => !competing.has(x)) }
       : t)
     commit(nextDefs, tasks)
@@ -77,8 +84,11 @@ export default function CustomStatusManager({ project }: { project: Project }) {
   async function remove(def: CustomStatus) {
     const n = usage(def)
     if (n > 0 && !(await confirmDialog(`ステータス「${def.name}」を削除しますか？\n使用中の ${n} 件のタスクからも外れます（基本状態「${BASE_LABEL[def.base]}」は維持）。`, { danger: true, confirmLabel: '削除' }))) return
-    const tasks = project.tasks.map(t => t.status === def.base && t.tags.includes(def.name) ? { ...t, tags: t.tags.filter(x => x !== def.name) } : t)
-    commit(defs.filter(d => d.id !== def.id), tasks)
+    const cur = projectRef.current
+    const curDefs = cur.customStatuses ?? []
+    if (!curDefs.some(d => d.id === def.id)) return // 待っている間に消えていた
+    const tasks = cur.tasks.map(t => t.status === def.base && t.tags.includes(def.name) ? { ...t, tags: t.tags.filter(x => x !== def.name) } : t)
+    commit(curDefs.filter(d => d.id !== def.id), tasks)
   }
 
 
@@ -111,7 +121,7 @@ export default function CustomStatusManager({ project }: { project: Project }) {
                         <input
                           key={def.name}
                           defaultValue={def.name}
-                          onBlur={e => rename(def, e.target.value)}
+                          onBlur={e => rename(def, e.target.value, e.target)}
                           onKeyDown={e => {
                             if (e.nativeEvent.isComposing) return
                             if (e.key === 'Enter') (e.target as HTMLInputElement).blur()

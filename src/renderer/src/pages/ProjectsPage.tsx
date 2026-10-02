@@ -1364,7 +1364,7 @@ function TaskCard({ task, boardTasks, customStatuses, otherBoards, mode, columnS
       <div ref={headerRef} className="relative group/head">
       {/* Row 1: status / priority / time / indicators. Row 2: the title on its own line
           so it gets the card's full width (and may wrap) instead of sharing a row. */}
-      <div className="flex items-center gap-1.5 min-w-0">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 min-w-0">
           {mode === 'tree' && hasChildren && (
             <button onClick={e => { e.stopPropagation(); setExpanded(!expanded) }} className="p-0.5 -ml-1 rounded hover:bg-slate-200 text-slate-500 shrink-0" title={expanded ? '折りたたむ' : '展開'}>
               {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
