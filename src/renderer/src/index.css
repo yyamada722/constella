@@ -33,14 +33,12 @@ body {
 /* ── Dark theme (hand-written parts; class remaps live in dark-overrides.css) ── */
 
 :root {
-  --cs-mix: #000; /* カスタムステータス文字色の混色先 */
   --shape-fill: #ffffff;  /* canvas shape body fill */
   --handle-fill: #ffffff; /* arrow endpoint / waypoint / port handle fill */
   --ink-dark: #1e293b;    /* "black ink" display color (pen / labels) */
   --surface: #ffffff;     /* generic light surface (mindtrain panels etc.) */
 }
 .dark {
-  --cs-mix: #fff;
   /* Achromatic dark — pure neutral grays, no blue tint. */
   color-scheme: dark;
   --shape-fill: #262626;
@@ -179,3 +177,7 @@ body {
 .canvas-card.canvas-card-square,
 .canvas-card.canvas-card-square > .canvas-card-body,
 .canvas-card.canvas-card-square :is(.rounded-t-xl, .rounded-b-xl, .rounded-l-xl) { border-radius: 0; }
+
+/* カスタムステータスのチップ文字色 (utils/customStatus.ts statusChipStyle がテーマ別に計算) */
+:root [data-cs] { color: var(--cs-fg-l); }
+.dark [data-cs] { color: var(--cs-fg-d); }

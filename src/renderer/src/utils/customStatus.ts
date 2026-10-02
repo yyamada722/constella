@@ -90,14 +90,42 @@ export function statusHex(c: string | undefined): string {
   return NAMED_HEX[c] ?? '#64748b'
 }
 
-/** ピル/チップ用のインラインスタイル。文字色は --cs-mix (ライト=黒/ダーク=白) と
- *  混ぜて、どの色でも背景とのコントラストを確保する。 */
+type RGB = [number, number, number]
+const hexToRgb = (hex: string): RGB => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)) as RGB
+const lin = (v: number) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4) }
+const luminance = ([r, g, b]: RGB) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+const contrast = (a: RGB, b: RGB) => { const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05) }
+const mix = (a: RGB, b: RGB, t: number): RGB => a.map((v, i) => Math.round(v * (1 - t) + b[i] * t)) as RGB
+
+// 文字色: 指定色を黒 (ライト) / 白 (ダーク) へ少しずつ寄せ、チップ背景
+// (指定色16% + 地色) に対してコントラスト 4.5 以上になる最初の色を採用する。
+// 白や黒のような極端な色でも 9px のラベルが読めるように。
+function readableOn(hex: string, page: RGB, toward: RGB): string {
+  const base = hexToRgb(hex)
+  const bg = mix(page, base, 0.16)
+  for (let t = 0.35; t <= 1.0001; t += 0.05) {
+    const fg = mix(base, toward, t)
+    if (contrast(fg, bg) >= 4.5) return `rgb(${fg.join(',')})`
+  }
+  return `rgb(${toward.join(',')})`
+}
+const fgCache = new Map<string, { l: string; d: string }>()
+
+/** ピル/チップ用のインラインスタイル。要素には data-cs 属性も付けること —
+ *  文字色はライト/ダーク別に計算した --cs-fg-l / --cs-fg-d を index.css が
+ *  テーマに応じて選ぶ。 */
 export function statusChipStyle(c: string | undefined): CSSProperties {
   const hex = statusHex(c)
+  let fg = fgCache.get(hex)
+  if (!fg) {
+    fg = { l: readableOn(hex, [255, 255, 255], [0, 0, 0]), d: readableOn(hex, [38, 38, 38], [255, 255, 255]) }
+    fgCache.set(hex, fg)
+  }
   return {
     backgroundColor: `color-mix(in srgb, ${hex} 16%, transparent)`,
     borderColor: `color-mix(in srgb, ${hex} 55%, transparent)`,
-    color: `color-mix(in srgb, ${hex} 62%, var(--cs-mix, #000))`,
-  }
+    ['--cs-fg-l' as string]: fg.l,
+    ['--cs-fg-d' as string]: fg.d,
+  } as CSSProperties
 }
 export const statusDotStyle = (c: string | undefined): CSSProperties => ({ backgroundColor: statusHex(c) })

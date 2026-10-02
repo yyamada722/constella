@@ -362,8 +362,12 @@ export default function GanttView({ boards, selectedTaskId, onSelectTask, groupB
     window.addEventListener('keydown', onKey)
     return () => { clearTimeout(id); window.removeEventListener('mousedown', close); window.removeEventListener('keydown', onKey) }
   }, [editing])
+  // Build from the LIVE task, not the popover's row snapshot — the snapshot can be stale
+  // (e.g. a status change makes the reducer drop custom-status tags; spreading the old
+  // snapshot on the next title/date edit would send them back).
   function patchTask(row: TaskRow, patch: Partial<Task>) {
-    dispatch({ type: 'UPDATE_TASK', payload: { projectId: row.board.id, task: { ...row.task, ...patch } } })
+    const live = boards.find(b => b.id === row.board.id)?.tasks.find(t => t.id === row.task.id) ?? row.task
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: row.board.id, task: { ...live, ...patch } } })
   }
   // Drag-vs-click discrimination: capture the mousedown position; if mouseup lands within 4px
   // of it (no real drag happened) treat it as a click and open the editor instead of doing nothing.

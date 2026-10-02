@@ -772,6 +772,7 @@ export default function ProjectsPage() {
                               onChange={e => setSubFilter(f => ({ ...f, [col.key]: e.target.value }))}
                               title="この列をカスタムステータスで絞り込み"
                               style={cur ? statusChipStyle(cur.color) : undefined}
+                              data-cs={cur ? '' : undefined}
                               className="flex-1 min-w-0 text-[11px] bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 outline-none text-slate-600"
                             >
                               <option value="">すべて（{col.label} {allFiltered.filter(t => t.status === col.key).length}）</option>
@@ -798,7 +799,7 @@ export default function ProjectsPage() {
                           onMove={moveTask}
                           onDelete={deleteTask}
                           onUpdate={updateTask}
-                          onAddSubtask={(parentId) => addTask('todo', parentId)}
+                          onAddSubtask={(parentId) => addTask(subDef?.base ?? 'todo', parentId, subDef?.name)}
                           onDragStart={(id) => { dragIdRef.current = id }}
                           onDropBefore={(id, status) => dropTask(status, id, subDef?.id)}
                           onNestInto={(pid) => nestTaskInto(pid, subDef?.id)}
@@ -1394,7 +1395,7 @@ function TaskCard({ task, boardTasks, customStatuses, otherBoards, mode, columnS
                       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setStepMenu(v => !v) }}
                       onMouseDown={e => e.stopPropagation()}
                       title={`${effectiveCustom ? `${base.label} › ${effectiveCustom.name}\n` : ''}クリックで 未着手→進行中→完了 を切替（${STATUS_COMMIT_MS / 1000}秒後に確定して移動）${hasSubs ? '／▾ で細分ステータスを選択' : ''}`}
-                      style={pillStyle}
+                      style={pillStyle} data-cs={pillStyle ? '' : undefined}
                       className={`relative inline-flex items-center gap-0.5 pl-0.5 pr-1 py-px border overflow-hidden transition-colors ${hasSubs ? 'rounded-l-full' : 'rounded-full'} ${meta.border} ${meta.bg} ${meta.text} ${isPending ? `ring-2 ring-offset-1 ${meta.ring}` : 'hover:brightness-95'}`}
                     >
                       <Icon size={12} className={meta.icon} />
@@ -1408,7 +1409,7 @@ function TaskCard({ task, boardTasks, customStatuses, otherBoards, mode, columnS
                         onClick={e => { e.stopPropagation(); setStepMenu(v => !v) }}
                         onMouseDown={e => e.stopPropagation()}
                         title="ステータスを一覧から選択"
-                        style={pillStyle}
+                        style={pillStyle} data-cs={pillStyle ? '' : undefined}
                         className={`self-stretch inline-flex items-center px-0.5 border border-l-0 rounded-r-full hover:brightness-95 ${meta.border} ${meta.bg} ${meta.text}`}
                       >
                         <ChevronDown size={10} />

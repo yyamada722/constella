@@ -130,6 +130,7 @@ export default function CustomStatusManager({ project }: { project: Project }) {
                             if (e.key === 'Escape') { (e.target as HTMLInputElement).value = def.name; (e.target as HTMLInputElement).blur() }
                           }}
                           style={statusChipStyle(def.color)}
+                          data-cs=""
                           className="flex-1 min-w-0 text-xs px-1.5 py-0.5 rounded border outline-none focus:ring-1 focus:ring-slate-300"
                         />
                         <select
