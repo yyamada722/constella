@@ -395,9 +395,9 @@ export default function ProjectsPage() {
     dispatch({ type: 'ADD_TASK', payload: { projectId: selectedProjectId, task } })
   }
 
-  function updateTask(task: Task) {
+  function updateTask(task: Task, explicitStatus?: boolean) {
     if (!selectedProjectId) return
-    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProjectId, task } })
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProjectId, task, explicitStatus } })
   }
 
   // Delete a task and every descendant (so the tree never leaves orphan ids around).
@@ -414,7 +414,7 @@ export default function ProjectsPage() {
     if (!selectedProject) return
     const task = selectedProject.tasks.find(t => t.id === taskId)
     if (!task) return
-    updateTask(applyStep(task, selectedProject.customStatuses, step))
+    updateTask(applyStep(task, selectedProject.customStatuses, step), step.customId != null)
   }
 
   // Drag-and-drop reorder: move a task to a status, optionally before a given task.
@@ -447,7 +447,7 @@ export default function ProjectsPage() {
       idx = without.reduce((acc, t, i) => (t.status === toStatus ? i + 1 : acc), 0) // after last task of that column
     }
     const tasks = [...without.slice(0, idx), moved, ...without.slice(idx)]
-    dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: selectedProject.id, tasks } })
+    dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: selectedProject.id, tasks, explicitStatusIds: customId ? [moved.id] : undefined } })
   }
 
   // Make the dragged task a child of `parentId`. Validates against self / cycle and
@@ -465,7 +465,7 @@ export default function ProjectsPage() {
     if (dragged.parentId === parentId && (!def || customStatusOf(dragged, selectedProject.customStatuses)?.id === def.id)) return
     const nested: Task = { ...dragged, parentId }
     const task = def ? applyStep(nested, selectedProject.customStatuses, { status: def.base, customId: def.id }) : nested
-    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProject.id, task } })
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProject.id, task, explicitStatus: !!def } })
   }
 
   // Move a task and its entire subtree to another board within the same master project.

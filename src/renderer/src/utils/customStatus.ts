@@ -48,21 +48,36 @@ export function applyStep(task: Task, defs: CustomStatus[] | undefined, step: St
 }
 
 /** 不変条件の正規化。登録名と同じタグでも、基本状態が違うタスクでは「普通のタグ」として扱う
- *  (ユーザーが元々付けていたタグを黙って消さないため)。消すのは次の2つだけ:
- *  - 状態遷移 (prevStatus → task.status) 時の、旧基本状態に属する状態タグ
+ *  (ユーザーが元々付けていたタグを黙って消さないため)。消すのは次の3つだけ:
+ *  - 状態遷移 (prev.status → task.status) 時の、旧基本状態に属する状態タグ
+ *  - 状態遷移が「基本状態だけの変更」(explicit=false: ガント/一括編集/ダッシュボード等) のとき、
+ *    遷移前から普通のタグとして付いていた遷移先の状態タグ — 勝手に細分へ昇格させない
+ *    (カンバンのピルで基本状態を選んだ applyStep と同じ結果)。explicit=true は
+ *    applyStep で細分を明示的に選んだ経路で、そのタグを残す
  *  - 現在の基本状態に属する状態タグが複数あるとき、customStatusOf が選ぶもの (定義順で先)
  *    以外 — 表示と正規化の結果を一致させる
  *  reducer (ADD_TASK / UPDATE_TASK / SET_PROJECT_TASKS) がどの経路でもこれを通す。 */
-export function normalizeCustomStatus(task: Task, defs: CustomStatus[] | undefined, prevStatus?: Task['status']): Task {
+export function normalizeCustomStatus(
+  task: Task,
+  defs: CustomStatus[] | undefined,
+  prev?: Pick<Task, 'status' | 'tags'>,
+  explicit = false,
+): Task {
   if (!defs?.length || task.tags.length === 0) return task
   const byName = new Map(defs.map(d => [d.name, d]))
-  const chosen = customStatusOf(task, defs)
-  const transitioned = prevStatus !== undefined && prevStatus !== task.status
-  const tags = task.tags.filter(t => {
+  const transitioned = !!prev && prev.status !== task.status
+  const prevTags = new Set(prev?.tags ?? [])
+  const pass1 = task.tags.filter(t => {
     const d = byName.get(t)
-    if (!d) return true
-    if (d.base === task.status) return d === chosen
-    return !(transitioned && d.base === prevStatus)
+    if (!d || !transitioned) return true
+    if (d.base === prev!.status) return false
+    if (d.base === task.status && !explicit && prevTags.has(t)) return false
+    return true
+  })
+  const chosen = customStatusOf({ status: task.status, tags: pass1 }, defs)
+  const tags = pass1.filter(t => {
+    const d = byName.get(t)
+    return !d || d.base !== task.status || d === chosen
   })
   return tags.length === task.tags.length ? task : { ...task, tags }
 }

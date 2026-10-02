@@ -31,11 +31,13 @@ export default function CustomStatusManager({ project }: { project: Project }) {
 
   // 定義更新 → タスク更新を BATCH で 1 undo に。タスク側は SET_PROJECT_TASKS を
   // 通すので状態遷移の記帳 (完了日時・進行中時計) と状態タグ正規化が新定義で走る。
-  function commit(nextDefs: CustomStatus[], tasks?: Task[]) {
+  // explicitIds: 状態タグを保ったまま基本状態を移すタスク (changeBase) — reducer の
+  // 「基本状態だけの遷移では遷移先の既存タグを昇格させない」規則の対象外にする。
+  function commit(nextDefs: CustomStatus[], tasks?: Task[], explicitIds?: string[]) {
     const cur = projectRef.current
     const meta = { type: 'UPDATE_PROJECT' as const, payload: { ...cur, customStatuses: nextDefs.length ? nextDefs : undefined } }
     if (!tasks) { dispatch(meta); return }
-    dispatch({ type: 'BATCH', payload: [meta, { type: 'SET_PROJECT_TASKS', payload: { projectId: cur.id, tasks } }] })
+    dispatch({ type: 'BATCH', payload: [meta, { type: 'SET_PROJECT_TASKS', payload: { projectId: cur.id, tasks, explicitStatusIds: explicitIds } }] })
   }
 
   function add() {
@@ -59,7 +61,9 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     setError('')
     // 対象は「このステータスとして効いているタスク」だけ。基本状態が違うタスクの
     // 同名タグは普通のタグなので触らない。
-    const tasks = project.tasks.map(t => t.status === def.base && t.tags.includes(def.name)
+    // 表示上このステータスになっているタスクだけ (同じ基本状態で別の状態タグが
+    // 優先されているタスクの同名タグは、改名後は普通のタグとして残す)。
+    const tasks = project.tasks.map(t => customStatusOf(t, defs)?.id === def.id
       ? { ...t, tags: Array.from(new Set(t.tags.map(x => x === def.name ? name : x))) }
       : t)
     commit(defs.map(d => d.id === def.id ? { ...d, name } : d), tasks)
@@ -77,10 +81,11 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     const nextDefs = defs.map(d => d.id === def.id ? { ...d, base } : d)
     const competing = new Set(nextDefs.filter(d => d.base === base && d.id !== def.id).map(d => d.name))
     // 動かすのは、いまこのステータスとして表示されているタスクだけ。
-    const tasks = project.tasks.map(t => customStatusOf(t, defs)?.id === def.id
+    const moving = new Set(project.tasks.filter(t => customStatusOf(t, defs)?.id === def.id).map(t => t.id))
+    const tasks = project.tasks.map(t => moving.has(t.id)
       ? { ...t, status: base, tags: t.tags.filter(x => !competing.has(x)) }
       : t)
-    commit(nextDefs, tasks)
+    commit(nextDefs, tasks, [...moving])
   }
 
   async function remove(def: CustomStatus) {
@@ -91,7 +96,7 @@ export default function CustomStatusManager({ project }: { project: Project }) {
     const live = curDefs.find(d => d.id === def.id)
     if (!live) return // 待っている間に消えていた
     // 名前・基本状態も待っている間に変わり得るので最新の定義で照合する。
-    const tasks = cur.tasks.map(t => t.status === live.base && t.tags.includes(live.name) ? { ...t, tags: t.tags.filter(x => x !== live.name) } : t)
+    const tasks = cur.tasks.map(t => customStatusOf(t, curDefs)?.id === live.id ? { ...t, tags: t.tags.filter(x => x !== live.name) } : t)
     commit(curDefs.filter(d => d.id !== def.id), tasks)
   }
 

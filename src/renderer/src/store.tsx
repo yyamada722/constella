@@ -67,9 +67,10 @@ export type Action =
   | { type: 'UPDATE_PROJECT'; payload: Project }
   | { type: 'DELETE_PROJECT'; payload: string }
   | { type: 'ADD_TASK'; payload: { projectId: string; task: Task } }
-  | { type: 'UPDATE_TASK'; payload: { projectId: string; task: Task } }
+  // explicitStatus: applyStep で細分ステータスを明示的に選んだ更新 (normalizeCustomStatus 参照)
+  | { type: 'UPDATE_TASK'; payload: { projectId: string; task: Task; explicitStatus?: boolean } }
   | { type: 'DELETE_TASK'; payload: { projectId: string; taskId: string } }
-  | { type: 'SET_PROJECT_TASKS'; payload: { projectId: string; tasks: Task[] } }
+  | { type: 'SET_PROJECT_TASKS'; payload: { projectId: string; tasks: Task[]; explicitStatusIds?: string[] } }
   | { type: 'ADD_RESEARCH'; payload: ResearchItem }
   | { type: 'UPDATE_RESEARCH'; payload: ResearchItem }
   | { type: 'DELETE_RESEARCH'; payload: string }
@@ -526,7 +527,7 @@ function reducer(state: AppState, action: Action): AppState {
           if (p.id !== action.payload.projectId) return p
           return {
             ...p,
-            tasks: p.tasks.map(t => t.id === action.payload.task.id ? normalizeCustomStatus(applyStatusBookkeeping(t, action.payload.task), p.customStatuses, t.status) : t),
+            tasks: p.tasks.map(t => t.id === action.payload.task.id ? normalizeCustomStatus(applyStatusBookkeeping(t, action.payload.task), p.customStatuses, t, !!action.payload.explicitStatus) : t),
           }
         }),
       }
@@ -553,7 +554,8 @@ function reducer(state: AppState, action: Action): AppState {
       const prevProject = state.projects.find(p => p.id === action.payload.projectId)
       const prevById = new Map((prevProject?.tasks ?? []).map(t => [t.id, t]))
       // 状態タグ (カスタムステータス) も基本状態と食い違うものはここで外す。
-      const tasks = action.payload.tasks.map(next => normalizeCustomStatus(applyStatusBookkeeping(prevById.get(next.id), next), prevProject?.customStatuses, prevById.get(next.id)?.status))
+      const explicitIds = new Set(action.payload.explicitStatusIds ?? [])
+      const tasks = action.payload.tasks.map(next => normalizeCustomStatus(applyStatusBookkeeping(prevById.get(next.id), next), prevProject?.customStatuses, prevById.get(next.id), explicitIds.has(next.id)))
       return {
         ...state,
         projects: state.projects.map(p =>
