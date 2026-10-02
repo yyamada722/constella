@@ -177,3 +177,7 @@ body {
 .canvas-card.canvas-card-square,
 .canvas-card.canvas-card-square > .canvas-card-body,
 .canvas-card.canvas-card-square :is(.rounded-t-xl, .rounded-b-xl, .rounded-l-xl) { border-radius: 0; }
+
+/* カスタムステータスのチップ文字色 (utils/customStatus.ts statusChipStyle がテーマ別に計算) */
+:root [data-cs] { color: var(--cs-fg-l); }
+.dark [data-cs] { color: var(--cs-fg-d); }

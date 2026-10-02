@@ -8,6 +8,7 @@ import { exportBackup } from './persistence/backup'
 import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs, currentEditSeq } from './persistence/folderSync'
 import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
+import { normalizeCustomStatus } from './utils/customStatus'
 
 // The single default master project that all pre-existing data is migrated under.
 // Keep this id in sync with db.ts (SQL migration) and mindtrain (workspace id).
@@ -66,9 +67,10 @@ export type Action =
   | { type: 'UPDATE_PROJECT'; payload: Project }
   | { type: 'DELETE_PROJECT'; payload: string }
   | { type: 'ADD_TASK'; payload: { projectId: string; task: Task } }
-  | { type: 'UPDATE_TASK'; payload: { projectId: string; task: Task } }
+  // explicitStatus: applyStep で細分ステータスを明示的に選んだ更新 (normalizeCustomStatus 参照)
+  | { type: 'UPDATE_TASK'; payload: { projectId: string; task: Task; explicitStatus?: boolean } }
   | { type: 'DELETE_TASK'; payload: { projectId: string; taskId: string } }
-  | { type: 'SET_PROJECT_TASKS'; payload: { projectId: string; tasks: Task[] } }
+  | { type: 'SET_PROJECT_TASKS'; payload: { projectId: string; tasks: Task[]; explicitStatusIds?: string[] } }
   | { type: 'ADD_RESEARCH'; payload: ResearchItem }
   | { type: 'UPDATE_RESEARCH'; payload: ResearchItem }
   | { type: 'DELETE_RESEARCH'; payload: string }
@@ -505,12 +507,13 @@ function reducer(state: AppState, action: Action): AppState {
     case 'ADD_TASK': {
       // Normalize completedAt / the 進行中 clock for tasks born 'done' or
       // 'in-progress' (bulk import, AI add) — same rules as every other path.
-      const task = applyStatusBookkeeping(undefined, action.payload.task)
+      // 状態タグも正規化 (一括追加/AI 由来のタグに複数の状態タグが混じる場合など)。
+      const born = applyStatusBookkeeping(undefined, action.payload.task)
       return {
         ...state,
         projects: state.projects.map(p =>
           p.id === action.payload.projectId
-            ? { ...p, tasks: [...p.tasks, task] }
+            ? { ...p, tasks: [...p.tasks, normalizeCustomStatus(born, p.customStatuses)] }
             : p
         ),
       }
@@ -524,7 +527,7 @@ function reducer(state: AppState, action: Action): AppState {
           if (p.id !== action.payload.projectId) return p
           return {
             ...p,
-            tasks: p.tasks.map(t => t.id === action.payload.task.id ? applyStatusBookkeeping(t, action.payload.task) : t),
+            tasks: p.tasks.map(t => t.id === action.payload.task.id ? normalizeCustomStatus(applyStatusBookkeeping(t, action.payload.task), p.customStatuses, t, !!action.payload.explicitStatus) : t),
           }
         }),
       }
@@ -550,7 +553,9 @@ function reducer(state: AppState, action: Action): AppState {
       // transition to fold — the helper only normalizes their invariants.
       const prevProject = state.projects.find(p => p.id === action.payload.projectId)
       const prevById = new Map((prevProject?.tasks ?? []).map(t => [t.id, t]))
-      const tasks = action.payload.tasks.map(next => applyStatusBookkeeping(prevById.get(next.id), next))
+      // 状態タグ (カスタムステータス) も基本状態と食い違うものはここで外す。
+      const explicitIds = new Set(action.payload.explicitStatusIds ?? [])
+      const tasks = action.payload.tasks.map(next => normalizeCustomStatus(applyStatusBookkeeping(prevById.get(next.id), next), prevProject?.customStatuses, prevById.get(next.id), explicitIds.has(next.id)))
       return {
         ...state,
         projects: state.projects.map(p =>

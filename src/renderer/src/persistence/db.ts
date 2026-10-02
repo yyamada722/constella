@@ -13,7 +13,7 @@ import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 import { isRemote } from './runtime'
 import type { AppState } from '../store'
 import type {
-  Note, NoteAttachment, NoteFolder, FileItem, FileVersion, FileFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
+  Note, NoteAttachment, NoteFolder, FileItem, FileVersion, FileFolder, Project, CustomStatus, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, SketchStroke, AIConversation, AIMessage,
   CanvasTab, CanvasBoard, CanvasCard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, CardPage, Bookmark, Flow, FlowNode, FlowEdge, FlowGroup, Plan, PlanFolder, TimelineBand,
 } from '../types'
 import { generateId } from '../utils'
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS notes (ord INTEGER, id TEXT PRIMARY KEY, masterProjec
 CREATE TABLE IF NOT EXISTS note_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS files (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, linkedMasterIds TEXT, name TEXT, url TEXT, mime TEXT, size REAL, tags TEXT, folderId TEXT, comment TEXT, versions TEXT, createdAt TEXT);
 CREATE TABLE IF NOT EXISTS file_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
-CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT);
+CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT, customStatuses TEXT);
 CREATE TABLE IF NOT EXISTS tasks (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, title TEXT, description TEXT, status TEXT, tags TEXT, createdAt TEXT, startDate TEXT, endDate TEXT, parentId TEXT, linkedNoteIds TEXT, priority INTEGER, completedAt TEXT, shared INTEGER, sharedAlias TEXT, fileIds TEXT, doingMs REAL, doingSince TEXT);
 CREATE TABLE IF NOT EXISTS research (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, url TEXT, description TEXT, tags TEXT, category TEXT, createdAt TEXT, folderId TEXT, archivedAt TEXT);
 CREATE TABLE IF NOT EXISTS research_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
@@ -226,6 +226,7 @@ function applySchemaAndMigrations(db: Database): void {
   try { db.run('ALTER TABLE tasks ADD COLUMN endDate TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE tasks ADD COLUMN parentId TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE projects ADD COLUMN color TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE projects ADD COLUMN customStatuses TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE tasks ADD COLUMN linkedNoteIds TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_cards ADD COLUMN refNoteId TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_cards ADD COLUMN refTaskId TEXT') } catch { /* column already present */ }
@@ -472,6 +473,7 @@ function readState(db: Database): AppState | null {
   const projects: Project[] = rows(db, 'SELECT * FROM projects ORDER BY ord').map(r => ({
     id: str(r.id), masterProjectId: str(r.masterProjectId), name: str(r.name), description: str(r.description), createdAt: str(r.createdAt),
     color: optStr(r.color) as Project['color'],
+    customStatuses: r.customStatuses ? parseArr<CustomStatus>(r.customStatuses) : undefined,
     tasks: tasksByProject.get(str(r.id)) ?? [],
   }))
 
@@ -724,8 +726,8 @@ async function doSaveState(state: AppState): Promise<void> {
     insert('INSERT INTO file_folders (ord,id,masterProjectId,name,createdAt,parentId,color) VALUES (?,?,?,?,?,?,?)',
       state.fileFolders.map((f, i) => [i, f.id, f.masterProjectId, f.name, f.createdAt, f.parentId ?? null, f.color ?? null].map(B)))
 
-    insert('INSERT INTO projects (ord,id,masterProjectId,name,description,createdAt,color) VALUES (?,?,?,?,?,?,?)',
-      state.projects.map((p, i) => [i, p.id, p.masterProjectId, p.name, p.description, p.createdAt, p.color ?? null].map(B)))
+    insert('INSERT INTO projects (ord,id,masterProjectId,name,description,createdAt,color,customStatuses) VALUES (?,?,?,?,?,?,?,?)',
+      state.projects.map((p, i) => [i, p.id, p.masterProjectId, p.name, p.description, p.createdAt, p.color ?? null, p.customStatuses?.length ? JSON.stringify(p.customStatuses) : null].map(B)))
 
     let taskOrd = 0
     const taskRows: (string | number | null)[][] = []

@@ -1,0 +1,211 @@
+import { useEffect, useRef, useState } from 'react'
+import { Tags, Trash2, Plus } from 'lucide-react'
+import { useApp } from '../store'
+import { CustomStatus, Project, Task } from '../types'
+import { generateId } from '../utils'
+import { DEFAULT_STATUS_HEX, STATUS_HEX_PRESETS, statusHex, statusChipStyle, customStatusOf } from '../utils/customStatus'
+import { confirmDialog } from './ConfirmDialog'
+import { usePopoverDismiss } from './usePopoverDismiss'
+
+const BASE_LABEL: Record<Task['status'], string> = { 'todo': '未着手', 'in-progress': '進行中', 'done': '完了' }
+
+// ボードのカスタムステータス (状態タグ) 管理ポップオーバー。
+// 名前変更はボード内タスクのタグも追従させ、削除はタグごと外す — どちらも
+// UPDATE_PROJECT 1 回なので 1 undo。
+export default function CustomStatusManager({ project }: { project: Project }) {
+  const { dispatch } = useApp()
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const popRef = usePopoverDismiss<HTMLDivElement>(open, () => setOpen(false), triggerRef)
+  const [newName, setNewName] = useState('')
+  const [newBase, setNewBase] = useState<Task['status']>('in-progress')
+  const [error, setError] = useState('')
+  // 画面右端に近いときは右揃えで開く (狭いウィンドウではみ出さないように)。
+  const [alignRight, setAlignRight] = useState(false)
+  const defs = project.customStatuses ?? []
+  // 最新のボード。確認ダイアログ (await) の間に同期などでボードが差し替わっても、
+  // 古いスナップショットで上書きしないよう commit / remove はここから読む。
+  const projectRef = useRef(project); projectRef.current = project
+
+  const usage = (def: CustomStatus) => project.tasks.filter(t => customStatusOf(t, defs)?.id === def.id).length
+
+  // 定義更新 → タスク更新を BATCH で 1 undo に。タスク側は SET_PROJECT_TASKS を
+  // 通すので状態遷移の記帳 (完了日時・進行中時計) と状態タグ正規化が新定義で走る。
+  // explicitIds: 状態タグを保ったまま基本状態を移すタスク (changeBase) — reducer の
+  // 「基本状態だけの遷移では遷移先の既存タグを昇格させない」規則の対象外にする。
+  function commit(nextDefs: CustomStatus[], tasks?: Task[], explicitIds?: string[]) {
+    const cur = projectRef.current
+    const meta = { type: 'UPDATE_PROJECT' as const, payload: { ...cur, customStatuses: nextDefs.length ? nextDefs : undefined } }
+    if (!tasks) { dispatch(meta); return }
+    dispatch({ type: 'BATCH', payload: [meta, { type: 'SET_PROJECT_TASKS', payload: { projectId: cur.id, tasks, explicitStatusIds: explicitIds } }] })
+  }
+
+  function add() {
+    const name = newName.trim().replace(/^#/, '')
+    if (!name) return
+    if (defs.some(d => d.name === name)) { setError(`「${name}」は既にあります`); return }
+    // 同じ基本状態の中で色が被らないよう、未使用の色を優先。
+    const used = new Set(defs.map(d => statusHex(d.color)))
+    const pref = DEFAULT_STATUS_HEX[newBase]
+    const color = used.has(pref) ? (STATUS_HEX_PRESETS.find(c => !used.has(c)) ?? pref) : pref
+    commit([...defs, { id: generateId(), name, base: newBase, color }])
+    setNewName(''); setError('')
+  }
+
+  // 却下時は入力欄を元の名前に戻す (非制御 input なので放置すると表示だけ食い違う)。
+  function rename(def: CustomStatus, raw: string, input?: HTMLInputElement) {
+    const name = raw.trim().replace(/^#/, '')
+    const reject = () => { if (input) input.value = def.name }
+    if (!name || name === def.name) { reject(); return }
+    if (defs.some(d => d.id !== def.id && d.name === name)) { setError(`「${name}」は既にあります`); reject(); return }
+    setError('')
+    // 対象は「このステータスとして効いているタスク」だけ。基本状態が違うタスクの
+    // 同名タグは普通のタグなので触らない。
+    // 表示上このステータスになっているタスクだけ (同じ基本状態で別の状態タグが
+    // 優先されているタスクの同名タグは、改名後は普通のタグとして残す)。
+    const tasks = project.tasks.map(t => customStatusOf(t, defs)?.id === def.id
+      ? { ...t, tags: Array.from(new Set(t.tags.map(x => x === def.name ? name : x))) }
+      : t)
+    commit(defs.map(d => d.id === def.id ? { ...d, name } : d), tasks)
+  }
+
+  function patch(def: CustomStatus, p: Partial<CustomStatus>) {
+    commit(defs.map(d => d.id === def.id ? { ...d, ...p } : d))
+  }
+
+  // 基本状態を変えたら、そのタグを持つタスクも新しい基本状態へ寄せる
+  // (そうしないと reducer の正規化で次の更新時にタグが外れてしまう)。
+  function changeBase(def: CustomStatus, base: Task['status']) {
+    // 移動先の基本状態に既にある別の状態タグは外す — 残すと定義順で優先されて
+    // このステータスの方が正規化で消えてしまう。
+    const nextDefs = defs.map(d => d.id === def.id ? { ...d, base } : d)
+    const competing = new Set(nextDefs.filter(d => d.base === base && d.id !== def.id).map(d => d.name))
+    // 動かすのは、いまこのステータスとして表示されているタスクだけ。
+    const moving = new Set(project.tasks.filter(t => customStatusOf(t, defs)?.id === def.id).map(t => t.id))
+    const tasks = project.tasks.map(t => moving.has(t.id)
+      ? { ...t, status: base, tags: t.tags.filter(x => !competing.has(x)) }
+      : t)
+    commit(nextDefs, tasks, [...moving])
+  }
+
+  async function remove(def: CustomStatus) {
+    const n = usage(def)
+    if (n > 0 && !(await confirmDialog(`ステータス「${def.name}」を削除しますか？\n使用中の ${n} 件のタスクからも外れます（基本状態「${BASE_LABEL[def.base]}」は維持）。`, { danger: true, confirmLabel: '削除' }))) return
+    const cur = projectRef.current
+    const curDefs = cur.customStatuses ?? []
+    const live = curDefs.find(d => d.id === def.id)
+    if (!live) return // 待っている間に消えていた
+    // 名前・基本状態も待っている間に変わり得るので最新の定義で照合する。
+    const tasks = cur.tasks.map(t => customStatusOf(t, curDefs)?.id === live.id ? { ...t, tags: t.tags.filter(x => x !== live.name) } : t)
+    commit(curDefs.filter(d => d.id !== def.id), tasks)
+  }
+
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        ref={triggerRef}
+        onClick={() => {
+          const r = triggerRef.current?.getBoundingClientRect()
+          if (r) setAlignRight(r.left + 340 > window.innerWidth - 8)
+          setOpen(v => !v)
+        }}
+        title="カスタムステータス（状態タグ）を管理"
+        className={`flex items-center gap-1 px-2.5 py-1 rounded-md border text-xs transition-colors whitespace-nowrap ${open ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-800 hover:border-slate-300'}`}
+      >
+        <Tags size={13} /> ステータス{defs.length > 0 && <span className="text-[10px] text-slate-400">({defs.length})</span>}
+      </button>
+      {open && (
+        <div ref={popRef} className={`absolute ${alignRight ? 'right-0' : 'left-0'} top-full mt-1 z-30 w-[340px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-8rem)] overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-xl p-3 space-y-2`}>
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            基本状態（未着手 / 進行中 / 完了）を細分化する「状態タグ」です。タスクにはタグとして付き、カードのステータスピル横の ▾ から選べます。色の丸をクリックすると任意の色を設定できます。
+          </p>
+          {(['todo', 'in-progress', 'done'] as const).map(base => {
+            const list = defs.filter(d => d.base === base)
+            if (list.length === 0) return null
+            return (
+              <div key={base}>
+                <div className="text-[10px] font-semibold text-slate-400 mb-1">{BASE_LABEL[base]}</div>
+                <div className="space-y-1">
+                  {list.map(def => {
+                    return (
+                      <div key={def.id} className="flex items-center gap-1.5">
+                        <ColorDot value={statusHex(def.color)} onCommit={hex => patch(def, { color: hex })} />
+                        <input
+                          key={def.name}
+                          defaultValue={def.name}
+                          onBlur={e => rename(def, e.target.value, e.target)}
+                          onKeyDown={e => {
+                            if (e.nativeEvent.isComposing) return
+                            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                            if (e.key === 'Escape') { (e.target as HTMLInputElement).value = def.name; (e.target as HTMLInputElement).blur() }
+                          }}
+                          style={statusChipStyle(def.color)}
+                          data-cs=""
+                          className="flex-1 min-w-0 text-xs px-1.5 py-0.5 rounded border outline-none focus:ring-1 focus:ring-slate-300"
+                        />
+                        <select
+                          value={def.base}
+                          onChange={e => changeBase(def, e.target.value as Task['status'])}
+                          className="text-[11px] bg-slate-50 border border-slate-200 rounded px-1 py-0.5 outline-none text-slate-600"
+                        >
+                          {(['todo', 'in-progress', 'done'] as const).map(b => <option key={b} value={b}>{BASE_LABEL[b]}</option>)}
+                        </select>
+                        <span className="text-[10px] text-slate-400 w-6 text-right tabular-nums" title="使用中のタスク数">{usage(def)}</span>
+                        <button onClick={() => remove(def)} title="削除" className="p-0.5 rounded text-slate-400 hover:text-rose-500 hover:bg-rose-50">
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+          <div className="flex items-center gap-1.5 pt-2 border-t border-slate-100">
+            <input
+              value={newName}
+              onChange={e => { setNewName(e.target.value); setError('') }}
+              onKeyDown={e => { if (!e.nativeEvent.isComposing && e.key === 'Enter') add() }}
+              placeholder="例: レビュー待ち / 保留 / 確認中"
+              className="flex-1 min-w-0 text-xs bg-slate-50 border border-slate-200 rounded px-1.5 py-1 outline-none focus:border-violet-400"
+            />
+            <select
+              value={newBase}
+              onChange={e => setNewBase(e.target.value as Task['status'])}
+              className="text-[11px] bg-slate-50 border border-slate-200 rounded px-1 py-1 outline-none text-slate-600"
+            >
+              {(['todo', 'in-progress', 'done'] as const).map(b => <option key={b} value={b}>{BASE_LABEL[b]}</option>)}
+            </select>
+            <button onClick={add} disabled={!newName.trim()} className="flex items-center gap-0.5 text-xs px-2 py-1 rounded bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-40">
+              <Plus size={12} />追加
+            </button>
+          </div>
+          {error && <p className="text-[11px] text-rose-500">{error}</p>}
+          <p className="text-[10px] text-slate-400">既存のタグ名で作ると、そのタグを持つタスクがそのままこのステータスになります（基本状態が一致する場合）。</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 任意色ピッカー。ドラッグ中 (input イベント) はローカルにプレビューだけ反映し、
+// ピッカーを閉じた時の native change で 1 回だけ確定 → undo 履歴が 1 段で済む。
+function ColorDot({ value, onCommit }: { value: string; onCommit: (hex: string) => void }) {
+  const [local, setLocal] = useState(value)
+  const ref = useRef<HTMLInputElement>(null)
+  const commitRef = useRef(onCommit); commitRef.current = onCommit
+  useEffect(() => setLocal(value), [value])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const onChange = () => { if (el.value.toLowerCase() !== value) commitRef.current(el.value.toLowerCase()) }
+    el.addEventListener('change', onChange)
+    return () => el.removeEventListener('change', onChange)
+  }, [value])
+  return (
+    <label title="クリックで色を選択" className="relative w-4 h-4 rounded-full shrink-0 cursor-pointer ring-1 ring-black/10 overflow-hidden" style={{ backgroundColor: local }}>
+      <input ref={ref} type="color" value={local} onInput={e => setLocal((e.target as HTMLInputElement).value)} onChange={() => { /* committed on native change */ }} className="absolute inset-0 opacity-0 cursor-pointer" />
+    </label>
+  )
+}

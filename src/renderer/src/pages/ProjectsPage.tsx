@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Plus, MoreHorizontal, Pencil, LayoutGrid, GanttChartSquare, CalendarDays, ChevronRight, ChevronDown, ListTree, AlignLeft, CornerDownRight, PanelLeftClose, PanelLeftOpen, FileText, Trash2, Copy, X, ListPlus, Sparkles, Circle, CircleDot, CheckCircle2, Paperclip, SquareTerminal } from 'lucide-react'
 import { useApp } from '../store'
-import { Task, Project, BoardColor } from '../types'
+import { Task, Project, BoardColor, CustomStatus } from '../types'
 import { generateId } from '../utils'
 import { aggregateFor, childrenMap, descendantIds, rootsOf, wouldCycle } from '../utils/taskTree'
 import { BOARD_COLOR_CLASSES, ALL_BOARD_COLORS, boardColorFor } from '../utils/boardColor'
@@ -15,6 +15,8 @@ import NotePanel from '../components/NotePanel'
 import { confirmDialog, chooseDialog } from '../components/ConfirmDialog'
 import TaskScriptModal from '../components/TaskScriptModal'
 import { usePopoverDismiss } from '../components/usePopoverDismiss'
+import CustomStatusManager from '../components/CustomStatusManager'
+import { StatusStep, statusCycle, currentStep, stepKey, applyStep, customStatusOf, plainTags, statusChipStyle, statusDotStyle, BASE_STATUS_ORDER } from '../utils/customStatus'
 import GanttView from './GanttView'
 import CalendarView from './CalendarView'
 
@@ -212,6 +214,8 @@ export default function ProjectsPage() {
   // Kanban filters — search box + hide-done toggle, persisted to localStorage so they
   // survive reloads (filters are per-device preference, not per-project).
   const [taskFilter, setTaskFilter] = useState('')
+  // 列ごとのカスタムステータス絞り込み (列見出しのプルダウン)。'' = すべて。
+  const [subFilter, setSubFilter] = useState<Partial<Record<Task['status'], string>>>({})
   const [hideDone, setHideDone] = useState<boolean>(() => {
     try { return localStorage.getItem('constella.hideDone') === '1' } catch { return false }
   })
@@ -375,23 +379,25 @@ export default function ProjectsPage() {
     setShowNewProject(false)
   }
 
-  function addTask(status: Task['status'], parentId?: string) {
+  // customName: 列がカスタムステータスで絞り込まれているとき、その状態タグを付けて
+  // 作る (付けないと絞り込みから外れて「追加したのに消えた」ように見える)。
+  function addTask(status: Task['status'], parentId?: string, customName?: string) {
     if (!selectedProjectId) return
     const task: Task = {
       id: generateId(),
       title: parentId ? '新しいサブタスク' : '新しいタスク',
       description: '',
       status,
-      tags: [],
+      tags: customName ? [customName] : [],
       createdAt: new Date().toISOString(),
       ...(parentId ? { parentId } : {}),
     }
     dispatch({ type: 'ADD_TASK', payload: { projectId: selectedProjectId, task } })
   }
 
-  function updateTask(task: Task) {
+  function updateTask(task: Task, explicitStatus?: boolean) {
     if (!selectedProjectId) return
-    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProjectId, task } })
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProjectId, task, explicitStatus } })
   }
 
   // Delete a task and every descendant (so the tree never leaves orphan ids around).
@@ -403,17 +409,20 @@ export default function ProjectsPage() {
     dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: selectedProjectId, tasks: remaining } })
   }
 
-  function moveTask(taskId: string, newStatus: Task['status']) {
+  // step = 基本状態 + カスタムステータス (状態タグ)。applyStep が状態タグを付け替える。
+  function moveTask(taskId: string, step: StatusStep) {
     if (!selectedProject) return
     const task = selectedProject.tasks.find(t => t.id === taskId)
     if (!task) return
-    updateTask({ ...task, status: newStatus })
+    updateTask(applyStep(task, selectedProject.customStatuses, step), step.customId != null)
   }
 
   // Drag-and-drop reorder: move a task to a status, optionally before a given task.
   // Dropping onto column whitespace (beforeId === null) also CLEARS parentId — this is
   // how users un-nest via D&D ("drag to column = make root + change status").
-  function dropTask(toStatus: Task['status'], beforeId: string | null) {
+  // customId: カスタムステータスで絞り込まれた列へのドロップ時、その状態を付ける
+  // (付けないとドロップしたタスクが絞り込みから外れて消えたように見える)。
+  function dropTask(toStatus: Task['status'], beforeId: string | null, customId?: string) {
     const taskId = dragIdRef.current
     dragIdRef.current = null
     setDragOverCol(null)
@@ -421,9 +430,15 @@ export default function ProjectsPage() {
     const without = selectedProject.tasks.filter(t => t.id !== taskId)
     const dragged = selectedProject.tasks.find(t => t.id === taskId)
     if (!dragged) return
-    const moved: Task = beforeId
-      ? { ...dragged, status: toStatus }
-      : { ...dragged, status: toStatus, parentId: undefined }
+    const placed: Task = beforeId ? dragged : { ...dragged, parentId: undefined }
+    // 列をまたぐ通常ドロップは基本状態そのもの (customId: null) へ — ピルで基本状態を
+    // 選んだときと同じく、移動先の状態タグを残して勝手に細分へ入らないようにする。
+    // 同じ列内の並べ替えは状態を変えないので触らない。
+    const moved: Task = customId
+      ? applyStep(placed, selectedProject.customStatuses, { status: toStatus, customId })
+      : placed.status !== toStatus
+        ? applyStep(placed, selectedProject.customStatuses, { status: toStatus, customId: null })
+        : placed
     let idx: number
     if (beforeId) {
       idx = without.findIndex(t => t.id === beforeId)
@@ -432,20 +447,25 @@ export default function ProjectsPage() {
       idx = without.reduce((acc, t, i) => (t.status === toStatus ? i + 1 : acc), 0) // after last task of that column
     }
     const tasks = [...without.slice(0, idx), moved, ...without.slice(idx)]
-    dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: selectedProject.id, tasks } })
+    dispatch({ type: 'SET_PROJECT_TASKS', payload: { projectId: selectedProject.id, tasks, explicitStatusIds: customId ? [moved.id] : undefined } })
   }
 
   // Make the dragged task a child of `parentId`. Validates against self / cycle and
   // is a no-op when the dragged is already a child of this parent.
-  function nestTaskInto(parentId: string) {
+  // customId: 絞り込み列でのネスト時はその状態を付ける (dropTask と同じ理由)。
+  function nestTaskInto(parentId: string, customId?: string) {
     const taskId = dragIdRef.current
     dragIdRef.current = null
     setDragOverCol(null)
     if (!selectedProject || !taskId || taskId === parentId) return
     if (wouldCycle(selectedProject.tasks, taskId, parentId)) return
     const dragged = selectedProject.tasks.find(t => t.id === taskId)
-    if (!dragged || dragged.parentId === parentId) return
-    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProject.id, task: { ...dragged, parentId } } })
+    if (!dragged) return
+    const def = customId ? selectedProject.customStatuses?.find(d => d.id === customId) : undefined
+    if (dragged.parentId === parentId && (!def || customStatusOf(dragged, selectedProject.customStatuses)?.id === def.id)) return
+    const nested: Task = { ...dragged, parentId }
+    const task = def ? applyStep(nested, selectedProject.customStatuses, { status: def.base, customId: def.id }) : nested
+    dispatch({ type: 'UPDATE_TASK', payload: { projectId: selectedProject.id, task, explicitStatus: !!def } })
   }
 
   // Move a task and its entire subtree to another board within the same master project.
@@ -675,6 +695,7 @@ export default function ProjectsPage() {
               >
                 {hideDone ? '完了非表示' : '完了表示'}
               </button>
+              <CustomStatusManager project={selectedProject} />
               <button
                 onClick={() => setBulkOpen(true)}
                 title="AI出力やリストから一括でタスクを追加"
@@ -720,20 +741,53 @@ export default function ProjectsPage() {
                 // Compute aggregate over the UNFILTERED task set so a parent whose only
                 // child is 'done' still shows in 完了 even when 完了非表示 hides that child.
                 // flat mode: every task ranked by its own status (children visible too).
-                const tasks = kanbanMode === 'tree'
-                  ? rootsOf(allFiltered).filter(t => aggregateFor(all, t).status === col.key)
-                  : allFiltered.filter(t => t.status === col.key)
+                const colDefs = (selectedProject.customStatuses ?? []).filter(d => d.base === col.key)
+                const subId = colDefs.some(d => d.id === subFilter[col.key]) ? subFilter[col.key]! : ''
+                // A sub-status filter narrows to the matching tasks themselves and shows
+                // them as a flat list (each its own card, no recursive children) — so
+                // non-matching descendants never leak into the narrowed result.
+                const subDef = colDefs.find(d => d.id === subId)
+                const cardMode: KanbanMode = subDef ? 'flat' : kanbanMode
+                const tasks = subDef
+                  ? allFiltered.filter(t => customStatusOf(t, colDefs)?.id === subDef.id)
+                  : kanbanMode === 'tree'
+                    ? rootsOf(allFiltered).filter(t => aggregateFor(all, t).status === col.key)
+                    : allFiltered.filter(t => t.status === col.key)
                 return (
                   <div
                     key={col.key}
                     className="flex-1 min-w-[250px] flex flex-col"
                     onDragOver={e => { e.preventDefault(); setDragOverCol(col.key) }}
                     onDragLeave={e => { if (e.currentTarget === e.target) setDragOverCol(null) }}
-                    onDrop={e => { e.preventDefault(); dropTask(col.key, null) }}
+                    onDrop={e => { e.preventDefault(); dropTask(col.key, null, subDef?.id) }}
                   >
-                    <div className={`flex items-center justify-between mb-3 pb-2 border-b-2 ${col.color}`}>
-                      <span className="text-sm font-semibold text-slate-700">{col.label}</span>
-                      <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{tasks.length}</span>
+                    <div className={`mb-3 pb-2 border-b-2 ${col.color}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-semibold text-slate-700">{col.label}</span>
+                        <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{tasks.length}</span>
+                      </div>
+                      {/* 細分化ステータスの絞り込み — 数が増えても1行で済むようプルダウン。 */}
+                      {colDefs.length > 0 && (() => {
+                        const cur = colDefs.find(d => d.id === subId)
+                        return (
+                          <div className="flex items-center gap-1.5 mt-1.5">
+                            {cur && <span className="w-2 h-2 rounded-full shrink-0" style={statusDotStyle(cur.color)} />}
+                            <select
+                              value={subId}
+                              onChange={e => setSubFilter(f => ({ ...f, [col.key]: e.target.value }))}
+                              title="この列をカスタムステータスで絞り込み"
+                              style={cur ? statusChipStyle(cur.color) : undefined}
+                              data-cs={cur ? '' : undefined}
+                              className="flex-1 min-w-0 text-[11px] bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 outline-none text-slate-600"
+                            >
+                              <option value="">すべて（{col.label} {allFiltered.filter(t => t.status === col.key).length}）</option>
+                              {colDefs.map(d => (
+                                <option key={d.id} value={d.id}>{d.name}（{allFiltered.filter(t => customStatusOf(t, colDefs)?.id === d.id).length}）</option>
+                              ))}
+                            </select>
+                          </div>
+                        )
+                      })()}
                     </div>
                     <div className={`flex-1 space-y-2 overflow-y-auto rounded-lg transition-colors ${dragOverCol === col.key ? 'bg-slate-100/70' : ''}`}>
                       {tasks.map(task => (
@@ -741,24 +795,25 @@ export default function ProjectsPage() {
                           key={task.id}
                           task={task}
                           boardTasks={all}
+                          customStatuses={selectedProject.customStatuses}
                           otherBoards={boards.filter(b => b.id !== selectedProject!.id)}
-                          mode={kanbanMode}
+                          mode={cardMode}
                           columnStatus={col.key}
                           selectedTaskId={selectedTaskId}
                           onSelectTask={setSelectedTaskId}
                           onMove={moveTask}
                           onDelete={deleteTask}
                           onUpdate={updateTask}
-                          onAddSubtask={(parentId) => addTask('todo', parentId)}
+                          onAddSubtask={(parentId) => addTask(subDef?.base ?? 'todo', parentId, subDef?.name)}
                           onDragStart={(id) => { dragIdRef.current = id }}
-                          onDropBefore={(id, status) => dropTask(status, id)}
-                          onNestInto={nestTaskInto}
+                          onDropBefore={(id, status) => dropTask(status, id, subDef?.id)}
+                          onNestInto={(pid) => nestTaskInto(pid, subDef?.id)}
                           onMoveToBoard={moveTaskToBoard}
                           onDuplicateToBoard={duplicateTaskToBoard}
                         />
                       ))}
                       <button
-                        onClick={() => addTask(col.key)}
+                        onClick={() => addTask(col.key, undefined, subDef?.name)}
                         className="w-full py-2 rounded-lg border border-dashed border-slate-300 text-slate-500 text-sm hover:border-slate-400 hover:text-slate-500 transition-colors"
                       >
                         ＋ 追加
@@ -900,8 +955,8 @@ export default function ProjectsPage() {
   )
 }
 
-// Clickable status pill metadata + the click-cycle order (todo → 進行中 → 完了 → …).
-const STATUS_ORDER: Task['status'][] = ['todo', 'in-progress', 'done']
+// Clickable status pill metadata. The click-cycle order (todo → [細分] → 進行中 → …)
+// comes from statusCycle() so board-defined custom statuses slot in after their base.
 const STATUS_META: Record<Task['status'], { label: string; Icon: typeof Circle; icon: string; bg: string; text: string; border: string; ring: string }> = {
   'todo':        { label: '未着手', Icon: Circle,       icon: 'text-slate-400',   bg: 'bg-slate-100',   text: 'text-slate-600',   border: 'border-slate-300',   ring: 'ring-slate-400' },
   'in-progress': { label: '進行中', Icon: CircleDot,    icon: 'text-amber-500',   bg: 'bg-amber-100',   text: 'text-amber-700',   border: 'border-amber-300',   ring: 'ring-amber-400' },
@@ -926,9 +981,10 @@ const DEPTH_THEME = [
 ]
 const depthTheme = (d: number) => DEPTH_THEME[Math.min(d, DEPTH_THEME.length - 1)]
 
-function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedTaskId, onSelectTask, onMove, onDelete, onUpdate, onAddSubtask, onDragStart, onDropBefore, onNestInto, onMoveToBoard, onDuplicateToBoard, depth = 0 }: {
+function TaskCard({ task, boardTasks, customStatuses, otherBoards, mode, columnStatus, selectedTaskId, onSelectTask, onMove, onDelete, onUpdate, onAddSubtask, onDragStart, onDropBefore, onNestInto, onMoveToBoard, onDuplicateToBoard, depth = 0 }: {
   task: Task
   boardTasks: Task[]
+  customStatuses?: CustomStatus[]
   otherBoards: Project[]
   mode: KanbanMode
   // The column this card is rendered under. In tree mode this can differ from
@@ -937,7 +993,7 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
   columnStatus?: Task['status']
   selectedTaskId: string | null
   onSelectTask: (id: string | null) => void
-  onMove: (id: string, status: Task['status']) => void
+  onMove: (id: string, step: StatusStep) => void
   onDelete: (id: string) => void
   onUpdate: (task: Task) => void
   onAddSubtask: (parentId: string) => void
@@ -998,12 +1054,19 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
   // re-reads the task so nothing goes stale) and the card relocates columns.
   // Aggregate parents in tree mode are display-only (status is derived).
   const canCycleStatus = !(mode === 'tree' && hasChildren)
-  const [pendingStatus, setPendingStatus] = useState<Task['status'] | null>(null)
+  const cycle = useMemo(() => statusCycle(customStatuses), [customStatuses])
+  const committedStep = currentStep(task, customStatuses)
+  const committedKey = stepKey(committedStep)
+  const [pendingStatus, setPendingStatus] = useState<StatusStep | null>(null)
   const [pendingTick, setPendingTick] = useState(0) // re-keys the countdown bar on each click
   const commitTimerRef = useRef<number | null>(null)
-  const pendingRef = useRef<Task['status'] | null>(null)   // latest pending, read in the timer
-  const statusRef = useRef(task.status); statusRef.current = task.status // latest committed status
+  const pendingRef = useRef<StatusStep | null>(null)   // latest pending, read in the timer
+  const statusRef = useRef(committedKey); statusRef.current = committedKey // latest committed step
   const onMoveRef = useRef(onMove); onMoveRef.current = onMove // always commit through the LATEST closure
+  // Right-click on the pill: pick any step directly (no settle delay).
+  const [stepMenu, setStepMenu] = useState(false)
+  const stepTriggerRef = useRef<HTMLSpanElement>(null)
+  const stepMenuRef = usePopoverDismiss<HTMLDivElement>(stepMenu, () => setStepMenu(false), stepTriggerRef)
   useEffect(() => () => { if (commitTimerRef.current) clearTimeout(commitTimerRef.current) }, [])
   // Any change to the real status — our own commit OR an external drag/edit —
   // supersedes a queued pending: cancel the settle timer and drop the preview so
@@ -1015,13 +1078,21 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
       setPendingStatus(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task.status])
-  const effectiveStatus = pendingStatus ?? displayStatus
+  }, [committedKey])
+  const effectiveStatus = pendingStatus?.status ?? displayStatus
+  // Custom status shown on the pill: the pending one while cycling, else the committed one
+  // (aggregate parents show none — their status is derived).
+  const effectiveCustom = pendingStatus
+    ? customStatuses?.find(d => d.id === pendingStatus.customId)
+    : canCycleStatus ? customStatusOf(task, customStatuses) : undefined
   function cycleStatus(e: React.MouseEvent) {
     e.stopPropagation()
     if (!canCycleStatus) return
-    const cur = pendingRef.current ?? task.status
-    const next = STATUS_ORDER[(STATUS_ORDER.indexOf(cur) + 1) % STATUS_ORDER.length]
+    // Click cycles the BASE states only (short loop no matter how many sub-statuses
+    // exist); sub-statuses are picked from the ▾ dropdown / right-click.
+    const cur = pendingRef.current ?? committedStep
+    const nextBase = BASE_STATUS_ORDER[(BASE_STATUS_ORDER.indexOf(cur.status) + 1) % BASE_STATUS_ORDER.length]
+    const next: StatusStep = { status: nextBase, customId: null }
     pendingRef.current = next
     setPendingStatus(next)
     setPendingTick(t => t + 1)
@@ -1034,15 +1105,22 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
       // Commit via the LATEST moveTask closure (onMoveRef) so it reads the current
       // task — a title/date edit made during the settle window is preserved, not
       // clobbered by a stale snapshot. Dispatch is OUTSIDE any setState updater.
-      if (p != null && p !== statusRef.current) onMoveRef.current(task.id, p)
+      if (p != null && stepKey(p) !== statusRef.current) onMoveRef.current(task.id, p)
     }, STATUS_COMMIT_MS)
   }
+  function pickStep(step: StatusStep) {
+    if (commitTimerRef.current) { clearTimeout(commitTimerRef.current); commitTimerRef.current = null }
+    pendingRef.current = null
+    setPendingStatus(null)
+    setStepMenu(false)
+    if (stepKey(step) !== committedKey) onMove(task.id, step)
+  }
+  const stepLabel = (st: StatusStep) => {
+    const d = st.customId ? customStatuses?.find(x => x.id === st.customId) : undefined
+    return d ? `${STATUS_META[st.status].label} › ${d.name}` : STATUS_META[st.status].label
+  }
 
-  const moveOptions = ([
-    { key: 'todo', label: '未着手' },
-    { key: 'in-progress', label: '進行中' },
-    { key: 'done', label: '完了' },
-  ] as { key: Task['status']; label: string }[]).filter(o => o.key !== task.status)
+  const moveOptions = cycle.filter(st => stepKey(st) !== committedKey)
 
   if (editing) {
     return (
@@ -1160,9 +1238,21 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
             />
           )}
         </div>
+        {(customStatuses?.length ?? 0) > 0 && canCycleStatus && (
+          <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+            <span className="shrink-0">状態</span>
+            <select
+              value={committedKey}
+              onChange={e => { const st = cycle.find(x => stepKey(x) === e.target.value); if (st) onMove(task.id, st) }}
+              className="flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 outline-none focus:border-emerald-400 text-slate-700"
+            >
+              {cycle.map(st => <option key={stepKey(st)} value={stepKey(st)}>{stepLabel(st)}</option>)}
+            </select>
+          </div>
+        )}
         <div className="flex items-center gap-1.5 text-[11px] text-slate-500 flex-wrap">
           <span className="shrink-0">タグ</span>
-          {task.tags.map(t => (
+          {plainTags(task, customStatuses).map(t => (
             <button
               key={t}
               onClick={() => onUpdate({ ...task, tags: task.tags.filter(x => x !== t) })}
@@ -1275,41 +1365,62 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
     >
       {/* Drop indicator (top of card) when 'before' zone — drawn inside so it's clipped to the card. */}
       {dropZone === 'before' && <div className="absolute left-1 right-1 top-0 h-0.5 -translate-y-1/2 bg-indigo-500 rounded" />}
-      <div ref={headerRef}>
-      <div className="flex items-start justify-between gap-1">
-        <div className="flex items-start gap-1 flex-1 min-w-0">
+      {/* group/head: hover-only actions react to THIS card's head only — nested child
+          cards live outside this wrapper, so hovering a child doesn't pop the parent's. */}
+      <div ref={headerRef} className="relative group/head">
+      {/* Row 1: status / priority / time / indicators. Row 2: the title on its own line
+          so it gets the card's full width (and may wrap) instead of sharing a row. */}
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 min-w-0">
           {mode === 'tree' && hasChildren && (
-            <button onClick={e => { e.stopPropagation(); setExpanded(!expanded) }} className="p-0.5 -ml-0.5 mt-0.5 rounded hover:bg-slate-200 text-slate-500 shrink-0" title={expanded ? '折りたたむ' : '展開'}>
+            <button onClick={e => { e.stopPropagation(); setExpanded(!expanded) }} className="p-0.5 -ml-1 rounded hover:bg-slate-200 text-slate-500 shrink-0" title={expanded ? '折りたたむ' : '展開'}>
               {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
           )}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5">
               {(() => {
-                const meta = STATUS_META[effectiveStatus]
-                const isPending = pendingStatus != null && pendingStatus !== task.status
+                const base = STATUS_META[effectiveStatus]
+                // A custom status re-tints the pill with its own colour and name; the
+                // base icon stays so the coarse state is still readable at a glance.
+                const meta = effectiveCustom ? { ...base, label: effectiveCustom.name, bg: '', text: '', border: '', ring: 'ring-slate-400' } : base
+                const pillStyle = effectiveCustom ? statusChipStyle(effectiveCustom.color) : undefined
+                const hasSubs = (customStatuses?.length ?? 0) > 0
+                const isPending = pendingStatus != null && stepKey(pendingStatus) !== committedKey
                 const Icon = meta.Icon
                 if (!canCycleStatus) {
                   // Aggregate parent — display-only status chip.
                   return (
-                    <span title={`状態（子から集計）: ${meta.label}`} className={`shrink-0 inline-flex items-center gap-0.5 pl-0.5 pr-1 py-px rounded-full border ${meta.border} ${meta.bg} ${meta.text}`}>
+                    <span title={`状態（子から集計）: ${base.label}`} className={`shrink-0 inline-flex items-center gap-0.5 pl-0.5 pr-1 py-px rounded-full border ${meta.border} ${meta.bg} ${meta.text}`}>
                       <Icon size={12} className={meta.icon} /><span className="text-[9px] font-semibold leading-none">{meta.label}</span>
                     </span>
                   )
                 }
                 return (
-                  <button
-                    onClick={cycleStatus}
-                    onMouseDown={e => e.stopPropagation()}
-                    title={`クリックで状態を切替（${STATUS_COMMIT_MS / 1000}秒後に確定して移動）`}
-                    className={`relative shrink-0 inline-flex items-center gap-0.5 pl-0.5 pr-1 py-px rounded-full border overflow-hidden transition-colors ${meta.border} ${meta.bg} ${meta.text} ${isPending ? `ring-2 ring-offset-1 ${meta.ring}` : 'hover:brightness-95'}`}
-                  >
-                    <Icon size={12} className={meta.icon} />
-                    <span className="text-[9px] font-semibold leading-none">{meta.label}</span>
-                    {isPending && (
-                      <span key={pendingTick} className="status-commit-bar absolute left-0 bottom-0 h-[2px] w-full bg-current opacity-60" style={{ animationDuration: `${STATUS_COMMIT_MS}ms` }} />
+                  <span ref={stepTriggerRef} className="shrink-0 inline-flex items-center">
+                    <button
+                      onClick={cycleStatus}
+                      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setStepMenu(v => !v) }}
+                      onMouseDown={e => e.stopPropagation()}
+                      title={`${effectiveCustom ? `${base.label} › ${effectiveCustom.name}\n` : ''}クリックで 未着手→進行中→完了 を切替（${STATUS_COMMIT_MS / 1000}秒後に確定して移動）${hasSubs ? '／▾ で細分ステータスを選択' : ''}`}
+                      style={pillStyle} data-cs={pillStyle ? '' : undefined}
+                      className={`relative inline-flex items-center gap-0.5 pl-0.5 pr-1 py-px border overflow-hidden transition-colors ${hasSubs ? 'rounded-l-full' : 'rounded-full'} ${meta.border} ${meta.bg} ${meta.text} ${isPending ? `ring-2 ring-offset-1 ${meta.ring}` : 'hover:brightness-95'}`}
+                    >
+                      <Icon size={12} className={meta.icon} />
+                      <span className="text-[9px] font-semibold leading-none max-w-[7rem] truncate">{meta.label}</span>
+                      {isPending && (
+                        <span key={pendingTick} className="status-commit-bar absolute left-0 bottom-0 h-[2px] w-full bg-current opacity-60" style={{ animationDuration: `${STATUS_COMMIT_MS}ms` }} />
+                      )}
+                    </button>
+                    {hasSubs && (
+                      <button
+                        onClick={e => { e.stopPropagation(); setStepMenu(v => !v) }}
+                        onMouseDown={e => e.stopPropagation()}
+                        title="ステータスを一覧から選択"
+                        style={pillStyle} data-cs={pillStyle ? '' : undefined}
+                        className={`self-stretch inline-flex items-center px-0.5 border border-l-0 rounded-r-full hover:brightness-95 ${meta.border} ${meta.bg} ${meta.text}`}
+                      >
+                        <ChevronDown size={10} />
+                      </button>
                     )}
-                  </button>
+                  </span>
                 )
               })()}
               {task.priority && (
@@ -1328,33 +1439,54 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
                   <Sparkles size={11} className="text-emerald-500" />
                 </span>
               )}
-              <p className="text-sm text-slate-800 font-medium truncate flex-1">{task.title || '(無題)'}</p>
               {(task.linkedNoteIds?.length ?? 0) > 0 && (
                 <FileText size={11} className="text-indigo-400 shrink-0" />
               )}
               {(task.fileIds?.length ?? 0) > 0 && (
                 <Paperclip size={11} className="text-orange-400 shrink-0" />
               )}
-            </div>
-            {/* In flat mode, show parent breadcrumb for context. */}
-            {mode === 'flat' && task.parentId && (() => {
-              const parent = boardTasks.find(t => t.id === task.parentId)
-              return parent ? <p className="text-[10px] text-slate-400 mt-0.5 truncate">親: {parent.title || '(無題)'}</p> : null
-            })()}
-          </div>
-        </div>
-        <div className="flex items-center gap-0.5 shrink-0">
-          <button onClick={e => { e.stopPropagation(); onAddSubtask(task.id) }} title="サブタスクを追加" className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-500 transition-all">
-            <CornerDownRight size={13} />
-          </button>
-          <button onClick={() => setEditing(true)} title="編集" className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-500 transition-all">
-            <Pencil size={13} />
-          </button>
-          <button ref={menuTriggerRef} onClick={() => setShowMenu(!showMenu)} className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-200 text-slate-500 transition-all">
-            <MoreHorizontal size={14} />
-          </button>
-        </div>
+              <DoingTimeChip task={task} className="text-[10px] shrink-0 whitespace-nowrap" />
       </div>
+      <p className="text-sm text-slate-800 font-medium mt-1 break-words leading-snug">{task.title || '(無題)'}</p>
+      {/* In flat mode, show parent breadcrumb for context. */}
+      {mode === 'flat' && task.parentId && (() => {
+        const parent = boardTasks.find(t => t.id === task.parentId)
+        return parent ? <p className="text-[10px] text-slate-400 mt-0.5 truncate">親: {parent.title || '(無題)'}</p> : null
+      })()}
+      {/* Hover-only actions float over the status row's right end instead of
+          reserving a column, so nothing permanently eats horizontal space. */}
+      <div className={`absolute -top-1.5 -right-1.5 flex items-center gap-0.5 p-0.5 rounded-md bg-white/95 border border-slate-200 shadow-sm transition-opacity ${showMenu ? 'opacity-100' : 'opacity-0 pointer-events-none group-hover/head:opacity-100 group-hover/head:pointer-events-auto'}`}>
+        <button onClick={e => { e.stopPropagation(); onAddSubtask(task.id) }} title="サブタスクを追加" className="p-1 rounded hover:bg-slate-200 text-slate-500">
+          <CornerDownRight size={13} />
+        </button>
+        <button onClick={() => setEditing(true)} title="編集" className="p-1 rounded hover:bg-slate-200 text-slate-500">
+          <Pencil size={13} />
+        </button>
+        <button ref={menuTriggerRef} onClick={() => setShowMenu(!showMenu)} title="メニュー" className="p-1 rounded hover:bg-slate-200 text-slate-500">
+          <MoreHorizontal size={14} />
+        </button>
+      </div>
+      {stepMenu && (
+        <div ref={stepMenuRef} className="absolute left-0 top-6 z-20 bg-white border border-slate-300 rounded-lg shadow-xl py-1 min-w-[150px]">
+          {cycle.map(st => {
+            const d = st.customId ? customStatuses?.find(x => x.id === st.customId) : undefined
+            const m = STATUS_META[st.status]
+            const dot = d ? statusDotStyle(d.color) : null
+            const cur = stepKey(st) === committedKey
+            return (
+              <button
+                key={stepKey(st)}
+                onClick={e => { e.stopPropagation(); pickStep(st) }}
+                className={`w-full text-left py-1 text-xs flex items-center gap-1.5 hover:bg-slate-100 ${d ? 'pl-6 pr-3' : 'px-3 font-medium'} ${cur ? 'bg-slate-50 text-slate-900' : 'text-slate-700'}`}
+              >
+                {dot ? <span className="w-2 h-2 rounded-full" style={dot} /> : <m.Icon size={12} className={m.icon} />}
+                <span className="truncate">{d ? d.name : m.label}</span>
+                {cur && <span className="ml-auto text-[10px] text-slate-400">現在</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
       {task.description && (
         <p className="text-xs text-slate-500 mt-1 whitespace-pre-wrap">{task.description}</p>
       )}
@@ -1374,7 +1506,6 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
           )}
         </p>
       )}
-      <DoingTimeChip task={task} className="text-[10px] mt-1" />
       {mode === 'tree' && hasChildren && (
         <div className="mt-2 flex items-center gap-2">
           {/* Tri-segment progress bar: emerald(done) | amber(doing) | slate(remaining todo).
@@ -1390,9 +1521,9 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
         </div>
       )}
       {/* "AI" は title 横の Sparkles アイコンで表現するので tag chips から除外。 */}
-      {task.tags.filter(t => t !== 'AI').length > 0 && (
+      {plainTags(task, customStatuses).filter(t => t !== 'AI').length > 0 && (
         <div className="flex gap-1 mt-2 flex-wrap">
-          {task.tags.filter(t => t !== 'AI').map(tag => (
+          {plainTags(task, customStatuses).filter(t => t !== 'AI').map(tag => (
             <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-400/10 text-emerald-600">{tag}</span>
           ))}
         </div>
@@ -1407,6 +1538,7 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
               key={child.id}
               task={child}
               boardTasks={boardTasks}
+              customStatuses={customStatuses}
               mode={mode}
               otherBoards={otherBoards}
               selectedTaskId={selectedTaskId}
@@ -1433,11 +1565,11 @@ function TaskCard({ task, boardTasks, otherBoards, mode, columnStatus, selectedT
         <div ref={menuRef} className="absolute right-0 top-8 z-10 bg-white border border-slate-300 rounded-lg shadow-xl py-1 min-w-[140px]">
           {moveOptions.map(opt => (
             <button
-              key={opt.key}
-              onClick={() => { onMove(task.id, opt.key); setShowMenu(false) }}
+              key={stepKey(opt)}
+              onClick={() => { pickStep(opt); setShowMenu(false) }}
               className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100"
             >
-              &rarr; {opt.label}
+              &rarr; {stepLabel(opt)}
             </button>
           ))}
           <hr className="border-slate-300 my-1" />
