@@ -8,6 +8,7 @@ import { exportBackup } from './persistence/backup'
 import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs, currentEditSeq } from './persistence/folderSync'
 import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
+import { normalizeCustomStatus } from './utils/customStatus'
 
 // The single default master project that all pre-existing data is migrated under.
 // Keep this id in sync with db.ts (SQL migration) and mindtrain (workspace id).
@@ -524,7 +525,7 @@ function reducer(state: AppState, action: Action): AppState {
           if (p.id !== action.payload.projectId) return p
           return {
             ...p,
-            tasks: p.tasks.map(t => t.id === action.payload.task.id ? applyStatusBookkeeping(t, action.payload.task) : t),
+            tasks: p.tasks.map(t => t.id === action.payload.task.id ? normalizeCustomStatus(applyStatusBookkeeping(t, action.payload.task), p.customStatuses) : t),
           }
         }),
       }
@@ -550,7 +551,8 @@ function reducer(state: AppState, action: Action): AppState {
       // transition to fold — the helper only normalizes their invariants.
       const prevProject = state.projects.find(p => p.id === action.payload.projectId)
       const prevById = new Map((prevProject?.tasks ?? []).map(t => [t.id, t]))
-      const tasks = action.payload.tasks.map(next => applyStatusBookkeeping(prevById.get(next.id), next))
+      // 状態タグ (カスタムステータス) も基本状態と食い違うものはここで外す。
+      const tasks = action.payload.tasks.map(next => normalizeCustomStatus(applyStatusBookkeeping(prevById.get(next.id), next), prevProject?.customStatuses))
       return {
         ...state,
         projects: state.projects.map(p =>

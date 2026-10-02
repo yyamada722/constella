@@ -33,12 +33,14 @@ body {
 /* ── Dark theme (hand-written parts; class remaps live in dark-overrides.css) ── */
 
 :root {
+  --cs-mix: #000; /* カスタムステータス文字色の混色先 */
   --shape-fill: #ffffff;  /* canvas shape body fill */
   --handle-fill: #ffffff; /* arrow endpoint / waypoint / port handle fill */
   --ink-dark: #1e293b;    /* "black ink" display color (pen / labels) */
   --surface: #ffffff;     /* generic light surface (mindtrain panels etc.) */
 }
 .dark {
+  --cs-mix: #fff;
   /* Achromatic dark — pure neutral grays, no blue tint. */
   color-scheme: dark;
   --shape-fill: #262626;

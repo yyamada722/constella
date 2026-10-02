@@ -128,6 +128,16 @@ export interface Project {
   tasks: Task[]
   createdAt: string
   color?: BoardColor // optional board accent colour — falls back to a palette-rotated default by index
+  customStatuses?: CustomStatus[] // ボード固有の細分化ステータス (タスク側はタグとして保持)
+}
+
+// カスタムステータス: 基本状態 (base) を細分化する、ボードに登録された「状態タグ」。
+// タスクが tags に name を持ち、かつ status === base のときそのステータスとみなす。
+export interface CustomStatus {
+  id: string
+  name: string // = タスクに付くタグ名
+  base: Task['status']
+  color: string // '#rrggbb' (任意色)。旧データのパレット名 (BoardColor) も許容
 }
 
 // キャンバスボード — 大カテゴリー。タブ (CanvasTab) を小カテゴリーとして束ねる。
