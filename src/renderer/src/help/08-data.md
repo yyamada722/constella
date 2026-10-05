@@ -38,6 +38,28 @@ Constella のデータは既定では**お使いの PC の中**だけに保存�
 - 同時編集は想定していないため、基本は 1 台ずつ使います。デスクトップ側の変更は、リモート側の**同期ボタン**（右下）か画面の再フォーカスで反映されます。
 - スマホからは撮影・メモの取り込みに便利なモバイル用画面が表示されます。
 
+## コマンドライン（CLI）
+
+デスクトップ版では、ターミナルの `constella` コマンドでタスクとノートを読み書きできます。大量の一括処理や、スクリプト・AI ツールからの操作に便利です。
+
+- コマンドの場所と PATH への追加方法は、**設定 → コマンドライン (CLI)** に表示されます（コピーボタン付き）。
+- アプリが起動していなければ**自動で起動**してから実行します。データの正はアプリ側なので、CLI はアプリを通して読み書きします（DB ファイルを直接書き換えることはありません）。
+- 書き込み系は、既定では**変更内容のプレビューだけ**を表示します。`-y` を付けると適用され、1 回のコマンド＝アプリで **Ctrl+Z 1 回**で戻せます。
+- `--json` を付けると結果を JSON で出力します。
+
+```
+constella tasks --board 開発 --status 進行中      タスク一覧（--where "#tag 期限<今日" も可）
+constella task add "設計レビュー" --board 開発 --end 今日+3 -y
+constella task set <id> status=完了 tags+=確認済み -y
+constella task script "#backend 期限<今日 -> 進行中" -y
+constella notes --master メイン --q 議事録
+constella note get <id> --raw > memo.md
+constella note set <id> --file memo.md -y
+constella apply ops.json -y                      複数の操作をまとめて適用
+```
+
+`task set` の `--expect status=進行中` や `note set` の `--expect-updated` を付けると、取得後にアプリ側で変更されていた場合は適用せずに止まります。詳しくは `constella --help` を参照してください。
+
 ## 外観の設定
 
 設定メニューの**外観・コードテーマ…**から:

@@ -30,6 +30,19 @@ contextBridge.exposeInMainWorld('api', {
   replyRemoteMedia: (reqId: string, bytes: Uint8Array | null, mime?: string): void => {
     ipcRenderer.send('remote:media-reply', reqId, bytes, mime ?? '')
   },
+  // CLI アクセスライン: main の localhost サーバーが受けた `constella` コマンドの
+  // RPC をレンダラー(データの正)で処理して返す。
+  cli: {
+    onRequest: (cb: (reqId: string, req: unknown) => void): (() => void) => {
+      const h = (_e: unknown, reqId: string, req: unknown): void => cb(reqId, req)
+      ipcRenderer.on('cli:request', h)
+      return () => { ipcRenderer.off('cli:request', h) }
+    },
+    reply: (reqId: string, res: unknown): void => ipcRenderer.send('cli:reply', reqId, res),
+    ready: (): void => ipcRenderer.send('cli:ready'),
+    // userData/bin に置いた CLI の場所 (設定画面の案内用)
+    info: (): Promise<{ dir: string; command: string } | null> => ipcRenderer.invoke('cli:info'),
+  },
   // 他マシンとの同期(同期フォルダ方式): フォルダ内ファイルの読み書きは main が担当し、
   // push/pull/競合の判定はレンダラー(persistence/folderSync.ts)が行う。
   sync: {

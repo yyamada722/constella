@@ -67,7 +67,7 @@ function globToRegex(raw: string): RegExp {
   return new RegExp(esc, 'i')
 }
 
-function resolveDate(v: string): string | null {
+export function resolveDate(v: string): string | null {
   const s = v.trim()
   if (s === '今日' || s.toLowerCase() === 'today') return isoToday()
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
