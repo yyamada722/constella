@@ -26,6 +26,8 @@ if (!existsSync(file)) {
   let inFence = false
   const h2 = []
   lines.forEach((l, i) => {
+    // 書きかけはコード例の中でも検出する
+    if (/\bTODO\b|TBD|要記入|あとで書く/i.test(l)) errors.push(`${i + 1} 行目: 書きかけの記述が残っています`)
     if (l.startsWith('```')) inFence = !inFence
     if (inFence) return
     if (/^#\s/.test(l)) errors.push(`${i + 1} 行目: # 見出しは使わないでください (タイトルはリリース名が付きます)`)
@@ -33,7 +35,6 @@ if (!existsSync(file)) {
       if (!SECTIONS.includes(l.trim())) errors.push(`${i + 1} 行目: 見出し「${l.trim()}」は使えません (${SECTIONS.join(' / ')})`)
       else h2.push(l.trim())
     }
-    if (/\bTODO\b|TBD|要記入|あとで書く/i.test(l)) errors.push(`${i + 1} 行目: 書きかけの記述が残っています`)
   })
   if (!h2.length) errors.push(`節がありません (${SECTIONS.join(' / ')} のいずれか)`)
   const order = h2.map(h => SECTIONS.indexOf(h))
