@@ -57,6 +57,12 @@ jobs:
 
       - run: npm ci
 
+      # version に対応するリリースノート (release-notes/v<version>.md) の存在と書式。
+      # マージ=リリースなので、書き忘れを PR の段階で止める。OS に依存しないので1つだけで実行
+      - name: Release notes
+        if: runner.os == 'Linux'
+        run: node scripts/check-release-notes.mjs
+
       - name: Typecheck
         run: npm run typecheck
 
