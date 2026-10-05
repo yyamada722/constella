@@ -118,10 +118,21 @@ function CliSection() {
   const [copied, setCopied] = useState<string | null>(null)
   useEffect(() => { api?.info().then(setInfo).catch(() => { /* ignore */ }) }, [api])
   if (!api || !info) return null
-  const isWin = navigator.userAgent.includes('Windows')
+  const ua = navigator.userAgent
+  const isWin = ua.includes('Windows')
+  // パスに ' が入っても壊れないよう、各シェルの引用規則でエスケープする。
+  // PowerShell: '…' 内の ' は ''。sh: 'a'\''b' 形式。プロファイルへ書く行自体も
+  // ' で囲んで追記するので二重にエスケープする。
+  const psq = (s: string): string => `'${s.replace(/'/g, "''")}'`
+  const shq = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`
   const pathCmd = isWin
-    ? `[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';${info.dir}', 'User')`
-    : `echo 'export PATH="$PATH:${info.dir}"' >> ~/.zshrc`
+    ? `[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';' + ${psq(info.dir)}, 'User')`
+    : null
+  // mac の既定シェルは zsh、Linux は bash。fish 等は案内文で補う。
+  const shellRows = isWin ? [] : (ua.includes('Mac') ? ['zsh', 'bash'] : ['bash', 'zsh']).map(sh => ({
+    sh,
+    cmd: `echo ${shq(`export PATH="$PATH":${shq(info.dir)}`)} >> ~/.${sh === 'zsh' ? 'zshrc' : 'bashrc'}`,
+  }))
   const copy = (key: string, text: string): void => {
     navigator.clipboard.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(c => (c === key ? null : c)), 1500) }).catch(() => { /* ignore */ })
   }
@@ -141,7 +152,11 @@ function CliSection() {
       <label className="flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 mb-2"><Terminal size={12} /> コマンドライン (CLI)</label>
       <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-2">
         <Row k="cmd" label="コマンド" text={info.command} />
-        <Row k="path" label={isWin ? 'PATH に追加 (PowerShell で1回実行 → ターミナルを開き直す)' : 'PATH に追加 (シェルの設定に追記)'} text={pathCmd} />
+        {pathCmd && <Row k="path" label="PATH に追加 (PowerShell で1回実行 → ターミナルを開き直す)" text={pathCmd} />}
+        {shellRows.map(r => (
+          <Row key={r.sh} k={`path-${r.sh}`} label={`PATH に追加 — ${r.sh} の場合 (1回実行 → ターミナルを開き直す)`} text={r.cmd} />
+        ))}
+        {!isWin && <p className="text-[11px] text-slate-400">それ以外のシェル (fish など) では、上のフォルダを PATH に加えてください。</p>}
         <p className="text-[11px] text-slate-400">
           <code>constella tasks</code> / <code>constella note get &lt;id&gt;</code> などで、タスクとノートを読み書きできます(<code>constella --help</code>)。
           アプリが起動していなければ自動で起動します。書き込みは <code>-y</code> を付けたときだけ適用され、アプリで Ctrl+Z 1回で戻せます。

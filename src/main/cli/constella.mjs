@@ -36,6 +36,7 @@ const HELP = `constella — Constella のタスク / ノートを CLI で読み�
                                            一括編集スクリプト (アプリの「一括編集」と同じ文法)
 
   constella notes [--master M] [--folder F] [--tag T] [--q 文字] [--archived] [--full]
+                                           --archived: アーカイブ済みだけを表示
   constella note get <id> [--raw]          --raw: 本文 Markdown だけを出力
   constella note add <タイトル> [--master M] [--folder F] [--tags a,b]
                   [--content 文字 | --file パス | --stdin]
@@ -56,6 +57,7 @@ const HELP = `constella — Constella のタスク / ノートを CLI で読み�
   状態  todo / 進行中 / 完了 (in-progress, done …) またはボードのカスタムステータス名
   日付  YYYY-MM-DD / 今日 / 今日+3 / today-7。空 (start=) で解除
   ボード / マスター  id か名前 (一意になる部分一致も可)
+  タグ  カンマ区切り (a,b)。タグ名の中の空白はそのまま
 
 apply の ops 例:
   [{"op":"task.add","board":"開発","title":"設計","as":"d"},
@@ -154,12 +156,18 @@ let launched = false
 async function call(method, params, opt) {
   const deadline = Date.now() + 60000
   let info = readInfo()
+  let rejected = null // 401 を返した接続情報 (再起動直後の古い cli.json なら読み直しで直る)
   for (;;) {
     if (info?.port && info?.token) {
       try {
         const { status, json } = await post(info, { method, params })
         if (status === 503 && json.retry && Date.now() < deadline) { await sleep(300); continue }
-        if (status === 401) { info = null; continue } // 古い cli.json (再起動直後)
+        if (status === 401) {
+          if (rejected?.port === info.port && rejected.token === info.token) die('認証に失敗しました (cli.json のトークンが一致しません)', 2)
+          rejected = { port: info.port, token: info.token }
+          info = readInfo()
+          continue
+        }
         if (!json.ok) die(json.error || `HTTP ${status}`, 2)
         return json.result
       } catch (e) {
@@ -334,7 +342,8 @@ async function main() {
           if (!id) die('note get <id>')
           const n = await call('notes.get', { id }, opt)
           if (opt.raw) return process.stdout.write(n.content)
-          return show(n, x => { printNotes([x]); out('\n' + x.content) })
+          // updatedAt は --expect-updated にそのまま渡せる完全な値を出す
+          return show(n, x => { printNotes([x]); out(`updatedAt: ${x.updatedAt}`); out('\n' + x.content) })
         }
         case 'add': {
           const title = rest.join(' ')

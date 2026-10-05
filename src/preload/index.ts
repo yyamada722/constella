@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('api', {
       return () => { ipcRenderer.off('cli:request', h) }
     },
     reply: (reqId: string, res: unknown): void => ipcRenderer.send('cli:reply', reqId, res),
+    ready: (): void => ipcRenderer.send('cli:ready'),
     // userData/bin に置いた CLI の場所 (設定画面の案内用)
     info: (): Promise<{ dir: string; command: string } | null> => ipcRenderer.invoke('cli:info'),
   },

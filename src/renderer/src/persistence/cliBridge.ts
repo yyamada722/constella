@@ -94,7 +94,8 @@ function parsePriority(v: unknown): Task['priority'] {
 function toTags(v: unknown): string[] {
   if (Array.isArray(v)) return v.map(x => String(x).replace(/^#/, '').trim()).filter(Boolean)
   const s = str(v)
-  return s ? s.split(/[,\s]+/).map(x => x.replace(/^#/, '').trim()).filter(Boolean) : []
+  // 区切りはカンマのみ (エディタ同様、タグ名の中の空白は有効)
+  return s ? s.split(/[,，]/).map(x => x.replace(/^#/, '').trim()).filter(Boolean) : []
 }
 
 // 状態: 基本状態の語 (todo / 進行中 / 完了 …) か、ボードのカスタムステータス名。
@@ -199,9 +200,11 @@ function listNotes(s: AppState, p: P): unknown {
   const q = str(p.q)?.toLowerCase()
   return s.notes
     .filter(n => {
-      if (master && n.masterProjectId !== master.id && !n.refByMasterIds?.includes(master.id)) return false
+      // 他マスターからの参照は、共有中 (shared) のものだけ (ノート画面と同じ)
+      if (master && n.masterProjectId !== master.id && !(n.shared && n.refByMasterIds?.includes(master.id))) return false
       if (folderId && n.folderId !== folderId) return false
-      if (!p.archived && n.archivedAt) return false
+      // --archived はアーカイブ済みだけ (ノート画面のアーカイブ表示と同じ)
+      if (!!p.archived !== !!n.archivedAt) return false
       if (tag.length && !tag.every(x => n.tags.includes(x))) return false
       if (q && !n.title.toLowerCase().includes(q) && !n.content.toLowerCase().includes(q)) return false
       return true
@@ -261,14 +264,37 @@ function opTaskAdd(c: Ctx, o: P): void {
   c.changes.push({ op: 'task.add', id: task.id, board: board.name, title })
 }
 
+const TASK_FIELD: Record<string, string> = { start: 'startDate', end: 'endDate', due: 'endDate', parent: 'parentId', desc: 'description' }
+
+// expect の値は set と同じ書き方 (状態の別名 / カスタムステータス名 / 今日+3 / P1 …) を受ける。
+function expectHolds(task: Task, defs: CustomStatus[] | undefined, key: string, v: unknown): boolean {
+  if (key === 'status') {
+    const s = str(v) ?? fail('expect の status が不正です')
+    const custom = defs?.find(d => d.name === s.trim())
+    if (custom) return customStatusOf(task, defs)?.id === custom.id
+    const base = parseStatusWord(s) ?? fail(`expect の状態「${s}」が不正です`)
+    return task.status === base
+  }
+  const field = TASK_FIELD[key] ?? key
+  const cur = (task as unknown as P)[field]
+  let want: unknown = v
+  if (field === 'startDate' || field === 'endDate') want = parseDateArg(v, key)
+  else if (field === 'priority') want = parsePriority(v)
+  else if (field === 'tags') return JSON.stringify([...toTags(v)].sort()) === JSON.stringify([...plainTags(task, defs)].sort())
+  else if (v === null || v === '') want = undefined
+  return JSON.stringify(cur ?? null) === JSON.stringify(want ?? null)
+}
+
 function opTaskUpdate(c: Ctx, o: P): void {
   const id = idOf(c, o.id)
   const { board, task } = findTask(c.s, id)
   const set = (o.set && typeof o.set === 'object' ? o.set : o) as P
   if (o.expect && typeof o.expect === 'object') {
     for (const [k, v] of Object.entries(o.expect as P)) {
-      const cur = k === 'status' ? task.status : (task as unknown as P)[k === 'start' ? 'startDate' : k === 'end' ? 'endDate' : k]
-      if (JSON.stringify(cur ?? null) !== JSON.stringify(v ?? null)) fail(`競合: タスク「${task.title}」の ${k} が想定 (${JSON.stringify(v)}) と違います (現在 ${JSON.stringify(cur ?? null)})`)
+      if (!expectHolds(task, board.customStatuses, k, v)) {
+        const cur = k === 'status' ? (customStatusOf(task, board.customStatuses)?.name ?? task.status) : (task as unknown as P)[TASK_FIELD[k] ?? k]
+        fail(`競合: タスク「${task.title}」の ${k} が想定 (${JSON.stringify(v)}) と違います (現在 ${JSON.stringify(cur ?? null)})`)
+      }
     }
   }
   let next: Task = { ...task }

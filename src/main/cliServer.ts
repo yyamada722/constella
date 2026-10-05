@@ -29,10 +29,10 @@ function launchPath(): string | null {
   return process.env.PORTABLE_EXECUTABLE_FILE || process.env.APPIMAGE || process.execPath
 }
 
-// `constella` を node として動かす実行ファイル (ELECTRON_RUN_AS_NODE=1)。ポータブル版の
-// 自己展開スタブはこの環境変数を解さないので、その場合はラッパーが node にフォールバック。
-function nodeHostPath(): string | null {
-  if (process.env.PORTABLE_EXECUTABLE_FILE) return null
+// `constella` を node として動かす実行ファイル (ELECTRON_RUN_AS_NODE=1)。ポータブル版は
+// 自己展開スタブ (PORTABLE_EXECUTABLE_FILE) がこの環境変数を解さないので、展開先の
+// execPath を使う — アプリ起動中は存在し、終了で消えたらラッパーが node にフォールバック。
+function nodeHostPath(): string {
   return process.env.APPIMAGE || process.execPath
 }
 
@@ -43,6 +43,23 @@ ipcMain.on('cli:reply', (_e, reqId: string, res: Answer) => {
   const w = waiters.get(reqId)
   if (w) { waiters.delete(reqId); w(res) }
 })
+
+// レンダラーが cli:request のリスナーを登録し終えた webContents。webContents.send は
+// キューされないので、ready 前 (起動直後・リロード中) の要求は 503 で CLI に待たせる。
+let readyContentsId: number | null = null
+ipcMain.on('cli:ready', (e) => {
+  const wc = e.sender
+  readyContentsId = wc.id
+  if (watched.has(wc.id)) return
+  watched.add(wc.id)
+  // メインフレームのリロード/遷移が始まったらリスナーは消えるので、次の ready まで受付停止。
+  // (did-start-loading は iframe / webview の読み込みでも発火するので使わない)
+  wc.on('did-start-navigation', (_ev, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace && readyContentsId === wc.id) readyContentsId = null
+  })
+  wc.once('destroyed', () => { watched.delete(wc.id); if (readyContentsId === wc.id) readyContentsId = null })
+})
+const watched = new Set<number>()
 
 function askRenderer(win: BrowserWindow, req: unknown): Promise<Answer> {
   return new Promise((resolve) => {
@@ -97,6 +114,7 @@ export function startCliServer(ensureWindow: () => BrowserWindow | null): void {
 
       const win = ensureWindow()
       if (!win || win.isDestroyed()) return send(res, 503, { ok: false, error: 'ウィンドウがありません', retry: true })
+      if (readyContentsId !== win.webContents.id) return send(res, 503, { ok: false, error: 'starting', retry: true })
       const answer = await askRenderer(win, { method: parsed.method, params: parsed.params ?? {} })
       send(res, answer.ok ? 200 : answer.retry ? 503 : 400, answer)
     })().catch(() => { try { send(res, 500, { ok: false, error: 'internal' }) } catch { /* ignore */ } })
@@ -151,9 +169,19 @@ export async function installCli(): Promise<{ dir: string; command: string }> {
       '@echo off',
       'setlocal',
       // 括弧ブロックは使わない: パスに "(x86)" などが入ると壊れる。
-      ...(host ? [`if not exist "${host}" goto node`, 'set ELECTRON_RUN_AS_NODE=1', `"${host}" "%~dp0constella.mjs" %*`, 'exit /b %ERRORLEVEL%'] : []),
+      `if not exist "${host}" goto node`,
+      'set ELECTRON_RUN_AS_NODE=1',
+      `"${host}" "%~dp0constella.mjs" %*`,
+      'exit /b %ERRORLEVEL%',
       ':node',
+      'where node >nul 2>nul',
+      'if errorlevel 1 goto nonode',
       'node "%~dp0constella.mjs" %*',
+      'exit /b %ERRORLEVEL%',
+      ':nonode',
+      // .cmd はコンソールのコードページで解釈されるので ASCII のみ
+      'echo constella: Start Constella first (portable build), or install Node.js. 1>&2',
+      'exit /b 3',
       '',
     ].join(CRLF)
     await writeFile(join(dir, 'constella.cmd'), cmd)
@@ -163,7 +191,7 @@ export async function installCli(): Promise<{ dir: string; command: string }> {
   const sh = [
     '#!/bin/sh',
     'DIR="$(cd "$(dirname "$0")" && pwd)"',
-    host ? `if [ -x ${q(host)} ]; then ELECTRON_RUN_AS_NODE=1 exec ${q(host)} "$DIR/constella.mjs" "$@"; fi` : '',
+    `if [ -x ${q(host)} ]; then ELECTRON_RUN_AS_NODE=1 exec ${q(host)} "$DIR/constella.mjs" "$@"; fi`,
     'exec node "$DIR/constella.mjs" "$@"',
     '',
   ].join('\n')
