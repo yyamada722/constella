@@ -7,6 +7,7 @@ import { randomBytes } from 'crypto'
 import Anthropic from '@anthropic-ai/sdk'
 import { initUpdater } from './updater'
 import { initSync } from './sync'
+import { startCliServer, clearStaleCliInfo, installCli } from './cliServer'
 
 // E2E hook: isolate userData (and the single-instance lock derived from it) so an
 // automated run never collides with — or writes into — the real installation.
@@ -726,11 +727,17 @@ function createWindow(state: WindowState): void {
 // Single-instance guard: two live instances would take turns writing the same
 // constella.db (last writer wins → silent data rollback). The second launch
 // focuses the existing window instead.
+let cliInstall: Promise<{ dir: string; command: string } | null> = Promise.resolve(null)
+ipcMain.handle('cli:info', () => cliInstall)
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
+    // CLI が「起動していなければ起動」で叩いた分は、既に動いているなら何もしない
+    // (CLI の操作のたびにウィンドウが前面へ飛び出さないように)。
+    if (argv.includes('--cli-launch')) return
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
@@ -743,6 +750,15 @@ if (!gotLock) {
     rm(join(app.getPath('temp'), 'constella'), { recursive: true, force: true }).catch(() => { /* ignore */ })
     await startEmbedServer() // before createWindow so embedBase is ready for the preload
     createWindow(await loadWindowState())
+    // CLI アクセスライン(`constella` コマンド)。ウィンドウが無い(mac で閉じた)ときは
+    // 作り直しを始めて、CLI 側には再試行させる。
+    await clearStaleCliInfo()
+    startCliServer(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+      loadWindowState().then(st => { if (!mainWindow) createWindow(st) }).catch(() => { /* ignore */ })
+      return null
+    })
+    cliInstall = installCli().catch(() => null)
     initUpdater(() => mainWindow) // 自動アップデート(Win)・新版通知(mac/ポータブル)
     // Auto-start LAN access if the user enabled it previously.
     if (await loadRemoteEnabled()) startLanServer().catch(() => { /* ignore */ })

@@ -9,6 +9,7 @@ import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush,
 import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
 import { normalizeCustomStatus } from './utils/customStatus'
+import { handleCliRequest, type CliRequest } from './persistence/cliBridge'
 
 // The single default master project that all pre-existing data is migrated under.
 // Keep this id in sync with db.ts (SQL migration) and mindtrain (workspace id).
@@ -1236,6 +1237,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // dirty が立たず、テストが本番と違う経路を通ってしまう。
   useEffect(() => {
     ;(window as unknown as Record<string, unknown>).__constella = { dispatch: dispatchTracked, getState: () => latest.current }
+  }, [dispatchTracked])
+
+  // CLI アクセスライン: main の localhost サーバー経由で届く `constella` コマンドの
+  // RPC。読む→dispatch を同期ブロックで行い(await なし)、latest.current も即前進させて
+  // 連続リクエストが未レンダーの古い state を読まないようにする(commitSync と同じ)。
+  useEffect(() => {
+    const api = (window as unknown as { api?: { cli?: { onRequest: (cb: (reqId: string, req: CliRequest) => void) => () => void; reply: (reqId: string, res: unknown) => void } } }).api
+    if (!api?.cli || isRemote) return
+    return api.cli.onRequest((reqId, req) => {
+      if (!hydratedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'starting', retry: true }); return }
+      const write = req.method === 'apply' && !(req.params as { dryRun?: unknown } | undefined)?.dryRun
+      if (write && loadFailedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'DB を読み込めなかったため書き込みを拒否しました(アプリの表示を確認してください)' }); return }
+      const res = handleCliRequest(req, latest.current, reducer)
+      if (res.ok && res.actions?.length) {
+        const action: Action = res.actions.length === 1 ? res.actions[0] : { type: 'BATCH', payload: res.actions }
+        latest.current = reducer(latest.current, action)
+        dispatchTracked(action)
+      }
+      api.cli!.reply(reqId, res.ok ? { ok: true, result: res.result } : res)
+    })
   }, [dispatchTracked])
 
   const value = useMemo(() => ({

@@ -1,7 +1,7 @@
 // Settings modal — Theme + Code colorscheme pickers + folder sync + app update check.
 // Triggered from the Sidebar bottom button.
 import { useEffect, useState } from 'react'
-import { X, RefreshCw, FolderOpen } from 'lucide-react'
+import { X, RefreshCw, FolderOpen, Copy, Check, Terminal } from 'lucide-react'
 import { useTheme } from '../theme/ThemeContext'
 import { CODE_THEMES } from '../theme/hljsThemes'
 import { ZoomSpeedSlider } from './ZoomSpeedControl'
@@ -110,6 +110,47 @@ function FolderSyncSection() {
   )
 }
 
+// コマンドライン (CLI) — `constella` コマンドの置き場所と使い方の案内。
+// 実体は main が起動毎に userData/bin へ書き出す。デスクトップ(Electron)のみ表示。
+function CliSection() {
+  const api = (window as unknown as { api?: { cli?: { info: () => Promise<{ dir: string; command: string } | null> } } }).api?.cli
+  const [info, setInfo] = useState<{ dir: string; command: string } | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
+  useEffect(() => { api?.info().then(setInfo).catch(() => { /* ignore */ }) }, [api])
+  if (!api || !info) return null
+  const isWin = navigator.userAgent.includes('Windows')
+  const pathCmd = isWin
+    ? `[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';${info.dir}', 'User')`
+    : `echo 'export PATH="$PATH:${info.dir}"' >> ~/.zshrc`
+  const copy = (key: string, text: string): void => {
+    navigator.clipboard.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(c => (c === key ? null : c)), 1500) }).catch(() => { /* ignore */ })
+  }
+  const Row = ({ k, label, text }: { k: string; label: string; text: string }) => (
+    <div>
+      <div className="text-[11px] text-slate-500 dark:text-slate-400 mb-0.5">{label}</div>
+      <div className="flex items-center gap-1.5">
+        <code className="flex-1 min-w-0 truncate px-2 py-1 rounded bg-slate-50 dark:bg-slate-800 text-[11px] text-slate-700 dark:text-slate-200" title={text}>{text}</code>
+        <button onClick={() => copy(k, text)} className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 shrink-0" title="コピー">
+          {copied === k ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+        </button>
+      </div>
+    </div>
+  )
+  return (
+    <section className="mb-5">
+      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 mb-2"><Terminal size={12} /> コマンドライン (CLI)</label>
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+        <Row k="cmd" label="コマンド" text={info.command} />
+        <Row k="path" label={isWin ? 'PATH に追加 (PowerShell で1回実行 → ターミナルを開き直す)' : 'PATH に追加 (シェルの設定に追記)'} text={pathCmd} />
+        <p className="text-[11px] text-slate-400">
+          <code>constella tasks</code> / <code>constella note get &lt;id&gt;</code> などで、タスクとノートを読み書きできます(<code>constella --help</code>)。
+          アプリが起動していなければ自動で起動します。書き込みは <code>-y</code> を付けたときだけ適用され、アプリで Ctrl+Z 1回で戻せます。
+        </p>
+      </div>
+    </section>
+  )
+}
+
 // アップデート欄 — 現在のバージョンと手動チェック。デスクトップ(Electron)のみ表示。
 function UpdateSection() {
   const { current, mode, state } = useUpdateState()
@@ -181,7 +222,7 @@ export function SettingsModal({ open, onClose }: Props) {
       onMouseDown={onClose}
     >
       <div
-        className="w-[460px] max-w-[92vw] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl p-5"
+        className="w-[460px] max-w-[92vw] max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl p-5"
         onMouseDown={e => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
@@ -235,6 +276,8 @@ export function SettingsModal({ open, onClose }: Props) {
         </section>
 
         <FolderSyncSection />
+
+        <CliSection />
 
         <UpdateSection />
       </div>
