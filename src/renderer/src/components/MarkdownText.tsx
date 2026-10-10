@@ -13,7 +13,7 @@ import { decodeMdHref } from '../utils/mdLink'
 import { normalizeTasks, toggleTaskAt } from '../utils/mdTask'
 import { remarkConstellaSyntax } from '../utils/mdSyntax'
 import { MD_CALLOUT, jpDate, jpDateTime, TPL_MINUTES, TPL_DAILY } from '../utils/mdSnippets'
-import { tableKeydown } from '../utils/mdTable'
+import { tableKeydown, inTableCell } from '../utils/mdTable'
 import { htmlClipboardToMarkdown, tsvToMarkdownTable } from '../utils/richPaste'
 import { useWikiLink } from './WikiLink'
 
@@ -379,6 +379,19 @@ export function MarkdownText({ value, onChange, placeholder, readOnly, textSize 
       } else {
         applyEdit(value.slice(0, s) + '  ' + value.slice(en), s + 2)
       }
+      return
+    }
+
+    // Shift+Enter: Markdown の強制改行。素の Enter 1 回はプレビューで改行に
+    // ならない（段落内の折り返し扱い）ので、行末にバックスラッシュを置いてから
+    // 改行する。IME の変換確定 Enter には反応しない。
+    if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if ((e.nativeEvent as KeyboardEvent).isComposing) return
+      e.preventDefault()
+      e.stopPropagation()
+      // 表セル内では \ + 改行が行区切りになって表が崩れるので <br> を入れる
+      const insert = inTableCell(value, s) ? '<br>' : '\\\n'
+      applyEdit(value.slice(0, s) + insert + value.slice(en), s + insert.length)
       return
     }
 

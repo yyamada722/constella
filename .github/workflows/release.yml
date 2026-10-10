@@ -60,6 +60,13 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # リリースノートが無い/書式が崩れているならパッケージングに入る前に止める
+      - name: Check release notes
+        if: steps.decide.outputs.release == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.decide.outputs.tag }}
+        run: node scripts/check-release-notes.mjs "$RELEASE_TAG"
+
   package:
     name: Package ${{ matrix.label }}
     needs: check
@@ -137,6 +144,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # release-notes/<tag>.md を読むため
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -155,11 +167,13 @@ jobs:
           fi
           printf 'publish %s with %d file(s)\n' "$RELEASE_TAG" "${#files[@]}"
 
-          # 未署名ビルドのため、OSのセキュリティ警告の回避手順をノート冒頭に載せる
-          # (--notes-file の内容の後ろに --generate-notes の自動生成分が続く)
+          # 本文 = release-notes/<tag>.md (check ジョブで存在・書式を検査済み)
+          #      → インストール時の注意 (未署名ビルドの警告回避手順。折りたたみ)
+          #      → --generate-notes の自動生成分 (PR 一覧 / Full Changelog)
           notes="$(mktemp)"
-          cat > "$notes" <<'NOTES'
-          ## ⚠️ インストール時の注意
+          cat "release-notes/${RELEASE_TAG}.md" > "$notes"
+          printf '\n\n<details>\n<summary>⚠️ インストール時の注意（初回起動時のセキュリティ警告について）</summary>\n\n' >> "$notes"
+          cat >> "$notes" <<'NOTES'
 
           アプリは未署名のため、初回起動時に OS のセキュリティ警告が出ます。
 
@@ -191,6 +205,8 @@ jobs:
           chmod +x Constella-*.AppImage
           ./Constella-*.AppImage
           ```
+
+          </details>
 
           ---
           NOTES

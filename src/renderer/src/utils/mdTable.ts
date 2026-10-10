@@ -62,6 +62,42 @@ const isSepRow = (r: Row) => r.cells.length > 0 && r.cells.every(c => /^:?-+:?$/
 // 整形後のセル文字列（パディング込み）の文字数
 const cellCharLen = (cell: string, width: number) => cell.length + Math.max(0, width - dispWidth(cell))
 
+// caret がレンダリングされる表（区切り行を持つ | ブロック、フェンス外）のセル内に
+// あるか。Shift+Enter の強制改行 (\ + 改行) は表を行区切りで壊すので、呼び出し側は
+// これが true なら <br> を挿入する。
+export function inTableCell(value: string, selStart: number): boolean {
+  const lineStart = value.lastIndexOf('\n', selStart - 1) + 1
+  let lineEnd = value.indexOf('\n', selStart)
+  if (lineEnd === -1) lineEnd = value.length
+  if (!isTableLine(value.slice(lineStart, lineEnd))) return false
+  if (inFenceAt(value, lineStart)) return false
+  let blockStart = lineStart
+  while (blockStart > 0) {
+    const prevStart = value.lastIndexOf('\n', blockStart - 2) + 1
+    if (!isTableLine(value.slice(prevStart, blockStart - 1))) break
+    blockStart = prevStart
+  }
+  let blockEnd = lineEnd
+  while (blockEnd < value.length) {
+    let nextEnd = value.indexOf('\n', blockEnd + 1)
+    if (nextEnd === -1) nextEnd = value.length
+    if (!isTableLine(value.slice(blockEnd + 1, nextEnd))) break
+    blockEnd = nextEnd
+  }
+  if (!value.slice(blockStart, blockEnd).split('\n').map(splitRow).some(isSepRow)) return false
+  // 区切り行 (| --- |) 自体はセルではない
+  const line = value.slice(lineStart, lineEnd)
+  if (isSepRow(splitRow(line))) return false
+  // caret は行頭の | より後ろ、かつ行末の外側 | より前にあること（\| は区切りに数えない）
+  const col = selStart - lineStart
+  const pipes: number[] = []
+  for (let i = 0; i < line.length; i++) if (line[i] === '|' && !isEscapedAt(line, i)) pipes.push(i)
+  if (pipes.length === 0 || col <= pipes[0]) return false
+  const hasTrailing = /\|\s*$/.test(line) && pipes.length > 1
+  if (hasTrailing && col > pipes[pipes.length - 1]) return false
+  return true
+}
+
 export function tableKeydown(value: string, selStart: number, key: 'Tab' | 'ShiftTab' | 'Enter'): EditResult | null {
   const lineStart = value.lastIndexOf('\n', selStart - 1) + 1
   let lineEnd = value.indexOf('\n', selStart)

@@ -128,6 +128,16 @@ export interface Project {
   tasks: Task[]
   createdAt: string
   color?: BoardColor // optional board accent colour — falls back to a palette-rotated default by index
+  customStatuses?: CustomStatus[] // ボード固有の細分化ステータス (タスク側はタグとして保持)
+}
+
+// カスタムステータス: 基本状態 (base) を細分化する、ボードに登録された「状態タグ」。
+// タスクが tags に name を持ち、かつ status === base のときそのステータスとみなす。
+export interface CustomStatus {
+  id: string
+  name: string // = タスクに付くタグ名
+  base: Task['status']
+  color: string // '#rrggbb' (任意色)。旧データのパレット名 (BoardColor) も許容
 }
 
 // キャンバスボード — 大カテゴリー。タブ (CanvasTab) を小カテゴリーとして束ねる。
@@ -175,6 +185,11 @@ export interface CanvasArrow {
   toCardId?: string
   fromPort?: PortDir // when set (with fromCardId), the end docks to that fixed port instead of the auto border point
   toPort?: PortDir
+  // ポイント指し: when set (with fromCardId/toCardId), the end is pinned to this
+  // normalized (0-1) position INSIDE the card — e.g. a spot on a picture — and
+  // follows the card as it moves/resizes. Takes precedence over port/border docking.
+  fromAnchor?: { x: number; y: number }
+  toAnchor?: { x: number; y: number }
   points?: { x: number; y: number }[] // bend waypoints between the two ends (canvas coords, in order)
   label?: string
   curved?: boolean
@@ -192,6 +207,10 @@ export interface CanvasGroup {
   width: number
   height: number
   createdAt: string
+  color?: string // optional hue key (COLOR_THEMES) — tints the frame + title chip
+  hideHeader?: boolean // hide the title chip (shown again while the group is selected)
+  opacity?: number // fill strength 0–1 (default: faint tint)
+  layer?: 'front' | 'back' // 'front' (default): outline drawn above cards; 'back': outline behind cards
 }
 
 export interface CanvasStroke {
@@ -370,6 +389,8 @@ export interface CanvasCard {
   draftMonth?: number // 'taskDraft' cards: 1-12 absolute month for draftWhen (undefined = current month, rolling) — same grammar as FlowNode.whenMonth
   draftYear?: number // 'taskDraft' cards: explicit calendar year for draftMonth (undefined = auto: this year, else next)
   shape?: ShapeKind // 'shape' cards: which figure to draw (default 'rect')
+  hideHeader?: boolean // media cards (image/video/pdf/audio/sequence): hide the title header; a hover-revealed grab strip takes its place
+  squareCorners?: boolean // draw the card with square (non-rounded) corners
 
   x: number
   y: number

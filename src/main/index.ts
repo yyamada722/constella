@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog, webContents, clipboard } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, webContents, clipboard, nativeImage } from 'electron'
 import { join, dirname, normalize, extname } from 'path'
 import { pathToFileURL } from 'url'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
@@ -8,6 +8,7 @@ import { randomBytes } from 'crypto'
 import Anthropic from '@anthropic-ai/sdk'
 import { initUpdater } from './updater'
 import { initSync } from './sync'
+import { startCliServer, clearStaleCliInfo, installCli } from './cliServer'
 
 // E2E hook: isolate userData (and the single-instance lock derived from it) so an
 // automated run never collides with — or writes into — the real installation.
@@ -442,6 +443,40 @@ ipcMain.handle('pdf:save', async (_e, bytes: Uint8Array, defaultName: string): P
   return true
 })
 
+// 画像カードの「画像をコピー」: PNG バイト列を OS クリップボードへ（他アプリへ貼れる）。
+ipcMain.handle('clipboard:write-image', async (_e, bytes: Uint8Array): Promise<boolean> => {
+  const img = nativeImage.createFromBuffer(Buffer.from(bytes))
+  if (img.isEmpty()) return false
+  clipboard.writeImage(img)
+  return true
+})
+
+// 画像カードの「画像を書き出し」: 保存ダイアログ経由でファイルへ。拡張子は名前から
+// 取り、画像系の許可リスト外なら .png に丸める（file:open-temp と同じ守り）。
+ipcMain.handle('image:save', async (_e, bytes: Uint8Array, defaultName: string): Promise<boolean> => {
+  // E2E hook: ダイアログを出せない自動テストでは環境変数のパスへ直接保存する。
+  if (process.env.CONSTELLA_IMAGE_SAVE_TO) {
+    await writeFile(process.env.CONSTELLA_IMAGE_SAVE_TO, Buffer.from(bytes))
+    return true
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return false
+  const raw = (defaultName || '画像').replace(/[\\/:*?"<>|]/g, '_')
+  const dot = raw.lastIndexOf('.')
+  let stem = (dot > 0 ? raw.slice(0, dot) : raw).replace(/^[.\s]+|[.\s]+$/g, '').slice(0, 80)
+  if (!stem || RESERVED.test(stem)) stem = '画像'
+  const givenExt = dot > 0 ? raw.slice(dot).toLowerCase() : ''
+  const ext = TYPE_EXTS.image.includes(givenExt) ? givenExt : '.png'
+  const r = await dialog.showSaveDialog(mainWindow, {
+    title: '画像を書き出し',
+    defaultPath: stem + ext,
+    filters: [{ name: '画像', extensions: [ext.slice(1)] }, { name: 'すべてのファイル', extensions: ['*'] }],
+  })
+  if (r.canceled || !r.filePath) return false
+  await writeFile(r.filePath, Buffer.from(bytes))
+  shell.showItemInFolder(r.filePath)
+  return true
+})
+
 // YouTube (since late 2025) refuses to play embeds that arrive without a valid
 // HTTP Referer/origin. The renderer is loaded from file:// (no usable origin), so
 // embeds fail. Rather than move the whole app off file:// (which would change the
@@ -806,11 +841,17 @@ function createWindow(state: WindowState): void {
 // Single-instance guard: two live instances would take turns writing the same
 // constella.db (last writer wins → silent data rollback). The second launch
 // focuses the existing window instead.
+let cliInstall: Promise<{ dir: string; command: string } | null> = Promise.resolve(null)
+ipcMain.handle('cli:info', () => cliInstall)
+
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
+    // CLI が「起動していなければ起動」で叩いた分は、既に動いているなら何もしない
+    // (CLI の操作のたびにウィンドウが前面へ飛び出さないように)。
+    if (argv.includes('--cli-launch')) return
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
@@ -823,6 +864,15 @@ if (!gotLock) {
     rm(join(app.getPath('temp'), 'constella'), { recursive: true, force: true }).catch(() => { /* ignore */ })
     await startEmbedServer() // before createWindow so embedBase is ready for the preload
     createWindow(await loadWindowState())
+    // CLI アクセスライン(`constella` コマンド)。ウィンドウが無い(mac で閉じた)ときは
+    // 作り直しを始めて、CLI 側には再試行させる。
+    await clearStaleCliInfo()
+    startCliServer(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
+      loadWindowState().then(st => { if (!mainWindow) createWindow(st) }).catch(() => { /* ignore */ })
+      return null
+    })
+    cliInstall = installCli().catch(() => null)
     initUpdater(() => mainWindow) // 自動アップデート(Win)・新版通知(mac/ポータブル)
     // Auto-start LAN access if the user enabled it previously.
     if (await loadRemoteEnabled()) startLanServer().catch(() => { /* ignore */ })

@@ -8,6 +8,8 @@ import { exportBackup } from './persistence/backup'
 import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs, currentEditSeq } from './persistence/folderSync'
 import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
+import { normalizeCustomStatus } from './utils/customStatus'
+import { handleCliRequest, type CliRequest } from './persistence/cliBridge'
 
 // The single default master project that all pre-existing data is migrated under.
 // Keep this id in sync with db.ts (SQL migration) and mindtrain (workspace id).
@@ -66,9 +68,10 @@ export type Action =
   | { type: 'UPDATE_PROJECT'; payload: Project }
   | { type: 'DELETE_PROJECT'; payload: string }
   | { type: 'ADD_TASK'; payload: { projectId: string; task: Task } }
-  | { type: 'UPDATE_TASK'; payload: { projectId: string; task: Task } }
+  // explicitStatus: applyStep で細分ステータスを明示的に選んだ更新 (normalizeCustomStatus 参照)
+  | { type: 'UPDATE_TASK'; payload: { projectId: string; task: Task; explicitStatus?: boolean } }
   | { type: 'DELETE_TASK'; payload: { projectId: string; taskId: string } }
-  | { type: 'SET_PROJECT_TASKS'; payload: { projectId: string; tasks: Task[] } }
+  | { type: 'SET_PROJECT_TASKS'; payload: { projectId: string; tasks: Task[]; explicitStatusIds?: string[] } }
   | { type: 'ADD_RESEARCH'; payload: ResearchItem }
   | { type: 'UPDATE_RESEARCH'; payload: ResearchItem }
   | { type: 'DELETE_RESEARCH'; payload: string }
@@ -106,6 +109,8 @@ export type Action =
   | { type: 'RESIZE_CANVAS_CARD'; payload: { id: string; width: number; height: number } }
   | { type: 'BRING_CARD_FRONT'; payload: string[] }
   | { type: 'SEND_CARD_BACK'; payload: string[] }
+  | { type: 'BRING_GROUP_FRONT'; payload: string[] }
+  | { type: 'SEND_GROUP_BACK'; payload: string[] }
   | { type: 'ADD_CANVAS_TAB'; payload: CanvasTab }
   | { type: 'UPDATE_CANVAS_TAB'; payload: CanvasTab }
   | { type: 'DELETE_CANVAS_TAB'; payload: string }
@@ -503,12 +508,13 @@ function reducer(state: AppState, action: Action): AppState {
     case 'ADD_TASK': {
       // Normalize completedAt / the 進行中 clock for tasks born 'done' or
       // 'in-progress' (bulk import, AI add) — same rules as every other path.
-      const task = applyStatusBookkeeping(undefined, action.payload.task)
+      // 状態タグも正規化 (一括追加/AI 由来のタグに複数の状態タグが混じる場合など)。
+      const born = applyStatusBookkeeping(undefined, action.payload.task)
       return {
         ...state,
         projects: state.projects.map(p =>
           p.id === action.payload.projectId
-            ? { ...p, tasks: [...p.tasks, task] }
+            ? { ...p, tasks: [...p.tasks, normalizeCustomStatus(born, p.customStatuses)] }
             : p
         ),
       }
@@ -522,7 +528,7 @@ function reducer(state: AppState, action: Action): AppState {
           if (p.id !== action.payload.projectId) return p
           return {
             ...p,
-            tasks: p.tasks.map(t => t.id === action.payload.task.id ? applyStatusBookkeeping(t, action.payload.task) : t),
+            tasks: p.tasks.map(t => t.id === action.payload.task.id ? normalizeCustomStatus(applyStatusBookkeeping(t, action.payload.task), p.customStatuses, t, !!action.payload.explicitStatus) : t),
           }
         }),
       }
@@ -548,7 +554,9 @@ function reducer(state: AppState, action: Action): AppState {
       // transition to fold — the helper only normalizes their invariants.
       const prevProject = state.projects.find(p => p.id === action.payload.projectId)
       const prevById = new Map((prevProject?.tasks ?? []).map(t => [t.id, t]))
-      const tasks = action.payload.tasks.map(next => applyStatusBookkeeping(prevById.get(next.id), next))
+      // 状態タグ (カスタムステータス) も基本状態と食い違うものはここで外す。
+      const explicitIds = new Set(action.payload.explicitStatusIds ?? [])
+      const tasks = action.payload.tasks.map(next => normalizeCustomStatus(applyStatusBookkeeping(prevById.get(next.id), next), prevProject?.customStatuses, prevById.get(next.id), explicitIds.has(next.id)))
       return {
         ...state,
         projects: state.projects.map(p =>
@@ -651,6 +659,15 @@ function reducer(state: AppState, action: Action): AppState {
     case 'SEND_CARD_BACK': {
       const ids = new Set(action.payload)
       return { ...state, canvasCards: [...state.canvasCards.filter(c => ids.has(c.id)), ...state.canvasCards.filter(c => !ids.has(c.id))] }
+    }
+    // Group paint order (array order == z-order among groups, same idiom as cards).
+    case 'BRING_GROUP_FRONT': {
+      const ids = new Set(action.payload)
+      return { ...state, canvasGroups: [...state.canvasGroups.filter(g => !ids.has(g.id)), ...state.canvasGroups.filter(g => ids.has(g.id))] }
+    }
+    case 'SEND_GROUP_BACK': {
+      const ids = new Set(action.payload)
+      return { ...state, canvasGroups: [...state.canvasGroups.filter(g => ids.has(g.id)), ...state.canvasGroups.filter(g => !ids.has(g.id))] }
     }
     case 'ADD_CANVAS_TAB':
       return { ...state, canvasTabs: [...state.canvasTabs, action.payload] }
@@ -1220,6 +1237,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // dirty が立たず、テストが本番と違う経路を通ってしまう。
   useEffect(() => {
     ;(window as unknown as Record<string, unknown>).__constella = { dispatch: dispatchTracked, getState: () => latest.current }
+  }, [dispatchTracked])
+
+  // CLI アクセスライン: main の localhost サーバー経由で届く `constella` コマンドの
+  // RPC。読む→dispatch を同期ブロックで行い(await なし)、latest.current も即前進させて
+  // 連続リクエストが未レンダーの古い state を読まないようにする(commitSync と同じ)。
+  useEffect(() => {
+    const api = (window as unknown as { api?: { cli?: { onRequest: (cb: (reqId: string, req: CliRequest) => void) => () => void; reply: (reqId: string, res: unknown) => void; ready: () => void } } }).api
+    if (!api?.cli || isRemote) return
+    const off = api.cli.onRequest((reqId, req) => {
+      if (!hydratedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'starting', retry: true }); return }
+      const write = req.method === 'apply' && !(req.params as { dryRun?: unknown } | undefined)?.dryRun
+      if (write && loadFailedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'DB を読み込めなかったため書き込みを拒否しました(アプリの表示を確認してください)' }); return }
+      const res = handleCliRequest(req, latest.current, reducer)
+      if (res.ok && res.actions?.length) {
+        // 1 件でも BATCH で包む: UPDATE_TASK / UPDATE_NOTE 単体だと historyReducer の
+        // coalesce 窓で直前の編集と 1 つの undo にまとまってしまう。
+        const action: Action = { type: 'BATCH', payload: res.actions }
+        latest.current = reducer(latest.current, action)
+        dispatchTracked(action)
+      }
+      api.cli!.reply(reqId, res.ok ? { ok: true, result: res.result } : res)
+    })
+    // リスナー登録後に main へ「受付可能」を知らせる。これより前に届いた要求は
+    // 取りこぼされる (webContents.send はキューされない) ので、main は ready まで 503 で待たせる。
+    api.cli.ready()
+    return off
   }, [dispatchTracked])
 
   const value = useMemo(() => ({

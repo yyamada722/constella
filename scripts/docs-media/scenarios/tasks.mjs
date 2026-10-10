@@ -1,7 +1,8 @@
 // Tasks page captures (kanban / gantt / calendar). Output: docs/public/media/tasks/
 // Demo boards (seed.mjs): 撮影準備 (9 tasks, ロケハン has 3 children), 編集・納品 (3 tasks)
 
-const PILL = '[title^="クリックで状態を切替"]'
+// 先頭にカスタムステータス名の行が付くことがあるので部分一致
+const PILL = 'button[title*="を切替（"]'
 
 // 標準表示 re-fits the range to the tasks (±14 days) — without it the view keeps
 // whatever range was last scrolled to and the bars may sit off-screen.
