@@ -121,6 +121,8 @@ contextBridge.exposeInMainWorld('api', {
     save: (wcId: number, itemId: string): Promise<{ ok: boolean; size?: number; error?: string }> => ipcRenderer.invoke('clip:save', wcId, itemId),
     url: (itemId: string): Promise<string | null> => ipcRenderer.invoke('clip:url', itemId),
     delete: (itemId: string): Promise<void> => ipcRenderer.invoke('clip:delete', itemId),
+    // MHTML の主文書 (text/html) をデコードして返す — Markdown 変換の入力。
+    readHtml: (itemId: string): Promise<{ html: string; baseUrl: string } | null> => ipcRenderer.invoke('clip:read-html', itemId),
   },
   localFile: {
     // `kind` (image/pdf/video/audio) pre-selects the dialog's file filter.

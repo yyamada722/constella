@@ -1,13 +1,15 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { Plus, ExternalLink, Trash2, X, BookmarkPlus, Home, Folder, FolderPlus, ChevronDown, ChevronRight, MoreHorizontal, ArrowLeft, ArrowRight, RotateCw, Loader2, Search, Archive, ArchiveRestore, Download, HardDriveDownload, WifiOff, Globe } from 'lucide-react'
+import { Plus, ExternalLink, Trash2, X, BookmarkPlus, Home, Folder, FolderPlus, ChevronDown, ChevronRight, MoreHorizontal, ArrowLeft, ArrowRight, RotateCw, Loader2, Search, Archive, ArchiveRestore, Download, HardDriveDownload, WifiOff, Globe, FileText } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
 import { useApp } from '../store'
-import { ResearchItem, ResearchFolder } from '../types'
+import { ResearchItem, ResearchFolder, Note } from '../types'
 import { generateId } from '../utils'
 import { WebFrame, type WebFrameHandle } from './CanvasPage'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
-import { confirmDialog, alertDialog } from '../components/ConfirmDialog'
+import { confirmDialog, alertDialog, chooseDialog } from '../components/ConfirmDialog'
+import { htmlDocumentToMarkdown } from '../utils/richPaste'
 
 // Default landing page when no bookmark is selected.
 const HOME_URL = 'https://www.google.com'
@@ -23,6 +25,7 @@ type ClipApi = {
   save: (wcId: number, itemId: string) => Promise<{ ok: boolean; size?: number; error?: string }>
   url: (itemId: string) => Promise<string | null>
   delete: (itemId: string) => Promise<void>
+  readHtml: (itemId: string) => Promise<{ html: string; baseUrl: string } | null>
 }
 function clipApi(): ClipApi | null {
   return (window as unknown as { api?: { clip?: ClipApi } }).api?.clip ?? null
@@ -51,6 +54,7 @@ function normalizeUrl(u: string): string {
 
 export default function ResearchPage() {
   const { state, dispatch } = useApp()
+  const navigate = useNavigate()
   const active = state.activeMasterProjectId
   const [search, setSearch] = useState('')
   const [showArchived, setShowArchived] = useState(false)
@@ -501,6 +505,50 @@ export default function ResearchPage() {
       }
     } finally {
       setClipSaving(false)
+    }
+  }
+
+  // クリップ (MHTML) → Markdown。本文を抽出・変換して、ノート化 or コピーを選ばせる。
+  const [clipConverting, setClipConverting] = useState(false)
+  async function convertClipToMarkdown() {
+    const api = clipApi()
+    if (!selected?.clip || !api?.readHtml || !active || clipConverting) return
+    setClipConverting(true)
+    try {
+      const r = await api.readHtml(selected.id)
+      const md = r ? htmlDocumentToMarkdown(r.html, r.baseUrl || selected.url) : null
+      if (!md) {
+        await alertDialog('クリップから変換できる本文が見つかりませんでした。')
+        return
+      }
+      const choice = await chooseDialog(
+        `Markdownに変換しました（約${md.length.toLocaleString()}文字）。どうしますか？`,
+        [
+          { label: 'ノートを作成', value: 'note' },
+          { label: 'クリップボードにコピー', value: 'copy' },
+        ],
+      )
+      if (choice === 'copy') {
+        await navigator.clipboard.writeText(md)
+        return
+      }
+      if (choice !== 'note') return
+      const now = new Date().toISOString()
+      const note: Note = {
+        id: generateId(),
+        masterProjectId: active,
+        title: selected.title || 'クリップ',
+        content: `> 出典: ${selected.url}（${new Date(selected.clip.savedAt).toLocaleDateString()} クリップ）\n\n${md}\n`,
+        tags: ['クリップ'],
+        createdAt: now,
+        updatedAt: now,
+      }
+      dispatch({ type: 'ADD_NOTE', payload: note })
+      if (await confirmDialog('ノートを作成しました。開きますか？', { confirmLabel: '開く', danger: false })) {
+        navigate('/', { state: { focusNoteId: note.id } })
+      }
+    } finally {
+      setClipConverting(false)
     }
   }
 
@@ -975,6 +1023,14 @@ export default function ResearchPage() {
             <span className="text-slate-600 flex-1 truncate">
               保存済みクリップを表示中（{new Date(selected.clip.savedAt).toLocaleString()}・{formatClipSize(selected.clip.size)}）— オフラインでも閲覧できます
             </span>
+            <button
+              onClick={convertClipToMarkdown}
+              disabled={clipConverting}
+              title="クリップの本文をMarkdownに変換（ノート化 / コピー）"
+              className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-100 text-[11px] transition-colors disabled:opacity-50"
+            >
+              {clipConverting ? <Loader2 size={11} className="animate-spin" /> : <FileText size={11} />} Markdown化
+            </button>
             <button
               onClick={deleteClip}
               title="クリップを削除（ブックマークは残ります）"
