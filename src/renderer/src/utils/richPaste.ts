@@ -62,6 +62,9 @@ export function htmlDocumentToMarkdown(html: string, baseUrl?: string): string |
   if (root === doc.body) root.querySelectorAll(DOC_CHROME_SELECTOR).forEach(el => el.remove())
 
   const resolve = (u: string): string | null => {
+    // 空文字は new URL('', base) がページ自身の URL に解決されてしまう
+    // (src 無しの遅延読込 <img> が ![](ページURL) になる) ので、無効扱いにする。
+    if (!u.trim()) return null
     try {
       const abs = baseUrl ? new URL(u, baseUrl) : new URL(u)
       return abs.protocol === 'http:' || abs.protocol === 'https:' ? abs.href : null

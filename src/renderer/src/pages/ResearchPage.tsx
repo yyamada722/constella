@@ -6,6 +6,7 @@ import { ResearchItem, ResearchFolder, Note } from '../types'
 import { generateId } from '../utils'
 import { WebFrame, type WebFrameHandle } from './CanvasPage'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
+import { formatSize } from '../utils/fileKind'
 import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
 import { confirmDialog, alertDialog, chooseDialog } from '../components/ConfirmDialog'
@@ -29,11 +30,6 @@ type ClipApi = {
 }
 function clipApi(): ClipApi | null {
   return (window as unknown as { api?: { clip?: ClipApi } }).api?.clip ?? null
-}
-
-function formatClipSize(bytes: number): string {
-  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-  return Math.max(1, Math.round(bytes / 1024)) + ' KB'
 }
 
 // Normalize URLs for equality checks so harmless server redirects
@@ -178,14 +174,15 @@ export default function ResearchPage() {
     // クリップはブックマークごとの状態なので選択切替でリセット。オフライン時は
     // クリップを持つブックマークを自動でクリップ表示にする（ライブは失敗するだけ）。
     setClipUrl(null)
-    setClipMode(!!(selected?.clip && !navigator.onLine))
+    setClipMode(!!(clipSupported && selected?.clip && !navigator.onLine))
     // browseUrl deliberately excluded — see goHome / commitUrl for the home-mode URL flow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId])
 
   // クリップ表示に入ったら file:// URL を解決する。ファイルが消えている場合
-  // (クリップは端末ローカル — 同期先の別マシンには存在しない) はメタデータを
-  // 掃除してライブ表示へ戻す。
+  // (クリップは端末ローカル — 同期先の別マシンには存在しない) はライブ表示へ
+  // 戻すだけで、メタデータは消さない。ここで消すと同期フォルダ経由で
+  // 「保存したマシン側の」正常なクリップ参照まで同期で消えてしまう。
   useEffect(() => {
     if (!clipMode || !selected?.clip) { setClipUrl(null); return }
     let cancelled = false
@@ -193,8 +190,7 @@ export default function ResearchPage() {
       if (cancelled) return
       if (u) { setClipUrl(u); return }
       setClipMode(false)
-      dispatch({ type: 'UPDATE_RESEARCH', payload: { ...selected, clip: undefined } })
-      alertDialog('クリップファイルがこのPCに見つかりませんでした。\nページを表示して、もう一度クリップを保存してください。')
+      alertDialog('クリップファイルがこのPCにはありません。\nクリップは保存したPCでのみ閲覧できます（このPCで保存し直すこともできます）。')
     })
     return () => { cancelled = true }
     // selected は編集のたびに新オブジェクトになるため、意図的に id とモードだけ見る。
@@ -529,7 +525,15 @@ export default function ResearchPage() {
         ],
       )
       if (choice === 'copy') {
-        await navigator.clipboard.writeText(md)
+        // Electron clipboard 経由 (非フォーカス時も成功する)。非Electronでは
+        // navigator.clipboard にフォールバック。
+        const copy = (window as unknown as { api?: { copyText?: (t: string) => Promise<void> } }).api?.copyText
+        try {
+          if (copy) await copy(md)
+          else await navigator.clipboard.writeText(md)
+        } catch {
+          await alertDialog('クリップボードへのコピーに失敗しました。')
+        }
         return
       }
       if (choice !== 'note') return
@@ -596,7 +600,9 @@ export default function ResearchPage() {
   const liveEffectiveUrl = rawEffectiveUrl && UNSAFE_SCHEME.test(rawEffectiveUrl.trim()) ? 'about:blank' : rawEffectiveUrl
   // クリップ表示中は解決済みの file:// URL を出す。解決待ちの間に about:blank を
   // 挟むのは、オフライン時にライブ URL を一瞬でもロードしに行かないため。
-  const clipActive = !!(selected?.clip && clipMode)
+  // clipSupported ゲート: リモート(LAN)クライアントは同期済みの clip メタを
+  // 持ち得るが IPC が無いので、クリップ UI 一式を出さない。
+  const clipActive = !!(clipSupported && selected?.clip && clipMode)
   const effectiveUrl = clipActive ? (clipUrl ?? 'about:blank') : liveEffectiveUrl
   const effectiveTitle = selected ? (selected.title || 'Web page') : 'ホーム'
 
@@ -997,7 +1003,7 @@ export default function ResearchPage() {
             {homeMode ? '移動' : '開く'}
           </button>
           {isLoading && <Loader2 size={12} className="text-slate-400 animate-spin shrink-0" />}
-          {selected?.clip && (
+          {clipSupported && selected?.clip && (
             <div className="flex items-center rounded overflow-hidden border border-slate-300 shrink-0">
               <button
                 onClick={() => setClipMode(false)}
@@ -1021,7 +1027,7 @@ export default function ResearchPage() {
           <div className="flex items-center gap-2 px-3 py-1 border-b border-slate-200 bg-emerald-50/60 text-[11px] shrink-0">
             <WifiOff size={11} className="text-emerald-600 shrink-0" />
             <span className="text-slate-600 flex-1 truncate">
-              保存済みクリップを表示中（{new Date(selected.clip.savedAt).toLocaleString()}・{formatClipSize(selected.clip.size)}）— オフラインでも閲覧できます
+              保存済みクリップを表示中（{new Date(selected.clip.savedAt).toLocaleString()}・{formatSize(selected.clip.size)}）— オフラインでも閲覧できます
             </span>
             <button
               onClick={convertClipToMarkdown}

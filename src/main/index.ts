@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog, webContents } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, webContents, clipboard } from 'electron'
 import { join, dirname, normalize, extname } from 'path'
 import { pathToFileURL } from 'url'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
@@ -321,6 +321,13 @@ ipcMain.handle('clip:delete', async (_e, itemId: string): Promise<void> => {
   const p = clipPath(itemId)
   if (!p) return
   try { await unlink(p) } catch { /* already gone */ }
+})
+
+// テキストの OS クリップボード書き込み。navigator.clipboard.writeText は
+// ウィンドウが非フォーカス (最小化・裏) だと NotAllowedError で落ちるため、
+// Electron の clipboard モジュール経由で確実に書く。
+ipcMain.handle('clipboard:write-text', (_e, text: string): void => {
+  clipboard.writeText(String(text ?? ''))
 })
 
 // quoted-printable → バイト列。ソフト改行 (=\r\n) を除去し、=XX を 1 バイトへ。

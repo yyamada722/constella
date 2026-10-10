@@ -124,6 +124,8 @@ contextBridge.exposeInMainWorld('api', {
     // MHTML の主文書 (text/html) をデコードして返す — Markdown 変換の入力。
     readHtml: (itemId: string): Promise<{ html: string; baseUrl: string } | null> => ipcRenderer.invoke('clip:read-html', itemId),
   },
+  // OS クリップボードへの確実なテキスト書き込み (非フォーカス時も成功する)。
+  copyText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write-text', text),
   localFile: {
     // `kind` (image/pdf/video/audio) pre-selects the dialog's file filter.
     pick: (kind?: string): Promise<string[] | null> => ipcRenderer.invoke('local:pick', kind),
