@@ -6041,6 +6041,9 @@ export type WebFrameHandle = {
   goForward: () => void
   reload: () => void
   stop: () => void
+  // Electron only — the <webview>'s webContents id, used by the research page to
+  // snapshot the displayed page (MHTML clip) via IPC. null in the iframe fallback.
+  getWebContentsId: () => number | null
 }
 export type WebFrameLoadState = {
   canGoBack: boolean
@@ -6060,6 +6063,7 @@ type WebviewEl = HTMLElement & {
   reload?: () => void
   stop?: () => void
   capturePage?: () => Promise<{ toDataURL(): string }>
+  getWebContentsId?: () => number
 }
 
 // Translate well-known sharing/edit URLs into embeddable equivalents so iframe
@@ -6147,6 +6151,10 @@ export const WebFrame = forwardRef<WebFrameHandle, {
         else setIframeReloadKey(k => k + 1)
       },
       stop: () => { getWv()?.stop?.() },
+      getWebContentsId: () => {
+        // dom-ready 前は throw するので握りつぶして null を返す。
+        try { return getWv()?.getWebContentsId?.() ?? null } catch { return null }
+      },
     }
   }, [])
 

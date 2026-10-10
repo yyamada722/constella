@@ -410,6 +410,9 @@ export interface ResearchItem {
   createdAt: string
   folderId?: string // optional grouping — items without folderId render under "未分類"
   archivedAt?: string // ISO timestamp — soft-deleted (recoverable from "アーカイブ" view)
+  // Offline clip metadata. The MHTML snapshot itself lives on disk
+  // (userData/clips/<id>.mhtml, machine-local); only when/size ride in the DB.
+  clip?: { savedAt: string; size: number }
 }
 
 // Grouping container for ResearchItem. Folders can nest via parentId (a tree).
