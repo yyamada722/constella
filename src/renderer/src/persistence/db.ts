@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS files (ord INTEGER, id TEXT PRIMARY KEY, masterProjec
 CREATE TABLE IF NOT EXISTS file_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS projects (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, description TEXT, createdAt TEXT, color TEXT, customStatuses TEXT);
 CREATE TABLE IF NOT EXISTS tasks (ord INTEGER, id TEXT PRIMARY KEY, projectId TEXT, title TEXT, description TEXT, status TEXT, tags TEXT, createdAt TEXT, startDate TEXT, endDate TEXT, parentId TEXT, linkedNoteIds TEXT, priority INTEGER, completedAt TEXT, shared INTEGER, sharedAlias TEXT, fileIds TEXT, doingMs REAL, doingSince TEXT);
-CREATE TABLE IF NOT EXISTS research (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, url TEXT, description TEXT, tags TEXT, category TEXT, createdAt TEXT, folderId TEXT, archivedAt TEXT);
+CREATE TABLE IF NOT EXISTS research (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, title TEXT, url TEXT, description TEXT, tags TEXT, category TEXT, createdAt TEXT, folderId TEXT, archivedAt TEXT, clip TEXT);
 CREATE TABLE IF NOT EXISTS research_folders (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, createdAt TEXT, parentId TEXT, color TEXT);
 CREATE TABLE IF NOT EXISTS sketches (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, strokes TEXT, createdAt TEXT, updatedAt TEXT);
 CREATE TABLE IF NOT EXISTS flows (ord INTEGER, id TEXT PRIMARY KEY, masterProjectId TEXT, name TEXT, nodes TEXT, edges TEXT, groups TEXT, createdAt TEXT, updatedAt TEXT);
@@ -252,6 +252,7 @@ function applySchemaAndMigrations(db: Database): void {
   try { db.run('ALTER TABLE tasks ADD COLUMN shared INTEGER') } catch { /* column already present */ }
   try { db.run('ALTER TABLE tasks ADD COLUMN sharedAlias TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE research ADD COLUMN archivedAt TEXT') } catch { /* column already present */ }
+  try { db.run('ALTER TABLE research ADD COLUMN clip TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_cards ADD COLUMN shape TEXT') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_cards ADD COLUMN hideHeader INTEGER') } catch { /* column already present */ }
   try { db.run('ALTER TABLE canvas_cards ADD COLUMN squareCorners INTEGER') } catch { /* column already present */ }
@@ -482,6 +483,7 @@ function readState(db: Database): AppState | null {
     tags: parseArr<string>(r.tags), category: str(r.category), createdAt: str(r.createdAt),
     folderId: optStr(r.folderId),
     archivedAt: optStr(r.archivedAt),
+    clip: parseJson<{ savedAt: string; size: number }>(r.clip),
   }))
 
   const researchFolders: ResearchFolder[] = rows(db, 'SELECT * FROM research_folders ORDER BY ord').map(r => ({
@@ -738,8 +740,8 @@ async function doSaveState(state: AppState): Promise<void> {
     }
     insert('INSERT INTO tasks (ord,id,projectId,title,description,status,tags,createdAt,startDate,endDate,parentId,linkedNoteIds,priority,completedAt,shared,sharedAlias,fileIds,doingMs,doingSince) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', taskRows)
 
-    insert('INSERT INTO research (ord,id,masterProjectId,title,url,description,tags,category,createdAt,folderId,archivedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      state.research.map((r, i) => [i, r.id, r.masterProjectId, r.title, r.url, r.description, JSON.stringify(r.tags ?? []), r.category, r.createdAt, r.folderId ?? null, r.archivedAt ?? null].map(B)))
+    insert('INSERT INTO research (ord,id,masterProjectId,title,url,description,tags,category,createdAt,folderId,archivedAt,clip) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      state.research.map((r, i) => [i, r.id, r.masterProjectId, r.title, r.url, r.description, JSON.stringify(r.tags ?? []), r.category, r.createdAt, r.folderId ?? null, r.archivedAt ?? null, r.clip ? JSON.stringify(r.clip) : null].map(B)))
 
     insert('INSERT INTO research_folders (ord,id,masterProjectId,name,createdAt,parentId,color) VALUES (?,?,?,?,?,?,?)',
       state.researchFolders.map((f, i) => [i, f.id, f.masterProjectId, f.name, f.createdAt, f.parentId ?? null, f.color ?? null].map(B)))

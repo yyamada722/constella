@@ -1,5 +1,6 @@
-import { app, BrowserWindow, shell, ipcMain, dialog, clipboard, nativeImage } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, webContents, clipboard, nativeImage } from 'electron'
 import { join, dirname, normalize, extname } from 'path'
+import { pathToFileURL } from 'url'
 import { readFile, writeFile, unlink, mkdir, rm, stat, rename, copyFile, readdir } from 'fs/promises'
 import { createServer, Server } from 'http'
 import { networkInterfaces } from 'os'
@@ -276,6 +277,119 @@ ipcMain.handle('local:open', async (_e, p: string): Promise<string> => {
 
 ipcMain.handle('local:reveal', async (_e, p: string): Promise<void> => {
   shell.showItemInFolder(p)
+})
+
+// ── リサーチのオフラインクリップ (MHTML) ──
+// The research browser can snapshot whatever its <webview> is displaying into a
+// single MHTML file (page + inlined subresources), so a bookmark stays readable
+// with no network. Files live under userData/clips/<itemId>.mhtml — local to this
+// machine (not carried by folder-sync / handoff), only metadata rides in the DB.
+const clipsDir = (): string => join(app.getPath('userData'), 'clips')
+// generateId() output is [a-z0-9] — anything else is rejected so a crafted id
+// (e.g. via an imported backup) can never traverse out of the clips folder.
+const clipPath = (itemId: string): string | null =>
+  /^[a-z0-9]{1,64}$/i.test(itemId) ? join(clipsDir(), itemId + '.mhtml') : null
+
+ipcMain.handle('clip:save', async (_e, wcId: number, itemId: string): Promise<{ ok: boolean; size?: number; error?: string }> => {
+  const p = clipPath(itemId)
+  if (!p) return { ok: false, error: '不正なIDです' }
+  const wc = webContents.fromId(wcId)
+  // Only accept a <webview> hosted by OUR window — a forged id must not let the
+  // renderer snapshot some other webContents.
+  if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' ||
+      !mainWindow || mainWindow.isDestroyed() || wc.hostWebContents !== mainWindow.webContents) {
+    return { ok: false, error: 'ページを取得できません' }
+  }
+  try {
+    await mkdir(clipsDir(), { recursive: true })
+    await wc.savePage(p, 'MHTML')
+    const s = await stat(p)
+    return { ok: true, size: s.size }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+// file:// URL for loading the clip back into the webview (null if missing —
+// e.g. the DB was synced to another machine where the file doesn't exist).
+ipcMain.handle('clip:url', async (_e, itemId: string): Promise<string | null> => {
+  const p = clipPath(itemId)
+  if (!p) return null
+  try { return (await stat(p)).isFile() ? pathToFileURL(p).href : null } catch { return null }
+})
+
+ipcMain.handle('clip:delete', async (_e, itemId: string): Promise<void> => {
+  const p = clipPath(itemId)
+  if (!p) return
+  try { await unlink(p) } catch { /* already gone */ }
+})
+
+// テキストの OS クリップボード書き込み。navigator.clipboard.writeText は
+// ウィンドウが非フォーカス (最小化・裏) だと NotAllowedError で落ちるため、
+// Electron の clipboard モジュール経由で確実に書く。
+ipcMain.handle('clipboard:write-text', (_e, text: string): void => {
+  clipboard.writeText(String(text ?? ''))
+})
+
+// quoted-printable → バイト列。ソフト改行 (=\r\n) を除去し、=XX を 1 バイトへ。
+// 入力は latin1 で 1 文字 = 1 バイトに保った文字列であること。
+function decodeQuotedPrintable(body: string): Buffer {
+  const cleaned = body.replace(/=\r?\n/g, '')
+  const bytes = Buffer.alloc(cleaned.length)
+  let n = 0
+  for (let i = 0; i < cleaned.length; i++) {
+    const c = cleaned.charCodeAt(i)
+    if (c === 0x3d /* '=' */ && i + 2 < cleaned.length && /^[0-9A-Fa-f]{2}$/.test(cleaned.slice(i + 1, i + 3))) {
+      bytes[n++] = parseInt(cleaned.slice(i + 1, i + 3), 16)
+      i += 2
+    } else {
+      bytes[n++] = c & 0xff
+    }
+  }
+  return bytes.subarray(0, n)
+}
+
+// クリップ MHTML から主文書 (最初の text/html パート) をデコードして返す。
+// Markdown 変換自体はレンダラー (turndown) が行う — ここはバイト → HTML 文字列まで。
+// baseUrl はそのパートの Content-Location (相対 URL の絶対化に使う)。
+const CLIP_HTML_MAX = 64 * 1024 * 1024
+ipcMain.handle('clip:read-html', async (_e, itemId: string): Promise<{ html: string; baseUrl: string } | null> => {
+  const p = clipPath(itemId)
+  if (!p) return null
+  let raw: Buffer
+  try {
+    if ((await stat(p)).size > CLIP_HTML_MAX) return null
+    raw = await readFile(p)
+  } catch { return null }
+  // latin1 でバイト 1:1 の文字列にしてから MIME を手で裂く。Chromium の savePage は
+  // multipart/related + quoted-printable(text/html) を書くが、単一文書の MHTML too。
+  const text = raw.toString('latin1')
+  const headEnd = text.search(/\r?\n\r?\n/)
+  if (headEnd < 0) return null
+  const topHeaders = text.slice(0, headEnd)
+  const boundary = /boundary="?([^"\r\n;]+)"?/i.exec(topHeaders)?.[1]
+  const parts = boundary ? text.split('--' + boundary).slice(1) : [text]
+  for (const part of parts) {
+    const he = part.search(/\r?\n\r?\n/)
+    if (he < 0) continue
+    const headers = part.slice(0, he)
+    const ct = /content-type:\s*([^\r\n;]+)/i.exec(headers)?.[1]?.trim().toLowerCase()
+    if (ct !== 'text/html') continue
+    const enc = /content-transfer-encoding:\s*([^\r\n;]+)/i.exec(headers)?.[1]?.trim().toLowerCase() ?? ''
+    const charset = /charset="?([^"\r\n;]+)"?/i.exec(headers)?.[1]?.trim() || 'utf-8'
+    const baseUrl = /content-location:\s*([^\r\n]+)/i.exec(headers)?.[1]?.trim() ?? ''
+    const body = part.slice(he).replace(/^\r?\n\r?\n/, '')
+    let bytes: Buffer
+    if (enc === 'quoted-printable') bytes = decodeQuotedPrintable(body)
+    else if (enc === 'base64') bytes = Buffer.from(body, 'base64')
+    else bytes = Buffer.from(body, 'latin1')
+    try {
+      return { html: new TextDecoder(charset).decode(bytes), baseUrl }
+    } catch {
+      return { html: new TextDecoder('utf-8').decode(bytes), baseUrl }
+    }
+  }
+  return null
 })
 
 // ── 計画の PDF 書き出し ──
