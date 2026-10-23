@@ -22,7 +22,7 @@ import { usePopoverDismiss } from '../components/usePopoverDismiss'
 // 執筆面（エディタ+プレビュー）の見た目を、カラー（紙色と配色）とフォントの
 // 独立した2軸で切り替える。実体は writing-themes.css の .wtc-* / .wtf-* クラス
 // （typol.css の --tp-* を上書き）。paper / ink / font はスウォッチ表示用。
-type PaperTheme = 'default' | 'ladder' | 'sepia' | 'kinari' | 'vivid' | 'night' | 'github'
+type PaperTheme = 'default' | 'ladder' | 'sepia' | 'kinari' | 'vivid' | 'night' | 'github' | 'arkfield' | 'dyzj' | 'dyzj-dark'
 type FontTheme = 'default' | 'mincho' | 'klee' | 'mono'
 const PAPER_THEMES: { id: PaperTheme; name: string; desc: string; paper: string; ink: string }[] = [
   { id: 'default', name: '標準', desc: 'アプリのテーマに従う', paper: '#ffffff', ink: '#1e293b' },
@@ -32,6 +32,9 @@ const PAPER_THEMES: { id: PaperTheme; name: string; desc: string; paper: string;
   { id: 'vivid', name: 'ポップ', desc: 'Sneh風 — ピンク見出し×カラフル', paper: '#fafaff', ink: '#ff3399' },
   { id: 'night', name: 'ナイト', desc: 'Ladder風ダーク — スレート×空色', paper: '#1e293b', ink: '#e2e8f0' },
   { id: 'github', name: 'GitHub', desc: 'GitHub Dark風 — ほぼ黒×青リンク', paper: '#0d1117', ink: '#58a6ff' },
+  { id: 'arkfield', name: 'Arkfield', desc: 'Arkfield風 — 製図紙×墨×シグナルイエロー', paper: '#f2f2f0', ink: '#fffa00' },
+  { id: 'dyzj', name: 'Dyzj', desc: 'Dyzj風 — 白×ティール見出し・赤コード', paper: '#ffffff', ink: '#00c4b6' },
+  { id: 'dyzj-dark', name: 'Dyzj ダーク', desc: 'Dyzj Dark風 — チャコール×ティール', paper: '#262626', ink: '#00c4b6' },
 ]
 const FONT_THEMES: { id: FontTheme; name: string; desc: string; font: string }[] = [
   { id: 'default', name: 'ゴシック', desc: '標準のサンセリフ', font: 'ui-sans-serif, "Hiragino Sans", "Yu Gothic UI", sans-serif' },
