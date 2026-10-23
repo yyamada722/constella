@@ -40,13 +40,15 @@ export function localFileApi(): LocalFileApi | null {
 }
 
 /** Preview kind inferred from the file extension. */
-export type LocalKind = 'image' | 'pdf' | 'video' | 'audio' | 'other'
+export type LocalKind = 'image' | 'pdf' | 'video' | 'audio' | 'office' | 'other'
 
 const EXT_KIND: Record<string, LocalKind> = {
   png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', avif: 'image', bmp: 'image', svg: 'image',
   pdf: 'pdf',
   mp4: 'video', webm: 'video', mov: 'video', m4v: 'video', mkv: 'video', ogv: 'video',
   mp3: 'audio', wav: 'audio', ogg: 'audio', m4a: 'audio', flac: 'audio', aac: 'audio',
+  docx: 'office', doc: 'office', xlsx: 'office', xlsm: 'office', xls: 'office', ods: 'office',
+  pptx: 'office', ppt: 'office', odt: 'office', odp: 'office',
 }
 
 export function localKind(pathOrRef: string): LocalKind {

@@ -14,6 +14,7 @@ import { useApp, type Action } from '../store'
 import { putMedia, useMediaState } from '../persistence/media'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, formatSize } from '../utils/fileKind'
 import { PdfViewer } from './PdfViewer'
+import OfficeViewer from './OfficeViewer'
 import { AudioPlayer } from './AudioPlayer'
 import { MediaFallback } from './MediaFallback'
 import { confirmDialog, alertDialog } from './ConfirmDialog'
@@ -53,6 +54,8 @@ function AttachmentDetail({ att, file, groups, onUpdateLink, onRenameFile, onDet
     body = <div className="flex justify-center bg-slate-100 max-h-[440px] overflow-auto"><img src={src} alt={file.name} onError={() => setImgError(true)} className="max-w-full object-contain" /></div>
   } else if (kind === 'video') {
     body = <video src={src} controls loop className="w-full max-h-[440px] bg-black" />
+  } else if (kind === 'office') {
+    body = <OfficeViewer url={src} name={file.name} mime={file.mime} fixedHeight={440} />
   } else if (kind === 'audio') {
     body = <div className="p-3"><AudioPlayer src={src} /></div>
   } else {
