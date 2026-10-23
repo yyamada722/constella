@@ -80,6 +80,9 @@ function DocxView({ buf }: { buf: ArrayBuffer }) {
       // チャンク読込中に閉じられたら描画しない（切り離された host に大きな文書を描き続けないよう）
       .then(({ renderAsync }) => alive ? renderAsync(buf, host, undefined, {
         inWrapper: true,
+        // 文書に埋め込まれた HTML 部品 (altChunk) は sandbox 無しの iframe srcdoc で描かれる
+        // — 文書由来のスクリプトをアプリと同一オリジンで動かさないよう無効化する
+        renderAltChunks: false,
         ignoreLastRenderedPageBreak: true,
         renderHeaders: true,
         renderFooters: true,

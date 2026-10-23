@@ -168,7 +168,7 @@ function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => v
   } else if (kind === 'audio') {
     body = <audio src={src} controls className="w-full px-3 py-4" />
   } else if (kind === 'office') {
-    body = <OfficeViewer url={src} name={att.label || localFileName(att.href)} mime={blobMime} fixedHeight={440} />
+    body = <OfficeViewer url={src} name={isLocalRef(att.href) ? localFileName(att.href) : att.label} mime={blobMime} fixedHeight={440} />
   } else {
     body = <div className="h-20 flex items-center justify-center text-xs text-slate-400">プレビュー非対応の形式です（「開く」でOSのアプリを使用）</div>
   }
