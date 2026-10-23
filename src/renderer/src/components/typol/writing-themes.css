@@ -210,7 +210,7 @@
   --wt-signal: #fffa00;
   --wt-signal-rule: linear-gradient(90deg, #fffa00 0 4rem, #191919 4rem);
 }
-.wtc-arkfield .typol-root.typol-root ::selection { background: #fffa00; color: #191919; }
+.wtc-arkfield :is(.typol-root.typol-root, .typol-root.typol-root *)::selection { background: #fffa00; color: #191919; }
 .wtc-arkfield .typol-root.typol-root.typol-preview { letter-spacing: 0.005em; }
 /* 見出し: 墨・700・タイト。罫線は擬似要素で描くので既定の下線は消す */
 .wtc-arkfield .typol-root.typol-root.typol-preview :is(h1, h2, h3, h4, h5, h6) {
@@ -366,9 +366,10 @@
   --wt-dy-img-filter: brightness(80%);
 }
 /* 本文は Dyzj と同じく両端揃え・やや広めの行間（段落は --tp-text-mute 寄りのダーク版色） */
-:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root ::selection { background: var(--wt-dy-sel); }
-/* ダークは本文 #a9a9a9 のままだと選択背景 #6e7b99 の上で読めない */
-.wtc-dyzj-dark .typol-root.typol-root ::selection { color: #000; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) :is(.typol-root.typol-root, .typol-root.typol-root *)::selection { background: var(--wt-dy-sel); }
+/* ダークは本文 #a9a9a9 のままだと選択背景 #6e7b99 の上で読めない。
+   編集用 textarea 自体も .typol-root なので、子孫だけでなく自身にも当てる */
+.wtc-dyzj-dark :is(.typol-root.typol-root, .typol-root.typol-root *)::selection { color: #000; }
 :is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview { line-height: 1.8; text-align: justify; }
 .wtc-dyzj-dark .typol-root.typol-root.typol-preview p { color: #a9a9a9; }
 /* h1: 中央寄せ。ホバーでティールの下線が中央から伸びる */
