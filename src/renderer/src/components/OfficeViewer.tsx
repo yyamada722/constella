@@ -172,13 +172,14 @@ function SheetTable({ ws, X }: { ws: WorkSheet; X: typeof import('xlsx') }) {
     for (let c = c0; c <= c1; c++) if (!ws['!cols']?.[c]?.hidden) cols.push(c)
     // 結合セル: 表示窓と交差する部分だけを扱う（A1:XFD1048576 のような巨大結合でも
     // 窓の外まで列挙しない）。左上（＝窓内で最初に見える行/列）に span、残りは描画しない。
-    const span = new Map<string, { rs: number; cs: number }>()
+    const span = new Map<string, { rs: number; cs: number; src: { r: number; c: number } }>()
     const covered = new Set<string>()
     for (const m of ws['!merges'] ?? []) {
       const mr = rows.filter(r => r >= m.s.r && r <= m.e.r)
       const mc = cols.filter(c => c >= m.s.c && c <= m.e.c)
       if (!mr.length || !mc.length) continue
-      span.set(`${mr[0]},${mc[0]}`, { rs: mr.length, cs: mc.length })
+      // 値は結合の左上 (m.s) にある — 先頭の行/列が非表示でもそこから読む
+      span.set(`${mr[0]},${mc[0]}`, { rs: mr.length, cs: mc.length, src: m.s })
       for (const r of mr) for (const c of mc) {
         if (r !== mr[0] || c !== mc[0]) covered.add(`${r},${c}`)
       }
@@ -199,8 +200,8 @@ function SheetTable({ ws, X }: { ws: WorkSheet; X: typeof import('xlsx') }) {
     for (const c of model.cols) {
       const key = `${r},${c}`
       if (covered.has(key)) continue
-      const cell = ws[X.utils.encode_cell({ r, c })]
       const sp = span.get(key)
+      const cell = ws[X.utils.encode_cell(sp ? sp.src : { r, c })]
       const text = cell ? (cell.w ?? (cell.v == null ? '' : String(cell.v))) : ''
       const numeric = cell?.t === 'n' || cell?.t === 'd'
       cells.push(
