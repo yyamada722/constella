@@ -139,7 +139,9 @@ function SheetView({ buf }: { buf: ArrayBuffer }) {
   const ws = wb.Sheets[names[sheetIdx]]
   return (
     <>
-      <div className="flex-1 min-h-0 overflow-auto bg-white">
+      {/* 灰色の地の中央にシートを置く。flex の auto margin なので、はみ出す大きなシートは
+          上端・左端から表示されてスクロールでき、切れない */}
+      <div className="flex-1 min-h-0 overflow-auto bg-slate-100 p-4 flex flex-col" style={{ scrollbarGutter: 'stable' }}>
         {ws ? <SheetTable key={sheetIdx} ws={ws} X={xlsx} /> : <Notice text="シートが空です" />}
       </div>
       {names.length > 1 && (
@@ -216,9 +218,9 @@ function SheetTable({ ws, X }: { ws: WorkSheet; X: typeof import('xlsx') }) {
   for (const c of model.cols) colHeads.push(<th key={c} className="xl-colhead">{X.utils.encode_col(c)}</th>)
 
   return (
-    <>
+    <div className="m-auto">
       {truncated && (
-        <div className="sticky left-0 px-3 py-1 text-[10px] text-amber-700 bg-amber-50 border-b border-amber-200">
+        <div className="sticky left-0 mx-auto mb-2 w-fit max-w-full px-3 py-1 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded">
           大きなシートのため先頭 {Math.min(model.fullRows, MAX_ROWS)} 行 × {Math.min(model.fullCols, MAX_COLS)} 列のみ表示しています（全体: {model.fullRows} 行 × {model.fullCols} 列）
         </div>
       )}
@@ -230,7 +232,7 @@ function SheetTable({ ws, X }: { ws: WorkSheet; X: typeof import('xlsx') }) {
         <thead><tr>{colHeads}</tr></thead>
         <tbody>{rows}</tbody>
       </table>
-    </>
+    </div>
   )
 }
 
