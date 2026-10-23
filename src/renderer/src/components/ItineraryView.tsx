@@ -14,6 +14,7 @@ import {
 import { parseItinerary, formatPrice, formatDayLabel, type ItEvent, type ItBlock, type ItAlertLevel } from '../utils/itinerary'
 import { useMediaState, getMediaBlob } from '../persistence/media'
 import OfficeViewer from './OfficeViewer'
+import { fileKind } from '../utils/fileKind'
 import { isLocalRef, localRefPath, localFileName, localKind, localFileApi, type LocalKind } from '../utils/localFile'
 import { PdfViewer } from './PdfViewer'
 import { MediaFallback } from './MediaFallback'
@@ -88,6 +89,7 @@ function kindFromMime(mime: string): LocalKind {
   if (mime === 'application/pdf') return 'pdf'
   if (mime.startsWith('video/')) return 'video'
   if (mime.startsWith('audio/')) return 'audio'
+  if (fileKind(mime, '') === 'office') return 'office'
   return 'other'
 }
 
@@ -123,6 +125,8 @@ function WebPreview({ url }: { url: string }) {
 
 function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => void }) {
   const [kind, setKind] = useState<LocalKind | 'web'>(() => guessKind(att))
+  // blob の MIME（Office の形式判定に使う — ラベルから拡張子が消えていても開けるように）
+  const [blobMime, setBlobMime] = useState('')
   const isMedia = att.href.startsWith('idb:') || isLocalRef(att.href)
   const { url: src, status } = useMediaState(isMedia || kind !== 'web' ? att.href : undefined)
   const localApi = localFileApi()
@@ -136,7 +140,7 @@ function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => v
       getMediaBlob(att.href).then(b => {
         if (!alive || !b || !b.type) return
         const k = kindFromMime(b.type)
-        if (k !== 'other') setKind(k)
+        if (k !== 'other') { setKind(k); setBlobMime(b.type) }
       }).catch(() => {})
     }
     return () => { alive = false }
@@ -164,7 +168,7 @@ function AttachmentPreview({ att, onClose }: { att: Attachment; onClose: () => v
   } else if (kind === 'audio') {
     body = <audio src={src} controls className="w-full px-3 py-4" />
   } else if (kind === 'office') {
-    body = <OfficeViewer url={src} name={att.label || localFileName(att.href)} mime="" fixedHeight={440} />
+    body = <OfficeViewer url={src} name={att.label || localFileName(att.href)} mime={blobMime} fixedHeight={440} />
   } else {
     body = <div className="h-20 flex items-center justify-center text-xs text-slate-400">プレビュー非対応の形式です（「開く」でOSのアプリを使用）</div>
   }

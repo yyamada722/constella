@@ -77,7 +77,8 @@ function DocxView({ buf }: { buf: ArrayBuffer }) {
     let alive = true
     host.replaceChildren()
     import('docx-preview')
-      .then(({ renderAsync }) => renderAsync(buf, host, undefined, {
+      // チャンク読込中に閉じられたら描画しない（切り離された host に大きな文書を描き続けないよう）
+      .then(({ renderAsync }) => alive ? renderAsync(buf, host, undefined, {
         inWrapper: true,
         ignoreLastRenderedPageBreak: true,
         renderHeaders: true,
@@ -85,7 +86,7 @@ function DocxView({ buf }: { buf: ArrayBuffer }) {
         renderFootnotes: true,
         breakPages: true,
         experimental: true,
-      }))
+      }) : undefined)
       .then(() => { if (alive) fit() })
       .catch(e => { if (alive) setError(e instanceof Error ? e.message : String(e)) })
     // ページは実寸（A4 等の固定 px 幅）で描かれる — 狭いペインでは横幅に合わせて縮小。
@@ -161,32 +162,38 @@ function SheetTable({ ws, X }: { ws: WorkSheet; X: typeof import('xlsx') }) {
     const r0 = full.s.r, c0 = full.s.c
     const r1 = Math.min(full.e.r, r0 + MAX_ROWS - 1)
     const c1 = Math.min(full.e.c, c0 + MAX_COLS - 1)
-    // 結合セル: 左上に rowSpan/colSpan、残りは描画しない
+    // 非表示の行/列はモデルから除く（幅0では padding 分の細い列が残り中身も見える）
+    const rows: number[] = []
+    for (let r = r0; r <= r1; r++) if (!ws['!rows']?.[r]?.hidden) rows.push(r)
+    const cols: number[] = []
+    for (let c = c0; c <= c1; c++) if (!ws['!cols']?.[c]?.hidden) cols.push(c)
+    // 結合セル: 表示窓と交差する部分だけを扱う（A1:XFD1048576 のような巨大結合でも
+    // 窓の外まで列挙しない）。左上（＝窓内で最初に見える行/列）に span、残りは描画しない。
     const span = new Map<string, { rs: number; cs: number }>()
     const covered = new Set<string>()
     for (const m of ws['!merges'] ?? []) {
-      span.set(`${m.s.r},${m.s.c}`, { rs: m.e.r - m.s.r + 1, cs: m.e.c - m.s.c + 1 })
-      for (let r = m.s.r; r <= m.e.r; r++) for (let c = m.s.c; c <= m.e.c; c++) {
-        if (r !== m.s.r || c !== m.s.c) covered.add(`${r},${c}`)
+      const mr = rows.filter(r => r >= m.s.r && r <= m.e.r)
+      const mc = cols.filter(c => c >= m.s.c && c <= m.e.c)
+      if (!mr.length || !mc.length) continue
+      span.set(`${mr[0]},${mc[0]}`, { rs: mr.length, cs: mc.length })
+      for (const r of mr) for (const c of mc) {
+        if (r !== mr[0] || c !== mc[0]) covered.add(`${r},${c}`)
       }
     }
-    const widths: number[] = []
-    for (let c = c0; c <= c1; c++) {
+    const widths = cols.map(c => {
       const col = ws['!cols']?.[c]
-      if (col?.hidden) { widths.push(0); continue }
       const px = col?.wpx ?? (col?.wch ? col.wch * 7 + 5 : undefined) ?? 72
-      widths.push(Math.max(24, Math.min(480, Math.round(px))))
-    }
-    return { r0, c0, r1, c1, span, covered, widths, truncated: full.e.r > r1 || full.e.c > c1, fullRows: full.e.r - r0 + 1, fullCols: full.e.c - c0 + 1 }
+      return Math.max(24, Math.min(480, Math.round(px)))
+    })
+    return { rows, cols, span, covered, widths, truncated: full.e.r > r1 || full.e.c > c1, fullRows: full.e.r - r0 + 1, fullCols: full.e.c - c0 + 1 }
   }, [ws, X])
 
   if (!model) return <Notice text="シートが空です" />
-  const { r0, c0, r1, c1, span, covered, widths, truncated } = model
+  const { span, covered, widths, truncated } = model
   const rows: React.ReactNode[] = []
-  for (let r = r0; r <= r1; r++) {
-    if (ws['!rows']?.[r]?.hidden) continue
+  for (const r of model.rows) {
     const cells: React.ReactNode[] = [<th key="h" className="xl-rowhead">{r + 1}</th>]
-    for (let c = c0; c <= c1; c++) {
+    for (const c of model.cols) {
       const key = `${r},${c}`
       if (covered.has(key)) continue
       const cell = ws[X.utils.encode_cell({ r, c })]
@@ -202,7 +209,7 @@ function SheetTable({ ws, X }: { ws: WorkSheet; X: typeof import('xlsx') }) {
     rows.push(<tr key={r}>{cells}</tr>)
   }
   const colHeads: React.ReactNode[] = [<th key="corner" className="xl-corner" />]
-  for (let c = c0; c <= c1; c++) colHeads.push(<th key={c} className="xl-colhead">{X.utils.encode_col(c)}</th>)
+  for (const c of model.cols) colHeads.push(<th key={c} className="xl-colhead">{X.utils.encode_col(c)}</th>)
 
   return (
     <>

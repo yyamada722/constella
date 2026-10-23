@@ -2677,7 +2677,7 @@ export default function CanvasPage() {
     if (canvasLockedRef.current) return
     const label: CanvasLabel = { id: generateId(), tabId: activeTabId, text: '', x, y: y - 14, fontSize: 20, color: '#1e293b', createdAt: new Date().toISOString() }
     dispatch({ type: 'ADD_CANVAS_LABEL', payload: label })
-    setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([])
+    setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedStationIds([])
     setSelectedLabelIds([label.id])
     setEditingLabelId(label.id)
   }, [dispatch, activeTabId])
@@ -2687,7 +2687,7 @@ export default function CanvasPage() {
     if (canvasLockedRef.current) return
     const group: CanvasGroup = { id: generateId(), tabId: activeTabId, title: 'グループ', x, y, width: 420, height: 300, createdAt: new Date().toISOString() }
     dispatch({ type: 'ADD_CANVAS_GROUP', payload: group })
-    setSelectedIds([]); setSelectedArrowId(null); setSelectedLabelIds([])
+    setSelectedIds([]); setSelectedArrowId(null); setSelectedLabelIds([]); setSelectedStationIds([])
     setSelectedGroupIds([group.id])
   }, [dispatch, activeTabId])
 
