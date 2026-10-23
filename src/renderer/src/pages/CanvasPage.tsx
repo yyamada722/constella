@@ -5458,7 +5458,7 @@ const CARD_LOCAL_KIND: Partial<Record<CanvasCard['type'], LocalKind>> = {
   pdf: 'pdf', image: 'image', video: 'video', audio: 'audio',
 }
 const LOCAL_KIND_LABEL: Record<LocalKind, string> = {
-  pdf: 'PDF', image: '画像', video: '動画', audio: '音声', other: 'ファイル',
+  pdf: 'PDF', image: '画像', video: '動画', audio: '音声', office: 'Office 文書', other: 'ファイル',
 }
 
 async function linkLocalFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {

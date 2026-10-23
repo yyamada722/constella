@@ -17,6 +17,7 @@ import { putMedia, useMediaState, getMediaBlob } from '../persistence/media'
 import { isLocalRef, localRefPath, localFileName, toLocalRef, localFileApi } from '../utils/localFile'
 import { fileKind, FILE_KIND_ICON, FILE_KIND_TINT, FILE_KIND_LABEL, formatSize, type FileKind } from '../utils/fileKind'
 import { PdfViewer } from '../components/PdfViewer'
+import OfficeViewer from '../components/OfficeViewer'
 import { ZoomableImage } from '../components/ZoomableImage'
 import { AudioPlayer } from '../components/AudioPlayer'
 import { MediaFallback } from '../components/MediaFallback'
@@ -39,7 +40,7 @@ function openFileApi(): ((bytes: Uint8Array, name: string, type: string) => Prom
 }
 type SortMode = 'date' | 'name' | 'size'
 type ViewMode = 'grid' | 'list'
-const TYPE_FILTERS: ('all' | FileKind)[] = ['all', 'image', 'video', 'pdf', 'audio', 'other']
+const TYPE_FILTERS: ('all' | FileKind)[] = ['all', 'image', 'video', 'pdf', 'office', 'audio', 'other']
 
 /* ── サムネイル（グリッドタイル / リスト行アイコンで共用） ── */
 
@@ -176,6 +177,8 @@ function FileLightbox({ file, list, masterName, isReference, usage, masters, fol
     // to whichever axis binds (height for portrait, width for landscape), and the
     // fit tracks window resizes instead of the size at open time.
     body = <div className="flex-1 min-h-0 overflow-hidden p-4 flex items-stretch justify-center"><div className="w-full min-h-0 bg-white rounded overflow-hidden flex flex-col"><PdfViewer url={src} zoomable autoFocus /></div></div>
+  } else if (kind === 'office') {
+    body = <div className="flex-1 min-h-0 overflow-hidden p-4 flex items-stretch justify-center"><div className="w-full min-h-0 rounded overflow-hidden flex flex-col"><OfficeViewer url={src} name={file.name} mime={file.mime} /></div></div>
   } else if (kind === 'audio') {
     body = <div className="flex-1 flex items-center justify-center p-8"><div className="w-full max-w-[640px]"><AudioPlayer src={src} autoPlay /></div></div>
   } else {
@@ -979,7 +982,7 @@ export default function FilesPage() {
         {/* 容量内訳（種別ごと。旧版の履歴分も含む） */}
         {sizeByKind.m.size > 0 && (
           <div className="border-t border-slate-200 px-3 py-2 space-y-0.5">
-            {(['image', 'video', 'pdf', 'audio', 'other'] as FileKind[]).map(k => {
+            {(['image', 'video', 'pdf', 'office', 'audio', 'other'] as FileKind[]).map(k => {
               const bytes = sizeByKind.m.get(k)
               if (!bytes) return null
               const Icon = FILE_KIND_ICON[k]

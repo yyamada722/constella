@@ -181,3 +181,19 @@ body {
 /* カスタムステータスのチップ文字色 (utils/customStatus.ts statusChipStyle がテーマ別に計算) */
 :root [data-cs] { color: var(--cs-fg-l); }
 .dark [data-cs] { color: var(--cs-fg-d); }
+
+/* ── OfficeViewer: Excel 表 ── */
+.xl-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; color: #1e293b; }
+.xl-table td, .xl-table th { border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; padding: 2px 6px; height: 21px; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.xl-table thead th { position: sticky; top: 0; z-index: 2; }
+.xl-table .xl-colhead, .xl-table .xl-rowhead, .xl-table .xl-corner { background: #f1f5f9; color: #64748b; font-weight: 500; font-size: 11px; text-align: center; }
+.xl-table .xl-rowhead { position: sticky; left: 0; z-index: 1; }
+.xl-table .xl-corner { position: sticky; left: 0; top: 0; z-index: 3; }
+/* docx-preview の外枠（グレー背景+ページ影）をビューアの地に馴染ませる */
+.office-docx .docx-wrapper { background: transparent; padding: 16px; }
+.office-docx .docx-wrapper > section.docx { box-shadow: 0 1px 6px rgba(15, 23, 42, 0.18); margin-bottom: 16px; }
+.office-pptx .pptx-preview-wrapper { background: transparent !important; }
+.office-pptx .pptx-preview-slide-wrapper { box-shadow: 0 1px 6px rgba(15, 23, 42, 0.18); margin-bottom: 16px !important; }
+:where(.dark) .xl-table { color: #e2e8f0; }
+:where(.dark) .xl-table td, :where(.dark) .xl-table th { border-color: #334155; }
+:where(.dark) .xl-table .xl-colhead, :where(.dark) .xl-table .xl-rowhead, :where(.dark) .xl-table .xl-corner { background: #1e293b; color: #94a3b8; }

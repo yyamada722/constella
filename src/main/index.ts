@@ -142,6 +142,7 @@ const TYPE_EXTS: Record<string, string[]> = {
   image: ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.avif'],
   video: ['.mp4', '.webm', '.mov', '.mkv', '.m4v', '.ogv'],
   audio: ['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac'],
+  office: ['.doc', '.docx', '.xls', '.xlsx', '.xlsm', '.ppt', '.pptx', '.odt', '.ods', '.odp'],
   // ライブラリの「その他」ファイル用 — 文書/アーカイブ/制作系の頑健な許可リスト。
   // ここに無い拡張子（.html/.chm/.js …）は .bin に強制され、OSが実行系ハンドラで
   // 開くことはない（拒否リスト方式に反転させないこと — imported backup のバイトは
@@ -194,6 +195,10 @@ const LOCAL_MIME: Record<string, string> = {
   '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.m4v': 'video/mp4', '.mkv': 'video/x-matroska', '.ogv': 'video/ogg',
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.aac': 'audio/aac',
   '.txt': 'text/plain', '.md': 'text/plain', '.json': 'application/json',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xls': 'application/vnd.ms-excel', '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
 }
 // Reading huge files through IPC would balloon renderer memory — preview reads are
 // capped; bigger files can still be opened in their OS default app.
@@ -214,6 +219,7 @@ const LOCAL_PICK_FILTERS: Record<string, { name: string; extensions: string[] }>
   pdf: { name: 'PDF', extensions: ['pdf'] },
   video: { name: '動画', extensions: ['mp4', 'webm', 'mov', 'm4v', 'mkv', 'ogv'] },
   audio: { name: '音声', extensions: ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'] },
+  office: { name: 'Office 文書', extensions: ['docx', 'xlsx', 'xlsm', 'xls', 'ods', 'pptx', 'doc', 'ppt', 'odt', 'odp'] },
 }
 
 ipcMain.handle('local:pick', async (_e, kind?: string): Promise<string[] | null> => {
