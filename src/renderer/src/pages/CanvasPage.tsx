@@ -2672,13 +2672,37 @@ export default function CanvasPage() {
     setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 420)), kind: 'group', canvasX: 0, canvasY: 0 })
   }, [])
 
+  // 右クリック「ここにラベル」/ 空白ダブルクリック — ラベルを置いて即編集で開く。
+  const addLabelAt = useCallback((x: number, y: number) => {
+    if (canvasLockedRef.current) return
+    const label: CanvasLabel = { id: generateId(), tabId: activeTabId, text: '', x, y: y - 14, fontSize: 20, color: '#1e293b', createdAt: new Date().toISOString() }
+    dispatch({ type: 'ADD_CANVAS_LABEL', payload: label })
+    setSelectedIds([]); setSelectedArrowId(null); setSelectedGroupIds([]); setSelectedStationIds([])
+    setSelectedLabelIds([label.id])
+    setEditingLabelId(label.id)
+  }, [dispatch, activeTabId])
+
+  // 右クリック「ここにグループ枠」— ドラッグで描かなくても既定サイズの枠を置ける。
+  const addGroupAt = useCallback((x: number, y: number) => {
+    if (canvasLockedRef.current) return
+    const group: CanvasGroup = { id: generateId(), tabId: activeTabId, title: 'グループ', x, y, width: 420, height: 300, createdAt: new Date().toISOString() }
+    dispatch({ type: 'ADD_CANVAS_GROUP', payload: group })
+    setSelectedIds([]); setSelectedArrowId(null); setSelectedLabelIds([]); setSelectedStationIds([])
+    setSelectedGroupIds([group.id])
+  }, [dispatch, activeTabId])
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(tabCardsRef.current.map(c => c.id)); setSelectedStationIds(tabStationsRef.current.map(s => s.id)); setSelectedLabelIds(tabLabelsRef.current.map(l => l.id)); setSelectedGroupIds(tabGroupsRef.current.map(g => g.id)); setSelectedArrowIds(tabArrowsRef.current.map(a => a.id))
+  }, [])
+
   const handleCanvasContextMenu = useCallback((e: React.MouseEvent) => {
     if (canvasLockedRef.current) return
     const target = e.target as HTMLElement
     if (!target.dataset.canvasBg) return
     e.preventDefault()
     const p = toCanvas(e.clientX, e.clientY)
-    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 230), y: Math.min(e.clientY, window.innerHeight - 340), kind: 'canvas', canvasX: p.x, canvasY: p.y })
+    // 空白メニューは項目が多いので、下端にかかるときは上へずらす（それでも足りなければスクロール）。
+    setContextMenu({ x: Math.min(e.clientX, window.innerWidth - 270), y: Math.max(8, Math.min(e.clientY, window.innerHeight - 670)), kind: 'canvas', canvasX: p.x, canvasY: p.y })
   }, [toCanvas])
 
   // Open the delete-confirmation modal for whatever is currently selected
@@ -2902,10 +2926,26 @@ export default function CanvasPage() {
     if (!rect) return
     const x = (e.clientX - rect.left - vp.x) / vp.zoom
     const y = (e.clientY - rect.top - vp.y) / vp.zoom
-    const card: CanvasCard = { id: generateId(), tabId: activeTabId, type: 'text', title: '', content: '', pages: [{ id: generateId(), name: 'ページ1', content: '' }], x, y, width: 360, height: 280, createdAt: new Date().toISOString() }
-    dispatch({ type: 'ADD_CANVAS_CARD', payload: card })
-    setSelectedIds([card.id])
-  }, [dispatch, activeTabId])
+    // 空白ダブルクリック = その場でラベルを開く（最速の書き込み口）。
+    // Shift を添えると従来どおりテキストカードを置く。
+    if (e.shiftKey) {
+      const card: CanvasCard = { id: generateId(), tabId: activeTabId, type: 'text', title: '', content: '', pages: [{ id: generateId(), name: 'ページ1', content: '' }], x, y, width: 360, height: 280, createdAt: new Date().toISOString() }
+      dispatch({ type: 'ADD_CANVAS_CARD', payload: card })
+      setSelectedIds([card.id])
+      return
+    }
+    addLabelAt(x, y)
+  }, [dispatch, activeTabId, addLabelAt])
+
+  // 編集を終えたラベルが空なら消す — ダブルクリックやラベルツールの「置いたけど何も書かなかった」残骸を残さない。
+  const endLabelEdit = useCallback((label: CanvasLabel) => {
+    setEditingLabelId(null)
+    const latest = tabLabelsRef.current.find(l => l.id === label.id) ?? label
+    if (!latest.text.trim()) {
+      dispatch({ type: 'DELETE_CANVAS_LABEL', payload: label.id })
+      setSelectedLabelIds(ids => ids.filter(id => id !== label.id))
+    }
+  }, [dispatch])
 
   // Create a card from a dropped file (image / PDF / video), centered on the drop point.
   // The bytes are persisted to IndexedDB and referenced by a stable idb: URL so they survive reloads.
@@ -4746,7 +4786,7 @@ export default function CanvasPage() {
                 onMouseDownMove={handleLabelDown}
                 onStartEdit={() => { if (canvasLocked) return; setSelectedLabelIds([label.id]); setEditingLabelId(label.id) }}
                 onUpdate={updates => dispatch({ type: 'UPDATE_CANVAS_LABEL', payload: { ...label, ...updates } })}
-                onEndEdit={() => setEditingLabelId(null)}
+                onEndEdit={() => endLabelEdit(label)}
                 onContextMenu={e => handleLabelContextMenu(e, label)}
               />
             ))}
@@ -4835,7 +4875,7 @@ export default function CanvasPage() {
           <>
             <div className="fixed inset-0 z-40" onMouseDown={() => setContextMenu(null)} onContextMenu={e => { e.preventDefault(); setContextMenu(null) }} />
             <div
-              className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl py-1 text-sm w-56 overflow-y-auto"
+              className={`fixed z-50 bg-white border border-slate-200 rounded-lg shadow-xl py-1 text-sm overflow-y-auto ${contextMenu.kind === 'canvas' ? 'w-64' : 'w-56'}`}
               style={{ left: contextMenu.x, top: contextMenu.y, maxHeight: `calc(100vh - ${contextMenu.y + 8}px)` }}
               onMouseDown={e => e.stopPropagation()}
             >
@@ -4844,6 +4884,10 @@ export default function CanvasPage() {
                   <button onClick={() => { pasteCards(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} disabled={!clipboardHasContent()} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 disabled:text-slate-300 disabled:hover:bg-transparent flex items-center justify-between">
                     <span className="flex items-center gap-2"><ClipboardPaste size={14} /> ここに貼り付け</span><kbd className="text-[10px] text-slate-400">Ctrl+V</kbd>
                   </button>
+                  <button onClick={() => { addLabelAt(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center justify-between">
+                    <span className="flex items-center gap-2"><Type size={14} /> ここにラベル</span><kbd className="text-[10px] text-slate-400">ダブルクリック</kbd>
+                  </button>
+                  <button onClick={() => { addGroupAt(contextMenu.canvasX, contextMenu.canvasY); setContextMenu(null) }} className="w-full text-left px-3 py-1.5 hover:bg-slate-100 text-slate-700 flex items-center gap-2"><Frame size={14} /> ここにグループ枠</button>
                   <div className="h-px bg-slate-200 my-1" />
                   <div className="px-3 pb-1 pt-0.5 text-[11px] font-medium text-slate-400 flex items-center gap-1.5"><Plus size={12} /> カードを追加</div>
                   <div className="grid grid-cols-2 gap-0.5 px-1 pb-1">
@@ -4863,7 +4907,7 @@ export default function CanvasPage() {
                   </div>
                   <div className="h-px bg-slate-200 my-1" />
                   <div className="px-3 pb-1 pt-0.5 text-[11px] font-medium text-slate-400 flex items-center gap-1.5"><Shapes size={12} /> シェイプを追加</div>
-                  <div className="grid grid-cols-3 gap-0.5 px-1.5 pb-1">
+                  <div className="grid grid-cols-4 gap-0.5 px-1.5 pb-1">
                     {SHAPE_KINDS.map(s => (
                       <button
                         key={s.key}
@@ -4875,6 +4919,18 @@ export default function CanvasPage() {
                         <span className="text-[9px] leading-none whitespace-nowrap">{s.label}</span>
                       </button>
                     ))}
+                  </div>
+                  <div className="h-px bg-slate-200 my-1" />
+                  {/* 表示・編集系はアイコン 1 行に圧縮（メニューを縦に伸ばさない） */}
+                  <div className="flex items-center gap-0.5 px-1.5 pb-0.5">
+                    <button onClick={() => { undo(); setContextMenu(null) }} disabled={!canUndo} title="元に戻す (Ctrl+Z)" className="p-1.5 rounded hover:bg-slate-100 text-slate-600 disabled:text-slate-300 disabled:hover:bg-transparent"><Undo2 size={15} /></button>
+                    <button onClick={() => { redo(); setContextMenu(null) }} disabled={!canRedo} title="やり直す (Ctrl+Y)" className="p-1.5 rounded hover:bg-slate-100 text-slate-600 disabled:text-slate-300 disabled:hover:bg-transparent"><Redo2 size={15} /></button>
+                    <div className="w-px h-4 bg-slate-200 mx-0.5" />
+                    <button onClick={() => { selectAll(); setContextMenu(null) }} title="すべて選択 (Ctrl+A)" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><MousePointer2 size={15} /></button>
+                    <button onClick={() => { fitToScreen(); setContextMenu(null) }} title="全体表示" className="p-1.5 rounded hover:bg-slate-100 text-slate-600"><Maximize size={15} /></button>
+                    <button onClick={() => { setViewport(v => ({ ...v, zoom: 1 })); setContextMenu(null) }} title="ズームを 100% に" className="px-1.5 py-1 rounded hover:bg-slate-100 text-slate-600 text-[11px] font-medium tabular-nums">100%</button>
+                    <button onClick={() => { setSnapToGrid(v => !v); setContextMenu(null) }} title="グリッドスナップ" className={`p-1.5 rounded ${snapToGrid ? 'bg-indigo-500/15 text-indigo-600' : 'hover:bg-slate-100 text-slate-600'}`}><Grid3x3 size={15} /></button>
+                    <button onClick={() => { setShowMinimap(v => !v); setContextMenu(null) }} title="ミニマップ" className={`p-1.5 rounded ${showMinimap ? 'bg-indigo-500/15 text-indigo-600' : 'hover:bg-slate-100 text-slate-600'}`}><MapIcon size={15} /></button>
                   </div>
                 </>
               ) : canvasLocked ? (
@@ -5458,7 +5514,7 @@ const CARD_LOCAL_KIND: Partial<Record<CanvasCard['type'], LocalKind>> = {
   pdf: 'pdf', image: 'image', video: 'video', audio: 'audio',
 }
 const LOCAL_KIND_LABEL: Record<LocalKind, string> = {
-  pdf: 'PDF', image: '画像', video: '動画', audio: '音声', other: 'ファイル',
+  pdf: 'PDF', image: '画像', video: '動画', audio: '音声', office: 'Office 文書', other: 'ファイル',
 }
 
 async function linkLocalFileForCard(card: CanvasCard, onUpdate: (u: Partial<CanvasCard>) => void) {

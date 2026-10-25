@@ -183,6 +183,307 @@
   padding: 0 2px;
 }
 
+/* ── Arkfield — Typora の Arkfield テーマ (genskyff) の実パレット。製図用紙風の
+   淡いグレーの紙に墨色 (#191919) の文字、シグナルイエロー (#fffa00) の差し色。
+   角は 2px 以下・細罫・「黄 4rem → 墨」の罫線が署名。ライト専用 ── */
+.wtc-arkfield {
+  /* エンジニアリンググリッド（5.5rem 方眼） */
+  background:
+    linear-gradient(rgba(25, 25, 25, 0.04) 1px, transparent 1px) 0 0 / 5.5rem 5.5rem,
+    linear-gradient(90deg, rgba(25, 25, 25, 0.04) 1px, transparent 1px) 0 0 / 5.5rem 5.5rem,
+    #f2f2f0;
+}
+.wtc-arkfield .typol-root.typol-root {
+  --tp-text: #191919;
+  --tp-text-mute: #55554e;
+  --tp-text-soft: #8a8a82;
+  --tp-bg-soft: #fafaf8;
+  --tp-border: #d7d7d1;
+  --tp-border-soft: #e4e4df;
+  --tp-accent: #191919;
+  --tp-link: #191919;
+  --tp-code-bg: #fafaf8;
+  --tp-code-border: #d7d7d1;
+  --tp-heading-color: #191919;
+  --tp-radius: 2px;
+  --tp-radius-sm: 2px;
+  --wt-signal: #fffa00;
+  --wt-signal-rule: linear-gradient(90deg, #fffa00 0 4rem, #191919 4rem);
+}
+.wtc-arkfield :is(.typol-root.typol-root, .typol-root.typol-root *)::selection { background: #fffa00; color: #191919; }
+.wtc-arkfield .typol-root.typol-root.typol-preview { letter-spacing: 0.005em; }
+/* 見出し: 墨・700・タイト。罫線は擬似要素で描くので既定の下線は消す */
+.wtc-arkfield .typol-root.typol-root.typol-preview :is(h1, h2, h3, h4, h5, h6) {
+  position: relative;
+  line-height: 1.25;
+  border-bottom: none;
+}
+.wtc-arkfield .typol-root.typol-root.typol-preview h1 { font-size: 2.15em; letter-spacing: -0.025em; padding-bottom: 0.65rem; }
+.wtc-arkfield .typol-root.typol-root.typol-preview h1::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+  background: var(--wt-signal-rule);
+}
+/* h2: 黒い小さな正方形 + 黄色いオフセット影、下に 2px の信号罫 */
+.wtc-arkfield .typol-root.typol-root.typol-preview h2 { font-size: 1.55em; letter-spacing: -0.015em; padding: 0 0 0.45rem 1rem; }
+.wtc-arkfield .typol-root.typol-root.typol-preview h2::before {
+  content: ''; position: absolute; left: 0; top: 0.4em; width: 0.4rem; height: 0.4rem;
+  background: #191919; box-shadow: 0.2rem 0.2rem 0 #fffa00;
+}
+.wtc-arkfield .typol-root.typol-root.typol-preview h2::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--wt-signal-rule);
+}
+/* h3〜h6: 左の縦バー（黄/墨、太/細を交互）。h3 は下に短い墨のタブ */
+.wtc-arkfield .typol-root.typol-root.typol-preview :is(h3, h4, h5, h6) { padding-left: 1rem; }
+.wtc-arkfield .typol-root.typol-root.typol-preview h3 { font-size: 1.25em; box-shadow: inset 3px 0 #fffa00; }
+.wtc-arkfield .typol-root.typol-root.typol-preview h3::after {
+  content: ''; display: block; width: 2.5rem; height: 2px; margin-top: 0.3rem; background: #191919;
+}
+.wtc-arkfield .typol-root.typol-root.typol-preview h4 { font-size: 1.08em; box-shadow: inset 3px 0 #191919; }
+.wtc-arkfield .typol-root.typol-root.typol-preview h5 { font-size: 1.08em; letter-spacing: 0.01em; box-shadow: inset 2px 0 #fffa00; }
+.wtc-arkfield .typol-root.typol-root.typol-preview h6 { font-size: 1.08em; letter-spacing: 0.02em; box-shadow: inset 2px 0 #191919; }
+/* リンクは墨＋細い下線、ホバーで太く */
+.wtc-arkfield .typol-root.typol-root.typol-preview a {
+  color: inherit; border-bottom: none;
+  text-decoration: underline 1px rgba(25, 25, 25, 0.42); text-underline-offset: 0.2em;
+}
+.wtc-arkfield .typol-root.typol-root.typol-preview a:hover { text-decoration-color: #191919; text-decoration-thickness: 2px; }
+/* 太字は蛍光ペン、斜体はソフト墨、==ハイライト== は信号イエロー */
+.wtc-arkfield .typol-root.typol-root.typol-preview strong { background: linear-gradient(transparent 62%, rgba(255, 250, 0, 0.55) 62%); }
+.wtc-arkfield .typol-root.typol-root.typol-preview em { color: #33332e; }
+.wtc-arkfield .typol-root.typol-root.typol-preview mark { background: #fffa00; color: #191919; padding: 0 0.15em; border-radius: 0; }
+/* 引用: 上下の細罫 + 黄色い左バー + ごく薄い黄 */
+.wtc-arkfield .typol-root.typol-root.typol-preview blockquote {
+  color: inherit;
+  background: rgba(255, 250, 0, 0.05);
+  border-left: 3px solid #fffa00;
+  border-block: 1px solid #d7d7d1;
+  border-radius: 0;
+  padding: 0.8rem 1rem;
+}
+/* インラインコード: 墨の枠・下だけ 2px（キーキャップ風） */
+.wtc-arkfield .typol-root.typol-root.typol-preview :not(pre) > code {
+  border: 1px solid #191919; border-bottom-width: 2px; border-radius: 2px;
+  background: #fafaf8; color: #191919; font-size: 0.875em;
+}
+/* コードブロック: 細罫の箱、上辺だけ信号罫 */
+.wtc-arkfield .typol-root.typol-root.typol-preview pre:not(:has(> code.hljs)) {
+  background: var(--wt-signal-rule) top / 100% 2px no-repeat, #fafaf8;
+  border-top-color: transparent;
+}
+.wtc-arkfield .typol-root.typol-root.typol-preview pre { line-height: 1.65; }
+/* 表: 墨の上罫 + Space Grotesk 風の太字見出し、行ホバーで黄 */
+.wtc-arkfield .typol-root.typol-root.typol-preview table { background: #fafaf8; font-size: 0.875em; line-height: 1.55; }
+.wtc-arkfield .typol-root.typol-root.typol-preview thead { border-top: 2px solid #191919; }
+.wtc-arkfield .typol-root.typol-root.typol-preview th { background: rgba(25, 25, 25, 0.05); font-weight: 700; vertical-align: top; }
+.wtc-arkfield .typol-root.typol-root.typol-preview tr:nth-child(even) td { background: rgba(25, 25, 25, 0.03); }
+.wtc-arkfield .typol-root.typol-root.typol-preview tbody tr:hover td { background: rgba(255, 250, 0, 0.16); }
+/* 区切り線: 黄 2rem → 墨 */
+.wtc-arkfield .typol-root.typol-root.typol-preview hr {
+  border: 0; height: 1px; margin: 2.25rem 0;
+  background: linear-gradient(90deg, #fffa00 0 2rem, #191919 2rem);
+}
+/* リスト: 墨の太字マーカー、ul は深さで ● ○ ■ */
+.wtc-arkfield .typol-root.typol-root.typol-preview li::marker { color: #191919; font-weight: 700; }
+.wtc-arkfield .typol-root.typol-root.typol-preview ul > li { list-style-type: disc; }
+.wtc-arkfield .typol-root.typol-root.typol-preview ul ul > li { list-style-type: circle; }
+.wtc-arkfield .typol-root.typol-root.typol-preview ul ul ul > li { list-style-type: square; }
+.wtc-arkfield .typol-root.typol-root.typol-preview li.task-list-item { list-style: none; }
+/* チェックボックス: 角ばった墨の枠、チェックで黄 */
+.wtc-arkfield .typol-root.typol-root.typol-preview input[type="checkbox"] {
+  appearance: none; width: 1rem; height: 1rem; flex: none; position: relative;
+  border: 1px solid #191919; border-radius: 0; background: #fafaf8;
+}
+.wtc-arkfield .typol-root.typol-root.typol-preview input[type="checkbox"]:checked { background: #fffa00; }
+.wtc-arkfield .typol-root.typol-root.typol-preview input[type="checkbox"]:checked::after {
+  content: ''; position: absolute; left: 0.3rem; top: 0.08rem; width: 0.28rem; height: 0.55rem;
+  border: solid #191919; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.wtc-arkfield .typol-root.typol-root.typol-preview img { border: 1px solid #d7d7d1; border-radius: 0; }
+/* コールアウト: 角ばった左バー + 大文字ラベル (Arkfield の alert) */
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout { border: none; border-left: 3px solid; border-radius: 0; padding: 0.8rem 1rem; color: #191919; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-title { text-transform: uppercase; letter-spacing: 0.06em; opacity: 1; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-note { background: #edf4f8; border-color: #315b76; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-note .md-callout-title { color: #315b76; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-important { background: #f4f0fa; border-color: #6843a5; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-important .md-callout-title { color: #6843a5; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-warning { background: #fff5e6; border-color: #8a4b00; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-warning .md-callout-title { color: #8a4b00; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-tip { background: #eaf5ef; border-color: #00754a; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-tip .md-callout-title { color: #00754a; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-caution { background: #fff0ed; border-color: #d92e16; }
+.wtc-arkfield .typol-root.typol-root.typol-preview .md-callout-caution .md-callout-title { color: #d92e16; }
+
+/* ── Dyzj — Typora の Dyzj テーマ (muggledy) の実パレット。白い紙にティール
+   (#00c4b6) の見出しアクセント、赤いインラインコード、水色の引用と丸いリストマーカー。
+   ライト (.wtc-dyzj) とダーク (.wtc-dyzj-dark) は変数だけが違い、装飾は共通 ── */
+.wtc-dyzj { background: #ffffff; }
+.wtc-dyzj .typol-root.typol-root {
+  --tp-text: #000000;
+  --tp-text-mute: #3f3f3f;
+  --tp-text-soft: #999999;
+  --tp-bg-soft: #f4fcff;
+  --tp-border: #c5c5c5;
+  --tp-border-soft: #eeeeee;
+  --tp-accent: #00c4b6;
+  --tp-link: #000000;
+  --tp-code-bg: #eeeeee;
+  --tp-code-border: #d0d5d7;
+  --tp-heading-color: #000000;
+  --wt-dy-sel: #ffafa3;
+  --wt-dy-inline-bg: #f8f5ec;
+  --wt-dy-quote-bg: #f4fcff;
+  --wt-dy-quote-ink: #3f3f3f;
+  --wt-dy-list: #81accf;
+  --wt-dy-th-bg: #f4fcff;
+  --wt-dy-even: #eeeeee;
+  --wt-dy-row-hover: #e0f8f8;
+  --wt-dy-link-hover-ink: #ffffff;
+  --wt-dy-img-filter: none;
+}
+.wtc-dyzj-dark { background: #262626; }
+.wtc-dyzj-dark .typol-root.typol-root {
+  --tp-text: #e6e6e6;
+  --tp-text-mute: #a9a9a9;
+  --tp-text-soft: #7a7a7a;
+  --tp-bg-soft: #1a1a1a;
+  --tp-border: #2f642e;
+  --tp-border-soft: #333333;
+  --tp-accent: #00c4b6;
+  --tp-link: #a9a9a9;
+  --tp-code-bg: #1a1a1a;
+  --tp-code-border: #3a3a3a;
+  --tp-heading-color: #e6e6e6;
+  --wt-dy-sel: #6e7b99;
+  --wt-dy-inline-bg: #263238;
+  --wt-dy-quote-bg: #263238;
+  --wt-dy-quote-ink: #c8c8c8;
+  --wt-dy-list: #8b8b8b;
+  --wt-dy-th-bg: #2f845e;
+  --wt-dy-even: #1a1a1a;
+  --wt-dy-row-hover: #263238;
+  --wt-dy-link-hover-ink: #000000;
+  --wt-dy-img-filter: brightness(80%);
+}
+/* 本文は Dyzj と同じく両端揃え・やや広めの行間（段落は --tp-text-mute 寄りのダーク版色） */
+:is(.wtc-dyzj, .wtc-dyzj-dark) :is(.typol-root.typol-root, .typol-root.typol-root *)::selection { background: var(--wt-dy-sel); }
+/* ダークは本文 #a9a9a9 のままだと選択背景 #6e7b99 の上で読めない。
+   編集用 textarea 自体も .typol-root なので、子孫だけでなく自身にも当てる */
+.wtc-dyzj-dark :is(.typol-root.typol-root, .typol-root.typol-root *)::selection { color: #000; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview { line-height: 1.8; text-align: justify; }
+.wtc-dyzj-dark .typol-root.typol-root.typol-preview p { color: #a9a9a9; }
+/* h1: 中央寄せ。ホバーでティールの下線が中央から伸びる */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview :is(h1, h2, h3, h4, h5, h6) { line-height: 1.4; letter-spacing: 0; position: relative; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h1 {
+  text-align: center; font-size: 2.2em; line-height: 1.2; border-bottom: none;
+  margin: 1.6em auto 1em; padding-bottom: 0.3em;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h1::after {
+  content: ''; position: absolute; left: 30%; right: 30%; bottom: 0; height: 2px;
+  background: #00c4b6; transform: scaleX(0); transition: transform 0.2s ease-in-out;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h1:hover::after { transform: scaleX(1); }
+/* h2: ティールの下線 + 回る風車（iconfont の代わりに ✻ グリフ） */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h2 {
+  font-size: 1.8em; border-bottom: 2px solid #00c4b6; padding-bottom: 0.15em;
+  margin: 1.2em 0 0.8em;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h2::before {
+  content: '✻'; display: inline-block; color: #00c4b6; margin-right: 0.3em;
+  font-size: 0.85em; animation: wt-dy-spin 3s linear infinite; transition: color 0.2s;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h2:hover { border-bottom-color: #ff5d52; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h2:hover::before { color: #ff5d52; }
+@keyframes wt-dy-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  :is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h2::before { animation: none; }
+}
+/* h3: 太い左バー / h4: 上辺が太い枠のタグ / h5・h6: 左外に H5・H6 ラベル */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h3 { font-size: 1.4em; padding-left: 9px; border-left: 5px solid #00c4b6; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h4 {
+  font-size: 1.2em; display: inline-block; padding: 0 6px;
+  border: 1px solid #00c4b6; border-top-width: 4px; margin: 0.6em 0 0.2em;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview :is(h5, h6) { font-size: 1em; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h5::before,
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h6::before {
+  position: absolute; right: calc(100% + 0.75em); top: 0.18rem;
+  color: #00c4b6; font-size: 0.8rem; font-weight: 700;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h5::before { content: 'H5'; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview h6::before { content: 'H6'; }
+/* リンク: ミントの太い下線、ホバーで面が塗られる */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview a {
+  color: var(--tp-link); border-bottom: 2px solid #81d8cf; padding: 0 4px;
+  transition: all 0.3s;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview a:hover {
+  background: #81d8cf; border-bottom-color: transparent; border-radius: 6px;
+  color: var(--wt-dy-link-hover-ink);
+}
+/* 引用: 水色の太い左バー + 丸い i アイコン */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview blockquote {
+  position: relative; border-left: 5px solid #5fa7e4; border-radius: 3px;
+  background: var(--wt-dy-quote-bg); color: var(--wt-dy-quote-ink);
+  padding: 10px 15px 10px calc(15px + 2rem);
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview blockquote::before {
+  content: 'i'; position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+  width: 1.15rem; height: 1.15rem; border-radius: 50%; background: #5fa7e4; color: #fff;
+  font: italic 700 0.8rem/1.15rem Georgia, serif; text-align: center;
+}
+/* インラインコード: 赤い文字 + クリーム色の面 */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview :not(pre) > code {
+  color: #ff3502; background: var(--wt-dy-inline-bg); border: none;
+  padding: 2px 4px; border-radius: 2px; font-size: 0.9em;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview pre { border-radius: 3px; line-height: 1.6; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview pre:not(:has(> code.hljs)) { color: var(--tp-text-mute); }
+/* ==ハイライト== は黄地に赤 */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview mark {
+  background: yellow; color: red; padding: 2px 4px; margin: 0 2px; border-radius: 2px; font-weight: 500;
+}
+/* 表: 水色ヘッダ + 縞 + ミント色の行ホバー */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview table { text-align: left; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview :is(th, td) { padding: 6px 13px; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview th { background: var(--wt-dy-th-bg); font-weight: 700; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview tr:nth-child(even) td { background: var(--wt-dy-even); }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview tbody tr:hover td { background: var(--wt-dy-row-hover); }
+/* 区切り線: 両端がフェードするティールの線 */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview hr {
+  width: 80%; margin: 1.5em auto; border: 0; height: 2px;
+  background: linear-gradient(to right, transparent, #00c4b6, transparent);
+}
+/* リスト: ul は中空の丸（ホバーで赤く回る）、ol は番号入りの塗り丸 */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview :is(ul, ol):not(.contains-task-list) { padding-left: 35px; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview :is(ul, ol) > li:not(.task-list-item) { list-style: none; position: relative; margin: 7px 0; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview ul > li:not(.task-list-item)::before {
+  content: ''; position: absolute; left: -22px; top: 0.62em;
+  width: 0.62em; height: 0.62em; box-sizing: border-box;
+  border: 0.1em solid var(--wt-dy-list); border-radius: 50%;
+  transition: all 0.3s ease-out;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview ul > li:not(.task-list-item):hover::before { border-color: #ff5d52; transform: rotate(360deg); }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview ol { counter-reset: wt-dy-li; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview ol > li:not(.task-list-item) { counter-increment: wt-dy-li; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview ol > li:not(.task-list-item)::before {
+  content: counter(wt-dy-li); position: absolute; left: -27px; top: 0.4em;
+  width: 1.65em; height: 1.65em; border-radius: 50%;
+  background: var(--wt-dy-list); color: #fff;
+  font-size: 0.65em; line-height: 1.65em; text-align: center; font-weight: 600;
+}
+/* チェックボックス: 赤い枠、チェックでティールの塗り + ✔、完了項目は取り消し線 */
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview input[type="checkbox"] {
+  appearance: none; width: 0.875rem; height: 0.875rem; flex: none; position: relative;
+  border: 1px solid red; border-radius: 2px; background: transparent;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview input[type="checkbox"]:checked { background: #00c4b6; border-color: #00c4b6; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview input[type="checkbox"]:checked::after {
+  content: '\2714'; position: absolute; inset: 0; color: #fff; font-size: 0.65rem; line-height: 0.875rem; text-align: center;
+}
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview li.task-list-item:has(> input:checked) { text-decoration: line-through; color: #999; }
+:is(.wtc-dyzj, .wtc-dyzj-dark) .typol-root.typol-root.typol-preview img { border-radius: 4px; filter: var(--wt-dy-img-filter); }
+
 /* ════ フォント ════ */
 
 /* ── 明朝 — 游明朝 / ヒラギノ明朝 ── */
