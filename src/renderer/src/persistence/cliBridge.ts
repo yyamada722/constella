@@ -486,11 +486,14 @@ function researchAdd(s: AppState, p: P): CliResponse {
   if (wantedFolder && !folderOk && !lenient) fail('フォルダが見つかりません')
   const folderId = folderOk ? wantedFolder : undefined
 
-  const title = (str(p.title)?.trim() || url).slice(0, 500)
-  const description = (str(p.description) ?? '').slice(0, 20000)
-  const tags = Array.isArray(p.tags)
-    ? [...new Set(p.tags.map(t => str(t)?.trim().replace(/^#/, '') ?? '').filter(Boolean))].slice(0, 32)
-    : []
+  // 上限は新規登録だけに掛ける。上書きはアプリで編集した長い既存値を黙って切り詰めないように。
+  const isNew = p.updateId == null
+  const rawTitle = str(p.title)?.trim() || url
+  const rawDescription = str(p.description) ?? ''
+  const rawTags = Array.isArray(p.tags) ? [...new Set(p.tags.map(t => str(t)?.trim().replace(/^#/, '') ?? '').filter(Boolean))] : []
+  const title = isNew ? rawTitle.slice(0, 500) : rawTitle
+  const description = isNew ? rawDescription.slice(0, 20000) : rawDescription
+  const tags = isNew ? rawTags.slice(0, 32) : rawTags
   const rawClip = p.clip as { size?: unknown } | undefined
   const clip = rawClip && typeof rawClip.size === 'number' ? { savedAt: new Date().toISOString(), size: rawClip.size } : undefined
 
@@ -503,8 +506,11 @@ function researchAdd(s: AppState, p: P): CliResponse {
     const hit = researchMatches(s, url, master.id)[0]
     if (hit) return { ok: true, result: { id: hit.id, existed: true } }
   }
+  // クリップ付きは main が先にファイルを置くので、その id で作る。
+  const presetId = str(p.id)
+  if (presetId && s.research.some(r => r.id === presetId)) fail('ID が重複しています')
   const item: ResearchItem = {
-    id: generateId(),
+    id: presetId ?? generateId(),
     masterProjectId: master.id,
     title,
     url,

@@ -78,24 +78,38 @@ export async function refreshBadge() {
   await chrome.action.setBadgeText({ text: n ? String(n) : '' })
 }
 
+// storage の読み→書きは不可分でないので、キューの更新は 1 本ずつ順番に実行する。
+let queueTail = Promise.resolve()
+function updateQueue(change) {
+  const run = queueTail.then(async () => setStored({ queue: change(await readQueue()) }))
+  queueTail = run.catch(() => {})
+  return run
+}
+
 export async function enqueue(meta) {
-  const queue = await readQueue()
-  queue.push({ ...meta, description: meta.description.slice(0, 4000), dedupe: true, lenient: true })
-  await setStored({ queue })
+  const item = { ...meta, description: meta.description.slice(0, 4000), dedupe: true, lenient: true }
+  await updateQueue((queue) => [...queue, item])
   await refreshBadge()
 }
 
-export async function flushQueue() {
-  let queue = await readQueue()
-  while (queue.length) {
+async function drainQueue() {
+  for (;;) {
+    const [head] = await readQueue()
+    if (!head) break
     try {
-      await sendSave(queue[0], null)
+      await sendSave(head, null)
     } catch (e) {
       // アプリ未起動・接続コード違いは次回へ。内容の拒否は再送しても通らないので捨てる。
       if (e.kind !== 'rejected') break
     }
-    queue = queue.slice(1)
-    await setStored({ queue })
+    // enqueue は末尾に足すだけで、先頭を消すのはここだけなので、先頭が今送ったものである。
+    await updateQueue((queue) => queue.slice(1))
   }
   await refreshBadge()
+}
+
+let draining = null
+export function flushQueue() {
+  draining ??= drainQueue().finally(() => { draining = null })
+  return draining
 }

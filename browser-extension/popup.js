@@ -72,8 +72,13 @@ function tagButton(name, on) {
 }
 
 function renderTags() {
+  $('tag-box').replaceChildren(...selectedTags.map((t) => tagButton(t, true)), $('tag-input'))
+  renderSuggest()
+}
+
+// 入力中はこちらだけを呼ぶ。入力欄を DOM に入れ直すと IME の変換が途切れる。
+function renderSuggest() {
   const input = $('tag-input')
-  $('tag-box').replaceChildren(...selectedTags.map((t) => tagButton(t, true)), input)
   // 最近使った順 → このプロジェクトでよく使う順 → 全体でよく使う順
   const pool = [...new Set([...memory.recentTags, ...(currentMaster()?.tags ?? []), ...(targets?.tags ?? [])])]
   const q = input.value.trim().toLowerCase()
@@ -178,10 +183,10 @@ async function save(forceNew) {
 
   const r = await chrome.runtime.sendMessage({ type: 'save', meta, tabId: tab.id, clip })
   if (r.status === 'error') {
-    if (r.kind === 'unauthorized') return show('view-setup')
     $('save').disabled = false
     $('add-anyway').disabled = false
     renderDuplicate()
+    if (r.kind === 'unauthorized') return show('view-setup')
     return fail($('form-error'), r.error)
   }
 
@@ -220,9 +225,12 @@ $('tag-input').addEventListener('keydown', (e) => {
   }
 })
 $('tag-input').addEventListener('input', (e) => {
-  if (!e.isComposing && /[,、，]/.test(e.target.value)) commitTagInput()
-  else renderTags()
-  e.target.focus()
+  if (!e.isComposing && /[,、，]/.test(e.target.value)) {
+    commitTagInput()
+    e.target.focus()
+  } else {
+    renderSuggest()
+  }
 })
 $('tag-input').addEventListener('compositionend', (e) => {
   if (/[,、，]/.test(e.target.value)) { commitTagInput(); e.target.focus() }

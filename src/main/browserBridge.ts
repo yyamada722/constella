@@ -100,27 +100,48 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
     const { params, clip } = parts
     if (clip && !looksLikeMhtml(clip)) return send(res, 400, { ok: false, error: 'MHTML ではありません' })
 
-    // 追加より先に一時ファイルへ書く: ディスクに書けなかったのに clip メタだけ DB に残るのを防ぐ。
-    let tmp: string | null = null
-    if (clip) {
-      await mkdir(clipsDir(), { recursive: true })
-      tmp = join(clipsDir(), `.incoming-${randomBytes(8).toString('hex')}.tmp`)
-      await writeFile(tmp, clip)
+    // ファイルを先に正しい場所へ置いてから DB を更新する。逆順だと、置けなかったときに
+    // 「クリップあり」の項目だけが残る。DB 側が失敗したら、ファイルを元の状態へ戻す。
+    const updateId = typeof params.updateId === 'string' ? params.updateId : null
+    const clipId = clip ? (updateId ?? randomBytes(10).toString('hex')) : null
+    const dest = clipId ? clipPath(clipId) : null
+    if (clip && !dest) return send(res, 400, { ok: false, error: '不正なIDです' })
+
+    const stem = join(clipsDir(), `.incoming-${randomBytes(8).toString('hex')}`)
+    const tmp = `${stem}.tmp`
+    const old = `${stem}.old`
+    let tmpWritten = false
+    let backedUp = false
+    let installed = false
+    const rollback = async (): Promise<void> => {
+      if (tmpWritten && !installed) await unlink(tmp).catch(() => { /* ignore */ })
+      if (installed) await unlink(dest as string).catch(() => { /* ignore */ })
+      if (backedUp) await rename(old, dest as string).catch(() => { /* ignore */ })
     }
-    const discard = async (): Promise<void> => { if (tmp) await unlink(tmp).catch(() => { /* ignore */ }) }
     try {
-      const answer = await ask(res, { method: 'research.add', params: { ...params, clip: clip ? { size: clip.length } : undefined } })
-      if (!answer) return await discard()
-      if (!answer.ok) { await discard(); return send(res, answer.retry ? 503 : 400, answer) }
-      const result = answer.result as { id: string; existed?: boolean }
-      if (tmp) {
-        const dest = result.existed ? null : clipPath(result.id)
-        if (dest) await rename(tmp, dest)
-        else await discard()
+      if (clip && dest) {
+        await mkdir(clipsDir(), { recursive: true })
+        await writeFile(tmp, clip)
+        tmpWritten = true
+        if (updateId) {
+          try {
+            await rename(dest, old)
+            backedUp = true
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+          }
+        }
+        await rename(tmp, dest)
+        installed = true
       }
+      const answer = await ask(res, { method: 'research.add', params: { ...params, id: updateId ? undefined : clipId ?? undefined, clip: clip ? { size: clip.length } : undefined } })
+      if (!answer) return await rollback()
+      if (!answer.ok) { await rollback(); return send(res, answer.retry ? 503 : 400, answer) }
+      if ((answer.result as { existed?: boolean }).existed) await rollback() // 登録済みで何も変えなかった
+      else if (backedUp) await unlink(old).catch(() => { /* ignore */ })
       send(res, 200, answer)
     } catch (e) {
-      await discard()
+      await rollback()
       throw e
     }
   }
