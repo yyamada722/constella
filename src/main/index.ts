@@ -886,7 +886,10 @@ if (!gotLock) {
     // Auto-start LAN access if the user enabled it previously.
     if (await loadRemoteEnabled()) startLanServer().catch(() => { /* ignore */ })
     app.on('activate', async () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow(await loadWindowState())
+      if (BrowserWindow.getAllWindows().length !== 0) return
+      const st = await loadWindowState()
+      // 読み込み中に CLI / 拡張の要求で作られていたら重複させない (2 窓が同じ DB を書き合う)
+      if (BrowserWindow.getAllWindows().length === 0) createWindow(st)
     })
   })
 }
