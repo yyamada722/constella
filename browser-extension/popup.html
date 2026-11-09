@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>Constella</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <section id="view-loading" class="message">…</section>
+
+  <section id="view-blocked" class="message" hidden>このページは登録できません。<small>http / https のページで開いてください</small></section>
+
+  <section id="view-setup" class="setup" hidden>
+    <h1>Constella と接続</h1>
+    <p>アプリの「設定 → ブラウザ連携」にある接続コードを貼り付けてください。</p>
+    <input id="code" type="password" placeholder="constella-…" autocomplete="off" spellcheck="false" aria-label="接続コード">
+    <p id="setup-error" class="error" hidden></p>
+    <button id="connect" class="ink">接続する</button>
+  </section>
+
+  <form id="view-form" hidden>
+    <header>
+      <img id="favicon" alt="" hidden>
+      <span id="domain"></span>
+      <button type="button" id="change-code" class="quiet">接続</button>
+    </header>
+
+    <p id="offline" class="note" hidden>Constella が起動していません。次の起動時に登録します。</p>
+    <p id="duplicate" class="note" hidden></p>
+
+    <div class="grid">
+      <label class="label" for="title">タイトル</label>
+      <textarea id="title" class="box title" rows="1" maxlength="500"></textarea>
+
+      <label class="label" for="description">メモ</label>
+      <textarea id="description" class="box memo" rows="2"></textarea>
+
+      <label class="label row-target" for="master">プロジェクト</label>
+      <select id="master" class="box row-target"></select>
+
+      <label class="label row-target" for="folder">フォルダー</label>
+      <select id="folder" class="box row-target"></select>
+
+      <label class="label" for="tag-input">タグ</label>
+      <div class="tags">
+        <div id="tag-box" class="box tag-box">
+          <input id="tag-input" autocomplete="off" placeholder="入力して Enter">
+        </div>
+        <div id="tag-suggest" class="tag-suggest" hidden></div>
+      </div>
+    </div>
+
+    <p id="form-error" class="error" hidden></p>
+
+    <footer>
+      <label id="clip-row" class="check"><input id="clip" type="checkbox"><span>クリップも保存</span></label>
+      <button type="button" id="add-anyway" class="quiet" hidden>別に追加</button>
+      <button type="submit" id="save" class="ink">保存</button>
+    </footer>
+  </form>
+
+  <section id="view-done" class="done" hidden>
+    <p id="done-text"></p>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

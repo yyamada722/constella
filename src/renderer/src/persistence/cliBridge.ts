@@ -9,7 +9,7 @@
 // この関数は純粋 (state と reducer を受け取り、結果と dispatch すべきアクションを返す)。
 // 呼び出し側は「読む→dispatch」の間に await を挟まないこと (commitSync と同じ不変条件)。
 import type { AppState, Action } from '../store'
-import type { Task, Note, Project, MasterProject, CustomStatus } from '../types'
+import type { Task, Note, Project, MasterProject, CustomStatus, ResearchItem, ResearchFolder } from '../types'
 import { generateId } from '../utils'
 import { parseStatusWord, parseTaskScript, evaluateTaskScript, ruleMatches, resolveDate, STATUS_LABEL } from '../utils/taskScript'
 import { applyStep, customStatusOf, plainTags } from '../utils/customStatus'
@@ -411,6 +411,113 @@ function runOps(state: AppState, reducer: Ctx['reducer'], ops: unknown, dryRun: 
   return { ok: true, result, actions: dryRun ? undefined : c.actions }
 }
 
+// ── リサーチ (Chrome 拡張) ──
+
+function httpUrl(v: unknown): string {
+  const raw = str(v)?.trim() ?? fail('url が必要です')
+  if (raw.length > 8192) fail('URL が長すぎます')
+  let u: URL
+  try { u = new URL(raw) } catch { return fail('URL が不正です') }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') fail('http / https のページだけ登録できます')
+  return raw
+}
+
+// 重複判定用。# 以降と末尾スラッシュの違いは同じページとして扱う。
+function sameUrlKey(raw: string): string {
+  try {
+    const u = new URL(raw)
+    u.hash = ''
+    return u.href.replace(/\/$/, '')
+  } catch { return raw }
+}
+
+function researchMatches(s: AppState, url: string, masterId?: string): ResearchItem[] {
+  const key = sameUrlKey(url)
+  return s.research.filter(r => !r.archivedAt && (!masterId || r.masterProjectId === masterId) && sameUrlKey(r.url) === key)
+}
+
+function researchFolderPath(folders: ResearchFolder[], f: ResearchFolder): string {
+  const names = [f.name]
+  const seen = new Set([f.id])
+  let cur = f.parentId ? folders.find(x => x.id === f.parentId) : undefined
+  while (cur && !seen.has(cur.id)) {
+    names.unshift(cur.name)
+    seen.add(cur.id)
+    cur = cur.parentId ? folders.find(x => x.id === cur!.parentId) : undefined
+  }
+  return names.join(' / ')
+}
+
+// 使用回数の多い順のタグ名。
+function tagsByUse(items: ResearchItem[]): string[] {
+  const counts = new Map<string, number>()
+  for (const r of items) if (!r.archivedAt) for (const t of r.tags) counts.set(t, (counts.get(t) ?? 0) + 1)
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ja')).map(([t]) => t)
+}
+
+function researchTargets(s: AppState): unknown {
+  return {
+    active: s.activeMasterProjectId,
+    tags: tagsByUse(s.research),
+    masters: s.masterProjects.filter(m => !m.archivedAt).map(m => {
+      const own = s.researchFolders.filter(f => f.masterProjectId === m.id)
+      return {
+        id: m.id,
+        name: m.name,
+        tags: tagsByUse(s.research.filter(r => r.masterProjectId === m.id)),
+        folders: own.map(f => ({ id: f.id, path: researchFolderPath(own, f) })).sort((a, b) => a.path.localeCompare(b.path, 'ja')),
+      }
+    }),
+  }
+}
+
+function researchAdd(s: AppState, p: P): CliResponse {
+  const url = httpUrl(p.url)
+  const lenient = !!p.lenient // オフラインで溜めた分は、送信時に宛先が消えていても捨てない
+  const liveMasters = s.masterProjects.filter(m => !m.archivedAt)
+  const wanted = str(p.master)
+  const master = (wanted ? liveMasters.find(m => m.id === wanted) : undefined)
+    ?? (wanted && !lenient ? fail('マスタープロジェクトが見つかりません') : undefined)
+    ?? liveMasters.find(m => m.id === s.activeMasterProjectId)
+    ?? fail('登録先のマスタープロジェクトがありません')
+
+  const wantedFolder = str(p.folderId) || undefined
+  const folderOk = !!wantedFolder && s.researchFolders.some(f => f.id === wantedFolder && f.masterProjectId === master.id)
+  if (wantedFolder && !folderOk && !lenient) fail('フォルダが見つかりません')
+  const folderId = folderOk ? wantedFolder : undefined
+
+  const title = (str(p.title)?.trim() || url).slice(0, 500)
+  const description = (str(p.description) ?? '').slice(0, 20000)
+  const tags = Array.isArray(p.tags)
+    ? [...new Set(p.tags.map(t => str(t)?.trim().replace(/^#/, '') ?? '').filter(Boolean))].slice(0, 32)
+    : []
+  const rawClip = p.clip as { size?: unknown } | undefined
+  const clip = rawClip && typeof rawClip.size === 'number' ? { savedAt: new Date().toISOString(), size: rawClip.size } : undefined
+
+  if (p.updateId != null) {
+    const cur = s.research.find(r => r.id === str(p.updateId) && !r.archivedAt) ?? fail('更新対象が見つかりません')
+    const next: ResearchItem = { ...cur, title, description, tags, folderId, ...(clip ? { clip } : {}) }
+    return { ok: true, result: { id: cur.id, updated: true }, actions: [{ type: 'UPDATE_RESEARCH', payload: next }] }
+  }
+  if (p.dedupe) {
+    const hit = researchMatches(s, url, master.id)[0]
+    if (hit) return { ok: true, result: { id: hit.id, existed: true } }
+  }
+  const item: ResearchItem = {
+    id: generateId(),
+    masterProjectId: master.id,
+    title,
+    url,
+    description,
+    tags,
+    category: '',
+    createdAt: new Date().toISOString(),
+    ...(folderId ? { folderId } : {}),
+    ...(clip ? { clip } : {}),
+  }
+  return { ok: true, result: { id: item.id, created: true }, actions: [{ type: 'ADD_RESEARCH', payload: item }] }
+}
+
 // ── エントリポイント ──
 
 export function handleCliRequest(req: CliRequest, state: AppState, reducer: Ctx['reducer']): CliResponse {
@@ -439,6 +546,12 @@ export function handleCliRequest(req: CliRequest, state: AppState, reducer: Ctx[
       }
       case 'apply':
         return runOps(state, reducer, p.ops, !!p.dryRun)
+      case 'research.targets':
+        return { ok: true, result: researchTargets(state) }
+      case 'research.lookup':
+        return { ok: true, result: { matches: researchMatches(state, httpUrl(p.url)).map(r => ({ id: r.id, title: r.title, masterId: r.masterProjectId, description: r.description, tags: r.tags, folderId: r.folderId ?? null })) } }
+      case 'research.add':
+        return researchAdd(state, p)
       default:
         return { ok: false, error: `不明なメソッド: ${req.method}` }
     }

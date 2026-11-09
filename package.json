@@ -1,6 +1,6 @@
 {
   "name": "constella",
-  "version": "0.8.10",
+  "version": "0.8.11",
   "description": "Constella — 情報整理デスクトップアプリ",
   "author": "Constella",
   "main": "./out/main/index.js",
@@ -82,6 +82,12 @@
       "buildResources": "build"
     },
     "afterPack": "scripts/mac-adhoc-sign.cjs",
+    "extraResources": [
+      {
+        "from": "browser-extension",
+        "to": "browser-extension"
+      }
+    ],
     "publish": {
       "provider": "github",
       "owner": "yyamada722",

@@ -43,6 +43,12 @@ contextBridge.exposeInMainWorld('api', {
     // userData/bin に置いた CLI の場所 (設定画面の案内用)
     info: (): Promise<{ dir: string; command: string } | null> => ipcRenderer.invoke('cli:info'),
   },
+  // ブラウザ連携 (Chrome 拡張からのリサーチ登録) の接続コードと拡張の置き場所
+  browserBridge: {
+    info: (): Promise<{ code: string; port: number; extensionDir: string | null }> => ipcRenderer.invoke('browser-bridge:info'),
+    regenerate: (): Promise<{ code: string; port: number; extensionDir: string | null }> => ipcRenderer.invoke('browser-bridge:regenerate'),
+    openExtensionDir: (): Promise<void> => ipcRenderer.invoke('browser-bridge:open-extension-dir'),
+  },
   // 他マシンとの同期(同期フォルダ方式): フォルダ内ファイルの読み書きは main が担当し、
   // push/pull/競合の判定はレンダラー(persistence/folderSync.ts)が行う。
   sync: {

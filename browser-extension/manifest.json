@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Constella リサーチに保存",
+  "version": "1.0.0",
+  "description": "見ているページを Constella のリサーチに登録します。",
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "action": {
+    "default_title": "Constella のリサーチに保存",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
+  },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["activeTab", "scripting", "pageCapture", "contextMenus", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "commands": {
+    "_execute_action": { "suggested_key": { "default": "Alt+Shift+C" } }
+  }
+}

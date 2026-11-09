@@ -9,6 +9,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { initUpdater } from './updater'
 import { initSync } from './sync'
 import { startCliServer, clearStaleCliInfo, installCli } from './cliServer'
+import { startBrowserBridge } from './browserBridge'
 
 // E2E hook: isolate userData (and the single-instance lock derived from it) so an
 // automated run never collides with — or writes into — the real installation.
@@ -873,11 +874,13 @@ if (!gotLock) {
     // CLI アクセスライン(`constella` コマンド)。ウィンドウが無い(mac で閉じた)ときは
     // 作り直しを始めて、CLI 側には再試行させる。
     await clearStaleCliInfo()
-    startCliServer(() => {
+    const ensureWindow = (): BrowserWindow | null => {
       if (mainWindow && !mainWindow.isDestroyed()) return mainWindow
       loadWindowState().then(st => { if (!mainWindow) createWindow(st) }).catch(() => { /* ignore */ })
       return null
-    })
+    }
+    startCliServer(ensureWindow)
+    startBrowserBridge(ensureWindow, clipPath) // Chrome 拡張からのリサーチ登録
     cliInstall = installCli().catch(() => null)
     initUpdater(() => mainWindow) // 自動アップデート(Win)・新版通知(mac/ポータブル)
     // Auto-start LAN access if the user enabled it previously.
