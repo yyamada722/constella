@@ -422,12 +422,10 @@ function httpUrl(v: unknown): string {
   return raw
 }
 
-// 重複判定用。# 以降と末尾スラッシュの違いは同じページとして扱う。
+// 重複判定用。末尾スラッシュの違いだけ同一視する。# は Gmail のように画面の区別に使うサイトがあるので残す。
 function sameUrlKey(raw: string): string {
   try {
-    const u = new URL(raw)
-    u.hash = ''
-    return u.href.replace(/\/$/, '')
+    return new URL(raw).href.replace(/\/$/, '')
   } catch { return raw }
 }
 
@@ -498,13 +496,29 @@ function researchAdd(s: AppState, p: P): CliResponse {
   const clip = rawClip && typeof rawClip.size === 'number' ? { savedAt: new Date().toISOString(), size: rawClip.size } : undefined
 
   if (p.updateId != null) {
-    const cur = s.research.find(r => r.id === str(p.updateId) && !r.archivedAt) ?? fail('更新対象が見つかりません')
-    const next: ResearchItem = { ...cur, title, description, tags, folderId, ...(clip ? { clip } : {}) }
-    return { ok: true, result: { id: cur.id, updated: true }, actions: [{ type: 'UPDATE_RESEARCH', payload: next }] }
+    const cur = s.research.find(r => r.id === str(p.updateId) && !r.archivedAt)
+    if (!cur && !lenient) fail('更新対象が見つかりません')
+    if (cur) {
+      const next: ResearchItem = { ...cur, title, description, tags, folderId, ...(clip ? { clip } : {}) }
+      return { ok: true, result: { id: cur.id, updated: true }, actions: [{ type: 'UPDATE_RESEARCH', payload: next }] }
+    }
+    // 未送信のあいだに更新対象が消えていたら、入力内容を捨てずに新規で登録する
   }
   if (p.dedupe) {
     const hit = researchMatches(s, url, master.id)[0]
-    if (hit) return { ok: true, result: { id: hit.id, existed: true } }
+    if (hit) {
+      // 確認なしで届く保存 (未送信キュー等) は、書いたメモとタグを既存の項目へ足す。再送されても増えない。
+      const mergedTags = [...new Set([...hit.tags, ...tags])]
+      const mergedDescription = !lenient || !description || hit.description.includes(description)
+        ? hit.description
+        : [hit.description, description].filter(Boolean).join('\n\n')
+      const changed = lenient && (mergedTags.length !== hit.tags.length || mergedDescription !== hit.description)
+      return {
+        ok: true,
+        result: { id: hit.id, existed: true },
+        actions: changed ? [{ type: 'UPDATE_RESEARCH', payload: { ...hit, tags: mergedTags, description: mergedDescription } }] : undefined,
+      }
+    }
   }
   // クリップ付きは main が先にファイルを置くので、その id で作る。
   const presetId = str(p.id)
