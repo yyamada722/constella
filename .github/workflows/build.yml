@@ -26,7 +26,7 @@ jobs:
         include:
           - os: windows-latest
             label: Windows
-          - os: macos-14
+          - os: macos-15
             label: macOS (arm64)
           - os: ubuntu-latest
             label: Linux (x64)
