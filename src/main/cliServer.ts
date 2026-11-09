@@ -70,6 +70,11 @@ function askRenderer(win: BrowserWindow, req: unknown): Promise<Answer> {
   })
 }
 
+// ブラウザ連携サーバーからの転送用。レンダラーの受付前 (起動直後・リロード中) は null。
+export function forwardToRenderer(win: BrowserWindow, req: unknown): Promise<Answer> | null {
+  return readyContentsId === win.webContents.id ? askRenderer(win, req) : null
+}
+
 function send(res: ServerResponse, status: number, body: unknown): void {
   const json = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })

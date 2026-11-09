@@ -1,7 +1,8 @@
 // Settings modal — Theme + Code colorscheme pickers + folder sync + app update check.
 // Triggered from the Sidebar bottom button.
 import { useEffect, useState } from 'react'
-import { X, RefreshCw, FolderOpen, Copy, Check, Terminal } from 'lucide-react'
+import { X, RefreshCw, FolderOpen, Copy, Check, Terminal, Globe } from 'lucide-react'
+import { confirmDialog } from './ConfirmDialog'
 import { useTheme } from '../theme/ThemeContext'
 import { CODE_THEMES } from '../theme/hljsThemes'
 import { ZoomSpeedSlider } from './ZoomSpeedControl'
@@ -166,6 +167,55 @@ function CliSection() {
   )
 }
 
+// ブラウザ連携 — Chrome 拡張からリサーチへ登録するための接続コードと導入手順。
+function BrowserBridgeSection() {
+  type Info = { code: string; port: number; extensionDir: string | null }
+  const api = (window as unknown as { api?: { browserBridge?: { info: () => Promise<Info>; regenerate: () => Promise<Info>; openExtensionDir: () => Promise<void> } } }).api?.browserBridge
+  const [info, setInfo] = useState<Info | null>(null)
+  const [copied, setCopied] = useState(false)
+  useEffect(() => { api?.info().then(setInfo).catch(() => { /* ignore */ }) }, [api])
+  if (!api || !info) return null
+  const copy = (): void => {
+    navigator.clipboard.writeText(info.code).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => { /* ignore */ })
+  }
+  const regenerate = async (): Promise<void> => {
+    if (!await confirmDialog('接続コードを再発行しますか?\n今接続している拡張は、新しいコードを入れ直すまで使えなくなります。', { confirmLabel: '再発行', danger: true })) return
+    setInfo(await api.regenerate())
+  }
+  return (
+    <section className="mb-5">
+      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 mb-2"><Globe size={12} /> ブラウザ連携 (Chrome 拡張)</label>
+      <div className="rounded-lg border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+        <div>
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 mb-0.5">接続コード</div>
+          <div className="flex items-center gap-1.5">
+            <code className="flex-1 min-w-0 truncate px-2 py-1 rounded bg-slate-50 dark:bg-slate-800 text-[11px] text-slate-700 dark:text-slate-200">{info.code}</code>
+            <button onClick={copy} className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 shrink-0" title="コピー">
+              {copied ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+            </button>
+            <button onClick={() => { void regenerate() }} className="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 shrink-0" title="再発行 (以前のコードを無効にする)">
+              <RefreshCw size={12} />
+            </button>
+          </div>
+        </div>
+        {info.extensionDir && (
+          <button
+            onClick={() => { void api.openExtensionDir() }}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          >
+            <FolderOpen size={12} /> 拡張のフォルダを開く
+          </button>
+        )}
+        {!info.port && <p className="text-[11px] text-rose-500">接続用のポートを確保できませんでした。アプリを再起動してください。</p>}
+        <p className="text-[11px] text-slate-400">
+          Chrome の <code>chrome://extensions</code> でデベロッパーモードをオンにし、「パッケージ化されていない拡張機能を読み込む」で上のフォルダを選びます。
+          拡張のアイコンをクリックして接続コードを貼り付けると、見ているページをリサーチに登録できます。
+        </p>
+      </div>
+    </section>
+  )
+}
+
 // アップデート欄 — 現在のバージョンと手動チェック。デスクトップ(Electron)のみ表示。
 function UpdateSection() {
   const { current, mode, state } = useUpdateState()
@@ -293,6 +343,7 @@ export function SettingsModal({ open, onClose }: Props) {
         <FolderSyncSection />
 
         <CliSection />
+        <BrowserBridgeSection />
 
         <UpdateSection />
       </div>

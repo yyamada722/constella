@@ -79,7 +79,7 @@ jobs:
           - os: windows-latest
             label: Windows
             artifact: windows
-          - os: macos-14
+          - os: macos-15
             label: macOS (arm64)
             artifact: macos
           - os: ubuntu-latest

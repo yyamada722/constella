@@ -1247,8 +1247,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!api?.cli || isRemote) return
     const off = api.cli.onRequest((reqId, req) => {
       if (!hydratedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'starting', retry: true }); return }
-      const write = req.method === 'apply' && !(req.params as { dryRun?: unknown } | undefined)?.dryRun
-      if (write && loadFailedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'DB を読み込めなかったため書き込みを拒否しました(アプリの表示を確認してください)' }); return }
+      const write = req.method === 'research.add' || (req.method === 'apply' && !(req.params as { dryRun?: unknown } | undefined)?.dryRun)
+      if (write && loadFailedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'DB を読み込めなかったため書き込みを拒否しました(アプリの表示を確認してください)', ...(req.method === 'research.add' ? { retry: true } : {}) }); return } // 拡張の未送信キューを捨てさせない
       const res = handleCliRequest(req, latest.current, reducer)
       if (res.ok && res.actions?.length) {
         // 1 件でも BATCH で包む: UPDATE_TASK / UPDATE_NOTE 単体だと historyReducer の
