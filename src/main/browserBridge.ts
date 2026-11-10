@@ -13,7 +13,7 @@ import { cp, mkdir, readFile, rename, unlink, writeFile } from 'fs/promises'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { randomBytes, timingSafeEqual } from 'crypto'
 import { forwardToRenderer } from './cliServer'
-import { canonicalTweetUrl, clipTweet, parseTweetUrl, tweetTitle, type PageTweet } from './tweetClip'
+import { canonicalTweetUrl, clipTweet, parseTweetUrl, releaseTweetMedia, tweetTitle, type PageTweet } from './tweetClip'
 
 // 拡張はこの範囲を順に探す (browser-extension/lib.js の PORTS と揃える)。
 const PORTS = [38947, 38948, 38949, 38950]
@@ -102,7 +102,9 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
     if (clip && !looksLikeMhtml(clip)) return send(res, 400, { ok: false, error: 'MHTML ではありません' })
 
     // ツイートは本文・画像・動画を取り込む (キューから再送されたものも、ここで取り直す)。
+    // メディアは一時ファイルに置き、レンダラーが key で 1 件ずつ取りに来る。
     const warnings: string[] = []
+    let mediaKeys: string[] = []
     const tw = typeof params.url === 'string' ? parseTweetUrl(params.url) : null
     const pageTweet = params.tweetPage && typeof params.tweetPage === 'object' ? params.tweetPage as PageTweet : null
     delete params.tweetPage
@@ -115,6 +117,7 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
         params.url = got.tweet.url
         params.tweet = got.tweet
         params.tweetMedia = got.media
+        mediaKeys = got.media.map(m => m.key)
         warnings.push(...got.warnings)
       } else {
         params.url = canonicalTweetUrl(tw.id, tw.handle)
@@ -162,10 +165,16 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
       if (!answer.ok) { await rollback(); return send(res, answer.retry ? 503 : 400, answer) }
       if ((answer.result as { existed?: boolean }).existed) await rollback() // 登録済みで何も変えなかった
       else if (backedUp) await unlink(old).catch(() => { /* ignore */ })
-      send(res, 200, warnings.length ? { ...answer, result: { ...(answer.result as object), warnings } } : answer)
+      // レンダラー側の警告 (IndexedDB に保存できなかった等) も合わせて返す
+      const rendererWarnings = ((answer.result as { warnings?: unknown })?.warnings as string[] | undefined) ?? []
+      const all = [...warnings, ...rendererWarnings]
+      send(res, 200, all.length ? { ...answer, result: { ...(answer.result as object), warnings: all } } : answer)
     } catch (e) {
       await rollback()
       throw e
+    } finally {
+      // 取りに来られなかった分 (重複で不要・失敗) を片付ける
+      if (mediaKeys.length) await releaseTweetMedia(mediaKeys)
     }
   }
 

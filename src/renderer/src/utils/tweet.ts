@@ -11,22 +11,40 @@ export function tweetIdFromUrl(raw: string | undefined | null): string | null {
   return STATUS_RE.exec(String(raw || '').trim())?.[2] ?? null
 }
 
-export interface TweetMediaBlob { key: string; bytes: Uint8Array; mime: string }
+// main の一時ファイルに置かれたメディア (中身は tweet:media で 1 件ずつ受け取る)
+export interface TweetMediaEntry { key: string; mime: string; size: number }
+
+type TweetIpc = { media: (key: string) => Promise<Uint8Array | null>; release: (keys: string[]) => Promise<void> }
+function tweetIpc(): TweetIpc | null {
+  return (window as unknown as { api?: { tweet?: TweetIpc } }).api?.tweet ?? null
+}
+
+/** 使わなくなったメディアの一時ファイルを main に消させる。 */
+export function releaseTweetMedia(entries: TweetMediaEntry[] | undefined): void {
+  const keys = (entries ?? []).map(e => e.key)
+  if (keys.length) void tweetIpc()?.release(keys).catch(() => { /* main 側も期限で消す */ })
+}
 
 const isKey = (v: unknown): v is string => typeof v === 'string' && v.startsWith('@tw')
 
 /**
- * main から届いたメディアを保存して、tweet 内の一時キー (@tw0…) を idb: に置き換える。
- * 保存できなかった / 届かなかったキーは消す (表示側は remoteUrl にフォールバック)。
+ * main から届いたメディアを保存して、tweet 内の一時キー (@tw…) を idb: に置き換える。
+ * メモリを食わないよう 1 件ずつ受け取って保存する。保存できなかったキーは消し
+ * (表示側は remoteUrl にフォールバック)、その件数を failed で返す。
  */
-export async function storeTweetMedia(tweet: TweetClip, blobs: TweetMediaBlob[]): Promise<TweetClip> {
+export async function storeTweetMedia(tweet: TweetClip, entries: TweetMediaEntry[]): Promise<{ tweet: TweetClip; failed: number }> {
   const refs = new Map<string, string>()
-  await Promise.all((blobs ?? []).map(async b => {
+  const ipc = tweetIpc()
+  let failed = 0
+  for (const e of entries ?? []) {
     try {
-      const ref = await putMedia(new Blob([b.bytes as BlobPart], { type: b.mime || 'application/octet-stream' }))
-      refs.set(b.key, ref)
-    } catch { /* 1 件の失敗で全体を止めない */ }
-  }))
+      const bytes = ipc ? await ipc.media(e.key) : null
+      if (!bytes) { failed++; continue }
+      refs.set(e.key, await putMedia(new Blob([bytes as BlobPart], { type: e.mime || 'application/octet-stream' })))
+    } catch {
+      failed++ // 容量不足など。1 件の失敗で全体を止めない
+    }
+  }
   const bind = (v: string | undefined): string | undefined => (isKey(v) ? refs.get(v) : v)
   const bindOne = <T extends Omit<TweetClip, 'quoted' | 'capturedAt' | 'source'>>(t: T): T => ({
     ...t,
@@ -34,8 +52,23 @@ export async function storeTweetMedia(tweet: TweetClip, blobs: TweetMediaBlob[])
     card: t.card ? { ...t.card, image: bind(t.card.image) } : undefined,
     media: (t.media ?? []).map((m: TweetMedia) => ({ ...m, file: bind(m.file), poster: bind(m.poster) })),
   })
-  return { ...bindOne(tweet), quoted: tweet.quoted ? bindOne(tweet.quoted) : undefined }
+  return { tweet: { ...bindOne(tweet), quoted: tweet.quoted ? bindOne(tweet.quoted) : undefined }, failed }
 }
+
+/** ツイートが参照している保存済みメディア (idb:) — 引用ツイート分も。 */
+export function tweetMediaRefs(t: TweetClip): string[] {
+  const out: string[] = []
+  for (const tw of [t, t.quoted]) {
+    if (!tw) continue
+    if (tw.avatar) out.push(tw.avatar)
+    if (tw.card?.image) out.push(tw.card.image)
+    for (const m of tw.media ?? []) { if (m.file) out.push(m.file); if (m.poster) out.push(m.poster) }
+  }
+  return out.filter(r => r.startsWith('idb:'))
+}
+
+export const mediaFailedWarning = (n: number): string =>
+  `画像・動画 ${n} 件をこの PC に保存できませんでした（空き容量を確認してください）。元の URL で表示します`
 
 /** レンダラーで受け付ける形かの最低限の検査 (main 由来だが DB に入るので)。 */
 export function isTweetClip(v: unknown): v is TweetClip {

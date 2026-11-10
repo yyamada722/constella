@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, ExternalLink, Heart, Link2, MessageCircle, Play, Plus, X as XIcon } from 'lucide-react'
 import type { TweetClip, TweetMedia } from '../types'
-import { useMediaUrl } from '../persistence/media'
+import { useMediaState, useMediaUrl } from '../persistence/media'
 import { ZoomableImage } from './ZoomableImage'
 
 type TweetBody = Omit<TweetClip, 'quoted' | 'capturedAt' | 'source'>
@@ -41,9 +41,11 @@ function Avatar({ tweet, size }: { tweet: TweetBody; size: number }) {
 }
 
 function MediaTile({ m, onZoom, tall }: { m: TweetMedia; onZoom: () => void; tall: boolean }) {
-  const stored = useMediaUrl(m.file)
+  const storedState = useMediaState(m.file)
   const poster = useMediaUrl(m.poster)
-  const src = stored ?? (m.kind === 'image' ? m.remoteUrl : (m.file ? undefined : m.remoteUrl))
+  // 保存データの読み出し中だけ待つ。見つからない (同期待ち・欠落) ときは元の URL で表示
+  const loading = !!m.file && storedState.status === 'loading'
+  const src = storedState.url ?? (loading ? undefined : m.remoteUrl)
   const box = `relative overflow-hidden bg-slate-900/5 ${tall ? 'h-full' : ''}`
   if (m.kind === 'image') {
     return (
@@ -52,7 +54,7 @@ function MediaTile({ m, onZoom, tall }: { m: TweetMedia; onZoom: () => void; tal
       </button>
     )
   }
-  if (!src && m.file) {
+  if (!src && loading) {
     // 保存済み動画の読み出し中
     return <div className={`${box} min-h-40 bg-black`}>{poster && <img src={poster} alt="" className="w-full h-full object-cover" />}</div>
   }

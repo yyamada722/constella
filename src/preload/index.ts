@@ -150,8 +150,11 @@ contextBridge.exposeInMainWorld('api', {
   },
   // X (Twitter) ツイートの取り込み: 本文・メディアを main が取得して返す (保存はレンダラー)。
   tweet: {
-    clip: (url: string): Promise<{ tweet: unknown; title: string; warnings: string[]; media: { key: string; bytes: Uint8Array; mime: string }[] } | null> =>
+    clip: (url: string): Promise<{ tweet: unknown; title: string; warnings: string[]; media: { key: string; mime: string; size: number }[] } | null> =>
       ipcRenderer.invoke('tweet:clip', url),
+    // 一時ファイルに置かれたメディアを 1 件ずつ受け取る (受け取ると main 側は消える)
+    media: (key: string): Promise<Uint8Array | null> => ipcRenderer.invoke('tweet:media', key),
+    release: (keys: string[]): Promise<void> => ipcRenderer.invoke('tweet:release', keys),
   },
   // OS クリップボードへの確実なテキスト書き込み (非フォーカス時も成功する)。
   copyText: (text: string): Promise<void> => ipcRenderer.invoke('clipboard:write-text', text),

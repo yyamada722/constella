@@ -12,7 +12,7 @@ import { SearchInput } from '../components/SearchInput'
 import { confirmDialog, alertDialog, chooseDialog } from '../components/ConfirmDialog'
 import { htmlDocumentToMarkdown } from '../utils/richPaste'
 import { TweetView } from '../components/TweetView'
-import { storeTweetMedia, tweetIdFromUrl, tweetToMarkdown, type TweetMediaBlob } from '../utils/tweet'
+import { mediaFailedWarning, storeTweetMedia, tweetIdFromUrl, tweetToMarkdown, type TweetMediaEntry } from '../utils/tweet'
 
 // Default landing page when no bookmark is selected.
 const HOME_URL = 'https://www.google.com'
@@ -35,7 +35,7 @@ function clipApi(): ClipApi | null {
 }
 
 // X (Twitter) ツイートの取り込み IPC (main が本文・メディアを取得)。
-type TweetApi = { clip: (url: string) => Promise<{ tweet: TweetClip; title: string; warnings: string[]; media: TweetMediaBlob[] } | null> }
+type TweetApi = { clip: (url: string) => Promise<{ tweet: TweetClip; title: string; warnings: string[]; media: TweetMediaEntry[] } | null> }
 function tweetApi(): TweetApi | null {
   return (window as unknown as { api?: { tweet?: TweetApi } }).api?.tweet ?? null
 }
@@ -593,7 +593,9 @@ export default function ResearchPage() {
         await alertDialog('ツイートを取得できませんでした。\n削除済み・鍵アカウント・通信エラーの可能性があります。\n鍵アカウントのツイートは、Chrome 拡張でツイートを開いて保存すると取り込めます。')
         return
       }
-      const tweet = await storeTweetMedia(r.tweet, r.media)
+      const stored = await storeTweetMedia(r.tweet, r.media)
+      const tweet = stored.tweet
+      const warnings = [...r.warnings, ...(stored.failed ? [mediaFailedWarning(stored.failed)] : [])]
       // await の間に編集されていてもよいように、最新の state から取り直す
       const now = getLatestState()
       const live = now.research.filter(x => x.masterProjectId === active && !x.archivedAt)
@@ -613,7 +615,7 @@ export default function ResearchPage() {
         setSelectedId(item.id)
       }
       setTweetView(true)
-      if (r.warnings.length) await alertDialog(r.warnings.join('\n'))
+      if (warnings.length) await alertDialog(warnings.join('\n'))
     } finally {
       setTweetBusy(false)
     }
@@ -710,7 +712,9 @@ export default function ResearchPage() {
   const clipActive = !!(clipSupported && selected?.clip && clipMode)
   const effectiveUrl = clipActive ? (clipUrl ?? 'about:blank') : liveEffectiveUrl
   const effectiveTitle = selected ? (selected.title || 'Web page') : 'ホーム'
-  const tweetActive = !!(selected?.tweet && tweetView && !clipActive)
+  // URL を別のページ/ツイートに書き換えたら、古い取り込み内容は出さない (ID が一致する時だけ)
+  const tweetMatches = !!(selected?.tweet && tweetIdFromUrl(selected.url) === selected.tweet.id)
+  const tweetActive = !!(tweetMatches && tweetView && !clipActive)
   // 表示中 (または選択中) の URL がツイートなら取り込みボタンを出す
   const liveTweetUrl = liveUrl && tweetIdFromUrl(liveUrl) ? liveUrl : null
   const selectedIsTweet = !!(selected && tweetIdFromUrl(selected.url))
@@ -1134,14 +1138,14 @@ export default function ResearchPage() {
             <button
               onClick={() => selected && importTweet(selected.url, selected.id)}
               disabled={tweetBusy}
-              title={selected?.tweet ? 'ツイートを取り込み直す（本文・画像・動画を最新に）' : 'ツイートの本文・画像・動画を取り込んで保存'}
+              title={tweetMatches ? 'ツイートを取り込み直す（本文・画像・動画を最新に）' : 'ツイートの本文・画像・動画を取り込んで保存'}
               className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-300 bg-white text-[10px] text-slate-600 hover:text-sky-700 hover:border-sky-300 disabled:opacity-50"
             >
               {tweetBusy ? <Loader2 size={10} className="animate-spin" /> : <MessageSquareQuote size={10} />}
-              {selected?.tweet ? '再取り込み' : 'ツイートを取り込む'}
+              {tweetMatches ? '再取り込み' : 'ツイートを取り込む'}
             </button>
           )}
-          {selected?.tweet && !clipActive && (
+          {tweetMatches && !clipActive && (
             <div className="flex items-center rounded overflow-hidden border border-slate-300 shrink-0">
               <button
                 onClick={() => setTweetView(true)}

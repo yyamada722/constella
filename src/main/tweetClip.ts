@@ -8,7 +8,14 @@
 // 鍵アカウント等で API が使えないときは、Chrome 拡張がページから読んだ内容 (page)
 // で代用する。どちらの経路でも、ダウンロードは https の *.twimg.com に限る
 // (拡張から渡る URL で任意のホスト・LAN へアクセスさせないため)。
-import { ipcMain, net } from 'electron'
+//
+// 動画は数百 MB になり得るので、メモリに溜めずに一時ファイルへ流し込み、レンダラーが
+// 1 件ずつ (tweet:media) 取りに来る。一度に IPC に載るのは 1 件分だけ。
+import { app, ipcMain, net } from 'electron'
+import { join } from 'path'
+import { createWriteStream } from 'fs'
+import { mkdir, readFile, rm, unlink } from 'fs/promises'
+import { randomBytes } from 'crypto'
 
 export interface TweetMediaOut {
   kind: 'image' | 'video' | 'gif'
@@ -39,7 +46,8 @@ export interface TweetOut {
   source: 'api' | 'page'
 }
 
-export interface TweetBlob { key: string; bytes: Buffer; mime: string }
+// 一時ファイルに置いたメディア。key でレンダラーが取りに来る (tweet:media)。
+export interface TweetBlob { key: string; mime: string; size: number }
 export interface TweetResult { tweet: TweetOut; media: TweetBlob[]; warnings: string[] }
 
 // 拡張がページから読んだ内容 (browser-extension/popup.js の readTweetFromPage と揃える)。
@@ -100,25 +108,63 @@ async function fetchSyndication(id: string): Promise<Json | null> {
   } catch { return null }
 }
 
-async function download(url: string, limit: number, timeoutMs: number): Promise<{ bytes: Buffer; mime: string } | null> {
+// ── 一時ファイル (取り込み途中のメディア) ──
+
+const tmpDir = (): string => join(app.getPath('userData'), 'tweet-media-tmp')
+const TMP_TTL_MS = 30 * 60 * 1000
+const pending = new Map<string, { path: string; mime: string; at: number }>()
+// 起動時の掃除 (前回の取り残し) が終わってから書き込む
+let cleaned: Promise<unknown> = Promise.resolve()
+
+async function dropPending(key: string): Promise<void> {
+  const e = pending.get(key)
+  if (!e) return
+  pending.delete(key)
+  await unlink(e.path).catch(() => { /* ignore */ })
+}
+
+/** 取りに来られなかった分 (重複で不要になった等) を片付ける。 */
+export async function releaseTweetMedia(keys: string[]): Promise<void> {
+  await Promise.all(keys.map(dropPending))
+}
+
+async function download(url: string, limit: number, timeoutMs: number): Promise<{ key: string; size: number; mime: string } | null> {
   if (!allowedMediaUrl(url)) return null
+  const key = `@tw${randomBytes(8).toString('hex')}`
+  const path = join(tmpDir(), key.slice(1) + '.bin')
+  let opened = false
   try {
     const res = await net.fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error' })
     if (!res.ok || !res.body) return null
     const declared = Number(res.headers.get('content-length') || 0)
     if (declared > limit) { void res.body.cancel(); return null }
+    await cleaned
+    await mkdir(tmpDir(), { recursive: true })
+    const out = createWriteStream(path)
+    opened = true
+    const closed = new Promise<void>((resolve, reject) => { out.on('finish', resolve); out.on('error', reject) })
     const reader = res.body.getReader()
-    const chunks: Uint8Array[] = []
     let size = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      size += value.length
-      if (size > limit) { void reader.cancel(); return null }
-      chunks.push(value)
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.length
+        if (size > limit) { void reader.cancel(); throw new Error('too-large') }
+        // 書き込みが詰まったら待つ (読み続けてメモリに溜めない)
+        if (!out.write(value)) await new Promise<void>(r => out.once('drain', () => r()))
+      }
+    } finally {
+      out.end()
     }
-    return { bytes: Buffer.concat(chunks), mime: (res.headers.get('content-type') || '').split(';')[0].trim() }
-  } catch { return null }
+    await closed
+    if (!size) throw new Error('empty')
+    pending.set(key, { path, mime: (res.headers.get('content-type') || '').split(';')[0].trim(), at: Date.now() })
+    return { key, size, mime: pending.get(key)!.mime }
+  } catch {
+    if (opened) await unlink(path).catch(() => { /* ignore */ })
+    return null
+  }
 }
 
 // pbs の画像は ?name=orig で原寸。付かないもの (ext_tw_video_thumb 等も可) はそのまま。
@@ -266,7 +312,6 @@ function fromPage(id: string, handleFromUrl: string | undefined, p: PageTweet): 
 async function runJobs(jobs: Job[], warnings: string[]): Promise<TweetBlob[]> {
   const out: TweetBlob[] = []
   let total = 0
-  let n = 0
   let failed = 0
   // 小さいもの (画像) から並列で、動画は 1 本ずつ (帯域とメモリを食い合わないように)
   const small = jobs.filter(j => j.limit <= MAX_IMAGE_BYTES)
@@ -276,11 +321,10 @@ async function runJobs(jobs: Job[], warnings: string[]): Promise<TweetBlob[]> {
       const room = Math.min(j.limit, MAX_TOTAL_BYTES - total)
       if (room <= 0) break
       const got = await download(u, room, j.timeoutMs)
-      if (got && got.bytes.length) {
-        total += got.bytes.length
-        const key = `@tw${n++}`
-        out.push({ key, bytes: got.bytes, mime: got.mime })
-        j.assign(key)
+      if (got) {
+        total += got.size
+        out.push(got)
+        j.assign(got.key)
         return
       }
     }
@@ -311,7 +355,7 @@ export async function clipTweet(rawUrl: string, page?: PageTweet | null): Promis
     // 長文ツイート (note tweet) は API が先頭しか返さないので、ページで読めた全文を優先
     const pageText = String(page?.text || '')
     if (pageText.length > main.tweet.text.length + 10) main.tweet.text = pageText.slice(0, 30000)
-  } else if (page && (page.text || page.images?.length)) {
+  } else if (page && (page.text || page.images?.length || page.videos?.length)) {
     main = fromPage(parsed.id, parsed.handle, page)
     source = 'page'
     warnings.push('公開APIで取得できなかったため、ページの表示内容から保存しました（動画はサムネイルのみ）')
@@ -329,11 +373,32 @@ export const tweetTitle = (t: TweetOut): string => {
   return body ? `${head}: ${body.length > 80 ? body.slice(0, 80) + '…' : body}` : head
 }
 
-// アプリ内 (リサーチ画面の URL 入力) からの取り込み。
 export function registerTweetIpc(): void {
+  // 前回の起動で取り残した一時ファイルを掃除し、以後は古いものを定期的に片付ける
+  cleaned = rm(tmpDir(), { recursive: true, force: true }).catch(() => { /* ignore */ })
+  setInterval(() => {
+    const now = Date.now()
+    for (const [k, e] of pending) if (now - e.at > TMP_TTL_MS) void dropPending(k)
+  }, 5 * 60 * 1000).unref()
+
+  // アプリ内 (リサーチ画面の URL 入力) からの取り込み。メディアは key のみ返す。
   ipcMain.handle('tweet:clip', async (_e, url: string) => {
     const r = await clipTweet(String(url || ''))
     if (!r) return null
-    return { tweet: r.tweet, title: tweetTitle(r.tweet), warnings: r.warnings, media: r.media.map(m => ({ key: m.key, bytes: new Uint8Array(m.bytes.buffer, m.bytes.byteOffset, m.bytes.length), mime: m.mime })) }
+    return { tweet: r.tweet, title: tweetTitle(r.tweet), warnings: r.warnings, media: r.media }
+  })
+  // メディア 1 件を渡して一時ファイルを消す (key は pending に登録したものだけ = パスは外から指定できない)
+  ipcMain.handle('tweet:media', async (_e, key: string): Promise<Uint8Array | null> => {
+    const e = pending.get(String(key))
+    if (!e) return null
+    try {
+      const b = await readFile(e.path)
+      return new Uint8Array(b.buffer, b.byteOffset, b.length)
+    } catch { return null } finally {
+      await dropPending(String(key))
+    }
+  })
+  ipcMain.handle('tweet:release', async (_e, keys: unknown) => {
+    if (Array.isArray(keys)) await releaseTweetMedia(keys.map(String))
   })
 }
