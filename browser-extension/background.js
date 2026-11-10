@@ -1,6 +1,7 @@
 // 保存処理の本体。ポップアップはフォーカスを失うと即座に破棄されるので、
 // MHTML の取得と送信はここ (service worker) で完結させる。
 import { BridgeError, MAX_CLIP_BYTES, enqueue, flushQueue, getStored, refreshBadge, sendSave } from './lib.js'
+import { readTweetFromPage, tweetIdOf } from './tweet.js'
 
 const MENU_PAGE = 'constella-save-page'
 const MENU_LINK = 'constella-save-link'
@@ -9,7 +10,7 @@ const FLUSH_ALARM = 'constella-flush'
 function setup() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({ id: MENU_PAGE, title: 'このページをリサーチに保存', contexts: ['page', 'selection'] })
-    chrome.contextMenus.create({ id: MENU_LINK, title: 'リンク先をリサーチに保存', contexts: ['link'] })
+    chrome.contextMenus.create({ id: MENU_LINK, title: 'リンク先をリサーチに保存（ツイートは本文・画像・動画も）', contexts: ['link'] })
   })
   chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 1 })
   void flushQueue()
@@ -34,7 +35,8 @@ async function save(meta, tabId, wantClip) {
   const captured = wantClip && tabId != null ? await capture(tabId) : {}
   try {
     const result = await sendSave(meta, captured.blob ?? null)
-    return { status: result.updated ? 'updated' : result.existed ? 'existed' : 'created', warning: captured.warning }
+    const warning = [captured.warning, ...(result.warnings ?? [])].filter(Boolean).join('\n') || undefined
+    return { status: result.updated ? 'updated' : result.existed ? 'existed' : 'created', warning }
   } catch (e) {
     if (e instanceof BridgeError && e.kind === 'offline') {
       await enqueue(meta)
@@ -66,6 +68,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const url = isLink ? info.linkUrl : info.pageUrl
   if (!/^https?:/i.test(url || '')) return flashBadge('!', '#e11d48')
   const { clip, lastMaster, lastFolder } = await getStored(['clip', 'lastMaster', 'lastFolder'])
+  // ツイートはアプリが本文・画像・動画を取り込む。題名もツイートから付けさせる。
+  const isTweet = !!tweetIdOf(url)
+  const tweetPage = isTweet && !isLink ? await readTweetFromPage(tab?.id, url) : null
   const meta = {
     url,
     title: isLink ? (info.selectionText || url) : (tab?.title || url),
@@ -75,9 +80,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     folderId: lastMaster ? lastFolder?.[lastMaster] : undefined,
     dedupe: true,
     lenient: true, // 記憶していた保存先が消えていても、今のプロジェクトへ登録する
+    ...(isTweet ? { autoTitle: true, description: '', ...(tweetPage ? { tweetPage } : {}) } : {}),
   }
   try {
-    const r = await save(meta, tab?.id, !isLink && !!clip)
+    const r = await save(meta, tab?.id, !isLink && !isTweet && !!clip)
     if (r.status === 'queued') await refreshBadge()
     else flashBadge(r.warning ? '!' : r.status === 'existed' ? '済' : '✓', r.warning ? '#d97706' : '#059669')
   } catch {

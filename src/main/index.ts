@@ -10,6 +10,7 @@ import { initUpdater } from './updater'
 import { initSync } from './sync'
 import { startCliServer, clearStaleCliInfo, installCli } from './cliServer'
 import { startBrowserBridge } from './browserBridge'
+import { registerTweetIpc } from './tweetClip'
 
 // E2E hook: isolate userData (and the single-instance lock derived from it) so an
 // automated run never collides with — or writes into — the real installation.
@@ -881,6 +882,7 @@ if (!gotLock) {
     }
     startCliServer(ensureWindow)
     startBrowserBridge(ensureWindow, clipPath) // Chrome 拡張からのリサーチ登録
+    registerTweetIpc() // リサーチ画面からのツイート取り込み
     cliInstall = installCli().catch(() => null)
     initUpdater(() => mainWindow) // 自動アップデート(Win)・新版通知(mac/ポータブル)
     // Auto-start LAN access if the user enabled it previously.

@@ -413,6 +413,43 @@ export interface ResearchItem {
   // Offline clip metadata. The MHTML snapshot itself lives on disk
   // (userData/clips/<id>.mhtml, machine-local); only when/size ride in the DB.
   clip?: { savedAt: string; size: number }
+  // X (Twitter) のツイートを取り込んだ項目。本文・メディア(idb:)・リンクを保持し、
+  // 元ツイートが消えても見直せる。メディア実体は IndexedDB (同期・バックアップ対象)。
+  tweet?: TweetClip
+}
+
+export interface TweetMedia {
+  kind: 'image' | 'video' | 'gif'
+  file?: string // idb:… 保存済み実体 (取得失敗時は無し → remoteUrl を表示)
+  poster?: string // idb:… 動画のサムネイル
+  remoteUrl?: string // 取得元 (pbs/video.twimg.com)
+  width?: number
+  height?: number
+  durationMs?: number
+  alt?: string
+}
+
+export interface TweetLink {
+  url: string // 展開済み URL
+  display: string
+}
+
+export interface TweetClip {
+  id: string
+  url: string // https://x.com/<handle>/status/<id>
+  authorName: string
+  authorHandle: string
+  avatar?: string // idb:…
+  text: string // t.co を展開済み URL へ置換した本文
+  createdAt?: string
+  links: TweetLink[]
+  media: TweetMedia[]
+  card?: { url: string; title?: string; description?: string; domain?: string; image?: string }
+  quoted?: Omit<TweetClip, 'quoted' | 'capturedAt' | 'source'>
+  likes?: number
+  replies?: number
+  capturedAt: string
+  source: 'api' | 'page' // api = 公開埋め込みAPI / page = 拡張がページから読んだ (鍵垢等)
 }
 
 // Grouping container for ResearchItem. Folders can nest via parentId (a tree).

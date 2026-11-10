@@ -2,7 +2,7 @@ import { createContext, useContext, useReducer, useEffect, useMemo, useState, us
 import { Note, NoteAttachment, NoteFolder, FileItem, FileFolder, Project, Task, ResearchItem, ResearchFolder, MasterProject, Sketch, AIConversation, CanvasCard, CanvasTab, CanvasBoard, CanvasArrow, CanvasGroup, CanvasStroke, CanvasLabel, CanvasRail, CanvasStation, Flow, Plan, PlanFolder, TimelineBand } from './types'
 import { loadState, saveState, loadKv, dbEtag, reloadState, consumeDbRecoveryNotice } from './persistence/db'
 import { flushMindtrainPending } from './mindtrain/persist'
-import { sweepMedia } from './persistence/media'
+import { deleteMedia, sweepMedia } from './persistence/media'
 import { isRemote } from './persistence/runtime'
 import { exportBackup } from './persistence/backup'
 import { initFolderSync, startupFolderSync, checkFolderSync, scheduleFolderPush, resolveFolderSyncConflict, useFolderSyncStatus, markFolderSyncEdit, backupMediaRefs, currentEditSeq } from './persistence/folderSync'
@@ -10,6 +10,7 @@ import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
 import { normalizeCustomStatus } from './utils/customStatus'
 import { handleCliRequest, type CliRequest } from './persistence/cliBridge'
+import { isTweetClip, mediaFailedWarning, releaseTweetMedia, storeTweetMedia, tweetMediaRefs, type TweetMediaEntry } from './utils/tweet'
 
 // The single default master project that all pre-existing data is migrated under.
 // Keep this id in sync with db.ts (SQL migration) and mindtrain (workspace id).
@@ -907,7 +908,10 @@ export function collectMediaRefs(s: AppState): string[] {
     f.versions?.forEach(v => { if (v.url) refs.push(v.url) }) // 差し替え履歴の旧版も生存
   })
   s.projects.forEach(p => p.tasks.forEach(t => scan(t.description)))
-  s.research.forEach(r => scan(r.description))
+  s.research.forEach(r => {
+    scan(r.description)
+    if (r.tweet) refs.push(...tweetMediaRefs(r.tweet)) // 取り込んだツイートのメディア (引用分も)
+  })
   s.plans.forEach(p => scan(p.content)) // e-ticket attachments referenced as [x](idb:…)
   return refs
 }
@@ -1245,11 +1249,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const api = (window as unknown as { api?: { cli?: { onRequest: (cb: (reqId: string, req: CliRequest) => void) => () => void; reply: (reqId: string, res: unknown) => void; ready: () => void } } }).api
     if (!api?.cli || isRemote) return
-    const off = api.cli.onRequest((reqId, req) => {
+    const off = api.cli.onRequest(async (reqId, req) => {
       if (!hydratedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'starting', retry: true }); return }
       const write = req.method === 'research.add' || (req.method === 'apply' && !(req.params as { dryRun?: unknown } | undefined)?.dryRun)
       if (write && loadFailedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'DB を読み込めなかったため書き込みを拒否しました(アプリの表示を確認してください)', ...(req.method === 'research.add' ? { retry: true } : {}) }); return } // 拡張の未送信キューを捨てさせない
+      // ツイートのメディアは先に IndexedDB へ保存して idb: 参照に差し替える。保存だけは
+      // 非同期だが、読む→dispatch は下で同期ブロックのまま行う (await はこの前段のみ)。
+      const tp = req.params as { tweet?: unknown; tweetMedia?: TweetMediaEntry[] } | undefined
+      let storedRefs: string[] = []
+      let storedTweet: unknown
+      let mediaWarning: string | null = null
+      if (req.method === 'research.add' && Array.isArray(tp?.tweetMedia)) {
+        const { tweetMedia, ...rest } = tp
+        // 登録済みで何も変わらない保存 (右クリックの再保存等) なら、メディアを保存しない
+        const probe = isTweetClip(rest.tweet) ? handleCliRequest({ ...req, params: rest }, latest.current, reducer) : null
+        // 受け取ったツイートそのものが使われるか (既存項目の tweet を展開しただけの更新と区別するため参照で比べる)
+        const usesTweet = !!probe?.ok && !!probe.actions?.some(a => (a as { payload?: { tweet?: unknown } }).payload?.tweet === rest.tweet)
+        if (usesTweet && isTweetClip(rest.tweet)) {
+          const stored = await storeTweetMedia(rest.tweet, tweetMedia)
+          storedRefs = tweetMediaRefs(stored.tweet)
+          storedTweet = stored.tweet
+          if (stored.failed) mediaWarning = mediaFailedWarning(stored.failed)
+          req = { ...req, params: { ...rest, tweet: stored.tweet } }
+        } else {
+          releaseTweetMedia(tweetMedia)
+          req = { ...req, params: { ...rest, tweet: undefined } }
+        }
+      }
       const res = handleCliRequest(req, latest.current, reducer)
+      // 待っている間に状況が変わり、保存したメディアが使われなかったら消す
+      if (storedRefs.length && !(res.ok && res.actions?.some(a => (a as { payload?: { tweet?: unknown } }).payload?.tweet === storedTweet))) {
+        storedRefs.forEach(r => { void deleteMedia(r).catch(() => { /* sweep に任せる */ }) })
+      }
+      if (res.ok && mediaWarning) res.result = { ...(res.result as object), warnings: [mediaWarning] }
       if (res.ok && res.actions?.length) {
         // 1 件でも BATCH で包む: UPDATE_TASK / UPDATE_NOTE 単体だと historyReducer の
         // coalesce 窓で直前の編集と 1 つの undo にまとまってしまう。

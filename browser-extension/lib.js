@@ -63,7 +63,8 @@ export const rpc = (method, params) => request('/rpc', JSON.stringify({ method, 
 export function sendSave(meta, clipBlob) {
   const head = new TextEncoder().encode(JSON.stringify(meta))
   const body = new Blob(clipBlob ? [head, clipBlob] : [head])
-  return request(`/save?metaLength=${head.length}`, body, 120000)
+  // ツイートはアプリが動画まで取り込むので長めに待つ
+  return request(`/save?metaLength=${head.length}`, body, 600000)
 }
 
 // ── 未送信キュー (アプリ未起動のあいだ溜める。クリップは容量の都合で持たない) ──
