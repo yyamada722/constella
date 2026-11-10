@@ -205,7 +205,8 @@ async function save(forceNew) {
 
   // 成功したときだけ記憶する (失敗した宛先を次回の既定にしない)
   await setStored({
-    ...(online ? { clip } : {}),
+    // ツイートではクリップ欄を出さないので、保存済みのクリップ設定を上書きしない
+    ...(online && !isTweet ? { clip } : {}),
     ...(master ? { lastMaster: master, lastFolder: { ...memory.lastFolder, [master]: folderId } } : {}),
     recentTags: [...new Set([...selectedTags, ...memory.recentTags])].slice(0, MAX_RECENT_TAGS),
   })

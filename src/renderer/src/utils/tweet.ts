@@ -71,10 +71,20 @@ export const mediaFailedWarning = (n: number): string =>
   `画像・動画 ${n} 件をこの PC に保存できませんでした（空き容量を確認してください）。元の URL で表示します`
 
 /** レンダラーで受け付ける形かの最低限の検査 (main 由来だが DB に入るので)。 */
-export function isTweetClip(v: unknown): v is TweetClip {
+// 表示・メディア収集が読むフィールド (入れ子の引用ツイートも) を検査する。
+function isTweetBody(v: unknown): boolean {
   const t = v as TweetClip
   return !!t && typeof t === 'object' && typeof t.id === 'string' && /^\d{1,25}$/.test(t.id)
-    && typeof t.url === 'string' && typeof t.text === 'string' && Array.isArray(t.media) && Array.isArray(t.links)
+    && typeof t.url === 'string' && typeof t.text === 'string'
+    && typeof t.authorName === 'string' && typeof t.authorHandle === 'string'
+    && Array.isArray(t.media) && t.media.every(m => !!m && typeof m === 'object' && typeof (m as { kind?: unknown }).kind === 'string')
+    && Array.isArray(t.links) && t.links.every(l => !!l && typeof l === 'object' && typeof l.url === 'string')
+    && (t.card == null || (typeof t.card === 'object' && typeof t.card.url === 'string'))
+}
+
+export function isTweetClip(v: unknown): v is TweetClip {
+  const t = v as TweetClip
+  return isTweetBody(t) && typeof t.capturedAt === 'string' && (t.quoted == null || isTweetBody(t.quoted))
 }
 
 /** ツイート全体をノート向け Markdown に。 */

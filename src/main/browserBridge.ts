@@ -108,6 +108,9 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
     const tw = typeof params.url === 'string' ? parseTweetUrl(params.url) : null
     const pageTweet = params.tweetPage && typeof params.tweetPage === 'object' ? params.tweetPage as PageTweet : null
     delete params.tweetPage
+    // tweet / tweetMedia はここで取得したものだけを渡す (クライアントの値は使わない)
+    delete params.tweet
+    delete params.tweetMedia
     if (tw) {
       const got = await clipTweet(params.url as string, pageTweet)
       if (got) {

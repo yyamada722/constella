@@ -25,7 +25,7 @@ function TweetText({ text, onOpenLink }: { text: string; onOpenLink: (u: string)
           {p.replace(/^https?:\/\/(www\.)?/, '').slice(0, 60)}{p.replace(/^https?:\/\/(www\.)?/, '').length > 60 ? '…' : ''}
         </button>
       ) : p.split(/((?:^|(?<=\s))[#＃@][\p{L}\p{N}_]+)/u).map((q, j) => (
-        /^[#＃@]/.test(q)
+        j % 2 === 1 // split のキャプチャ (= ハッシュタグ/メンション) は奇数番目だけ
           ? <button key={`${i}-${j}`} onClick={() => onOpenLink(q.startsWith('@') ? `https://x.com/${q.slice(1)}` : `https://x.com/hashtag/${encodeURIComponent(q.slice(1))}`)} className="text-sky-600 hover:underline">{q}</button>
           : <span key={`${i}-${j}`}>{q}</span>
       )))}

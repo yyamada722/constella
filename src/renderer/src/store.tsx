@@ -1258,7 +1258,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const tp = req.params as { tweet?: unknown; tweetMedia?: TweetMediaEntry[] } | undefined
       let storedRefs: string[] = []
       let mediaWarning: string | null = null
-      if (req.method === 'research.add' && tp?.tweetMedia) {
+      if (req.method === 'research.add' && Array.isArray(tp?.tweetMedia)) {
         const { tweetMedia, ...rest } = tp
         // 登録済みで何も変わらない保存 (右クリックの再保存等) なら、メディアを保存しない
         const probe = isTweetClip(rest.tweet) ? handleCliRequest({ ...req, params: rest }, latest.current, reducer) : null
