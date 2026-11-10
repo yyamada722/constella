@@ -143,6 +143,7 @@ async function download(url: string, limit: number, timeoutMs: number): Promise<
     const out = createWriteStream(path)
     opened = true
     const closed = new Promise<void>((resolve, reject) => { out.on('finish', resolve); out.on('error', reject) })
+    closed.catch(() => { /* 失敗は下の race / await で拾う (未処理の拒否にしない) */ })
     const reader = res.body.getReader()
     let size = 0
     try {
@@ -152,7 +153,8 @@ async function download(url: string, limit: number, timeoutMs: number): Promise<
         size += value.length
         if (size > limit) { void reader.cancel(); throw new Error('too-large') }
         // 書き込みが詰まったら待つ (読み続けてメモリに溜めない)
-        if (!out.write(value)) await new Promise<void>(r => out.once('drain', () => r()))
+        // 書き込みエラー (ディスク満杯等) では drain が来ないので、closed の拒否と競わせる
+        if (!out.write(value)) await Promise.race([new Promise<void>(r => out.once('drain', () => r())), closed])
       }
     } finally {
       out.end()

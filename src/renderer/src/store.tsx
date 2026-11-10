@@ -1257,15 +1257,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // 非同期だが、読む→dispatch は下で同期ブロックのまま行う (await はこの前段のみ)。
       const tp = req.params as { tweet?: unknown; tweetMedia?: TweetMediaEntry[] } | undefined
       let storedRefs: string[] = []
+      let storedTweet: unknown
       let mediaWarning: string | null = null
       if (req.method === 'research.add' && Array.isArray(tp?.tweetMedia)) {
         const { tweetMedia, ...rest } = tp
         // 登録済みで何も変わらない保存 (右クリックの再保存等) なら、メディアを保存しない
         const probe = isTweetClip(rest.tweet) ? handleCliRequest({ ...req, params: rest }, latest.current, reducer) : null
-        const usesTweet = !!probe?.ok && !!probe.actions?.some(a => (a as { payload?: { tweet?: unknown } }).payload?.tweet)
+        // 受け取ったツイートそのものが使われるか (既存項目の tweet を展開しただけの更新と区別するため参照で比べる)
+        const usesTweet = !!probe?.ok && !!probe.actions?.some(a => (a as { payload?: { tweet?: unknown } }).payload?.tweet === rest.tweet)
         if (usesTweet && isTweetClip(rest.tweet)) {
           const stored = await storeTweetMedia(rest.tweet, tweetMedia)
           storedRefs = tweetMediaRefs(stored.tweet)
+          storedTweet = stored.tweet
           if (stored.failed) mediaWarning = mediaFailedWarning(stored.failed)
           req = { ...req, params: { ...rest, tweet: stored.tweet } }
         } else {
@@ -1275,7 +1278,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       const res = handleCliRequest(req, latest.current, reducer)
       // 待っている間に状況が変わり、保存したメディアが使われなかったら消す
-      if (storedRefs.length && !(res.ok && res.actions?.some(a => (a as { payload?: { tweet?: unknown } }).payload?.tweet))) {
+      if (storedRefs.length && !(res.ok && res.actions?.some(a => (a as { payload?: { tweet?: unknown } }).payload?.tweet === storedTweet))) {
         storedRefs.forEach(r => { void deleteMedia(r).catch(() => { /* sweep に任せる */ }) })
       }
       if (res.ok && mediaWarning) res.result = { ...(res.result as object), warnings: [mediaWarning] }
