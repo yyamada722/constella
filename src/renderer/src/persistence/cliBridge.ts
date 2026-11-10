@@ -8,6 +8,7 @@
 //
 // この関数は純粋 (state と reducer を受け取り、結果と dispatch すべきアクションを返す)。
 // 呼び出し側は「読む→dispatch」の間に await を挟まないこと (commitSync と同じ不変条件)。
+import { isTweetClip, tweetIdFromUrl } from '../utils/tweet'
 import type { AppState, Action } from '../store'
 import type { Task, Note, Project, MasterProject, CustomStatus, ResearchItem, ResearchFolder } from '../types'
 import { generateId } from '../utils'
@@ -424,6 +425,9 @@ function httpUrl(v: unknown): string {
 
 // 重複判定用。末尾スラッシュの違いだけ同一視する。# は Gmail のように画面の区別に使うサイトがあるので残す。
 function sameUrlKey(raw: string): string {
+  // ツイートは x.com / twitter.com / ?s=20 等の違いを問わず ID で同一視する
+  const tweetId = tweetIdFromUrl(raw)
+  if (tweetId) return `tweet:${tweetId}`
   try {
     return new URL(raw).href.replace(/\/$/, '')
   } catch { return raw }
@@ -494,12 +498,13 @@ function researchAdd(s: AppState, p: P): CliResponse {
   const tags = isNew ? rawTags.slice(0, 32) : rawTags
   const rawClip = p.clip as { size?: unknown } | undefined
   const clip = rawClip && typeof rawClip.size === 'number' ? { savedAt: new Date().toISOString(), size: rawClip.size } : undefined
+  const tweet = isTweetClip(p.tweet) ? p.tweet : undefined
 
   if (p.updateId != null) {
     const cur = s.research.find(r => r.id === str(p.updateId) && !r.archivedAt)
     if (!cur && !lenient) fail('更新対象が見つかりません')
     if (cur) {
-      const next: ResearchItem = { ...cur, title, description, tags, folderId, ...(clip ? { clip } : {}) }
+      const next: ResearchItem = { ...cur, title, description, tags, folderId, ...(clip ? { clip } : {}), ...(tweet ? { tweet } : {}) }
       return { ok: true, result: { id: cur.id, updated: true }, actions: [{ type: 'UPDATE_RESEARCH', payload: next }] }
     }
     // 未送信のあいだに更新対象が消えていたら、入力内容を捨てずに新規で登録する
@@ -512,11 +517,13 @@ function researchAdd(s: AppState, p: P): CliResponse {
       const mergedDescription = !lenient || !description || hit.description.includes(description)
         ? hit.description
         : [hit.description, description].filter(Boolean).join('\n\n')
-      const changed = lenient && (mergedTags.length !== hit.tags.length || mergedDescription !== hit.description)
+      // ツイート内容をまだ持たない既存項目 (以前リンクだけ保存したもの) には取り込み結果を付ける
+      const addTweet = !!tweet && !hit.tweet
+      const changed = addTweet || (lenient && (mergedTags.length !== hit.tags.length || mergedDescription !== hit.description))
       return {
         ok: true,
-        result: { id: hit.id, existed: true },
-        actions: changed ? [{ type: 'UPDATE_RESEARCH', payload: { ...hit, tags: mergedTags, description: mergedDescription } }] : undefined,
+        result: { id: hit.id, existed: !addTweet, ...(addTweet ? { updated: true } : {}) },
+        actions: changed ? [{ type: 'UPDATE_RESEARCH', payload: { ...hit, tags: mergedTags, description: mergedDescription, ...(addTweet ? { tweet } : {}) } }] : undefined,
       }
     }
   }
@@ -534,6 +541,7 @@ function researchAdd(s: AppState, p: P): CliResponse {
     createdAt: new Date().toISOString(),
     ...(folderId ? { folderId } : {}),
     ...(clip ? { clip } : {}),
+    ...(tweet ? { tweet } : {}),
   }
   return { ok: true, result: { id: item.id, created: true }, actions: [{ type: 'ADD_RESEARCH', payload: item }] }
 }

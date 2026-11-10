@@ -10,6 +10,7 @@ import { SyncMergeModal } from './components/SyncMergeModal'
 import { generateId } from './utils'
 import { normalizeCustomStatus } from './utils/customStatus'
 import { handleCliRequest, type CliRequest } from './persistence/cliBridge'
+import { isTweetClip, storeTweetMedia, type TweetMediaBlob } from './utils/tweet'
 
 // The single default master project that all pre-existing data is migrated under.
 // Keep this id in sync with db.ts (SQL migration) and mindtrain (workspace id).
@@ -907,7 +908,17 @@ export function collectMediaRefs(s: AppState): string[] {
     f.versions?.forEach(v => { if (v.url) refs.push(v.url) }) // 差し替え履歴の旧版も生存
   })
   s.projects.forEach(p => p.tasks.forEach(t => scan(t.description)))
-  s.research.forEach(r => scan(r.description))
+  s.research.forEach(r => {
+    scan(r.description)
+    // 取り込んだツイートのメディア (引用ツイート分も)
+    const t = r.tweet
+    for (const tw of t ? [t, t.quoted] : []) {
+      if (!tw) continue
+      if (tw.avatar) refs.push(tw.avatar)
+      if (tw.card?.image) refs.push(tw.card.image)
+      tw.media.forEach(m => { if (m.file) refs.push(m.file); if (m.poster) refs.push(m.poster) })
+    }
+  })
   s.plans.forEach(p => scan(p.content)) // e-ticket attachments referenced as [x](idb:…)
   return refs
 }
@@ -1245,10 +1256,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const api = (window as unknown as { api?: { cli?: { onRequest: (cb: (reqId: string, req: CliRequest) => void) => () => void; reply: (reqId: string, res: unknown) => void; ready: () => void } } }).api
     if (!api?.cli || isRemote) return
-    const off = api.cli.onRequest((reqId, req) => {
+    const off = api.cli.onRequest(async (reqId, req) => {
       if (!hydratedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'starting', retry: true }); return }
       const write = req.method === 'research.add' || (req.method === 'apply' && !(req.params as { dryRun?: unknown } | undefined)?.dryRun)
       if (write && loadFailedRef.current) { api.cli!.reply(reqId, { ok: false, error: 'DB を読み込めなかったため書き込みを拒否しました(アプリの表示を確認してください)', ...(req.method === 'research.add' ? { retry: true } : {}) }); return } // 拡張の未送信キューを捨てさせない
+      // ツイートのメディアは先に IndexedDB へ保存して idb: 参照に差し替える。保存だけは
+      // 非同期だが、読む→dispatch は下で同期ブロックのまま行う (await はこの前段のみ)。
+      const tp = req.params as { tweet?: unknown; tweetMedia?: TweetMediaBlob[] } | undefined
+      if (req.method === 'research.add' && tp?.tweetMedia) {
+        const { tweetMedia, ...rest } = tp
+        const tweet = isTweetClip(rest.tweet) ? await storeTweetMedia(rest.tweet, tweetMedia) : undefined
+        req = { ...req, params: { ...rest, tweet } }
+      }
       const res = handleCliRequest(req, latest.current, reducer)
       if (res.ok && res.actions?.length) {
         // 1 件でも BATCH で包む: UPDATE_TASK / UPDATE_NOTE 単体だと historyReducer の

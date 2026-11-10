@@ -1,8 +1,8 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { Plus, ExternalLink, Trash2, X, BookmarkPlus, Home, Folder, FolderPlus, ChevronDown, ChevronRight, MoreHorizontal, ArrowLeft, ArrowRight, RotateCw, Loader2, Search, Archive, ArchiveRestore, Download, HardDriveDownload, WifiOff, Globe, FileText } from 'lucide-react'
+import { Plus, ExternalLink, Trash2, X, BookmarkPlus, Home, Folder, FolderPlus, ChevronDown, ChevronRight, MoreHorizontal, ArrowLeft, ArrowRight, RotateCw, Loader2, Search, Archive, ArchiveRestore, Download, HardDriveDownload, WifiOff, Globe, FileText, MessageSquareQuote, Copy } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../store'
-import { ResearchItem, ResearchFolder, Note } from '../types'
+import { ResearchItem, ResearchFolder, Note, TweetClip } from '../types'
 import { generateId } from '../utils'
 import { WebFrame, type WebFrameHandle } from './CanvasPage'
 import { BOARD_COLOR_CLASSES } from '../utils/boardColor'
@@ -11,6 +11,8 @@ import { FolderColorSwatch } from '../components/FolderColorSwatch'
 import { SearchInput } from '../components/SearchInput'
 import { confirmDialog, alertDialog, chooseDialog } from '../components/ConfirmDialog'
 import { htmlDocumentToMarkdown } from '../utils/richPaste'
+import { TweetView } from '../components/TweetView'
+import { storeTweetMedia, tweetIdFromUrl, tweetToMarkdown, type TweetMediaBlob } from '../utils/tweet'
 
 // Default landing page when no bookmark is selected.
 const HOME_URL = 'https://www.google.com'
@@ -32,6 +34,12 @@ function clipApi(): ClipApi | null {
   return (window as unknown as { api?: { clip?: ClipApi } }).api?.clip ?? null
 }
 
+// X (Twitter) ツイートの取り込み IPC (main が本文・メディアを取得)。
+type TweetApi = { clip: (url: string) => Promise<{ tweet: TweetClip; title: string; warnings: string[]; media: TweetMediaBlob[] } | null> }
+function tweetApi(): TweetApi | null {
+  return (window as unknown as { api?: { tweet?: TweetApi } }).api?.tweet ?? null
+}
+
 // Normalize URLs for equality checks so harmless server redirects
 // (root-path trailing slash, hash fragment) don't keep showing "save current page".
 function normalizeUrl(u: string): string {
@@ -49,7 +57,7 @@ function normalizeUrl(u: string): string {
 }
 
 export default function ResearchPage() {
-  const { state, dispatch } = useApp()
+  const { state, dispatch, getLatestState } = useApp()
   const navigate = useNavigate()
   const active = state.activeMasterProjectId
   const [search, setSearch] = useState('')
@@ -59,7 +67,8 @@ export default function ResearchPage() {
     const q = search.trim().toLowerCase()
     return allItems
       .filter(r => showArchived ? !!r.archivedAt : !r.archivedAt)
-      .filter(r => !q || (r.title || '').toLowerCase().includes(q) || (r.url || '').toLowerCase().includes(q) || (r.tags || []).some(t => t.toLowerCase().includes(q)))
+      .filter(r => !q || (r.title || '').toLowerCase().includes(q) || (r.url || '').toLowerCase().includes(q) || (r.tags || []).some(t => t.toLowerCase().includes(q))
+        || (!!r.tweet && `${r.tweet.text}\n${r.tweet.authorName}\n@${r.tweet.authorHandle}\n${r.tweet.quoted?.text ?? ''}`.toLowerCase().includes(q)))
   }, [allItems, search, showArchived])
   const folders = useMemo(
     () => state.researchFolders
@@ -151,6 +160,11 @@ export default function ResearchPage() {
   const [clipUrl, setClipUrl] = useState<string | null>(null)
   const [clipSaving, setClipSaving] = useState(false)
   const clipSupported = !!clipApi()
+  // ツイート取り込み済みの項目は既定で取り込み内容を表示 (false = ライブの x.com)
+  const [tweetView, setTweetView] = useState(true)
+  const [tweetBusy, setTweetBusy] = useState(false)
+  const [tweetFlash, setTweetFlash] = useState<string | null>(null)
+  const tweetSupported = !!tweetApi()
 
   const selected = useMemo(() => items.find(i => i.id === selectedId) ?? null, [items, selectedId])
   const homeMode = !selected
@@ -175,6 +189,8 @@ export default function ResearchPage() {
     // クリップを持つブックマークを自動でクリップ表示にする（ライブは失敗するだけ）。
     setClipUrl(null)
     setClipMode(!!(clipSupported && selected?.clip && !navigator.onLine))
+    setTweetView(true)
+    setTweetFlash(null)
     // browseUrl deliberately excluded — see goHome / commitUrl for the home-mode URL flow.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId])
@@ -564,6 +580,95 @@ export default function ResearchPage() {
     dispatch({ type: 'UPDATE_RESEARCH', payload: { ...selected, clip: undefined } })
   }
 
+  // ── X (Twitter) ツイート取り込み ──
+  // url のツイートを取得して、targetId (既存項目) に付ける / 無ければ新規項目にする。
+  // 同じツイートが既にあればそれを更新する (x.com / twitter.com の違いは ID で同一視)。
+  async function importTweet(url: string, targetId?: string) {
+    const api = tweetApi()
+    if (!api || !active || tweetBusy) return
+    setTweetBusy(true)
+    try {
+      const r = await api.clip(url).catch(() => null)
+      if (!r) {
+        await alertDialog('ツイートを取得できませんでした。\n削除済み・鍵アカウント・通信エラーの可能性があります。\n鍵アカウントのツイートは、Chrome 拡張でツイートを開いて保存すると取り込めます。')
+        return
+      }
+      const tweet = await storeTweetMedia(r.tweet, r.media)
+      // await の間に編集されていてもよいように、最新の state から取り直す
+      const now = getLatestState()
+      const live = now.research.filter(x => x.masterProjectId === active && !x.archivedAt)
+      const target = (targetId ? live.find(x => x.id === targetId) : undefined)
+        ?? live.find(x => tweetIdFromUrl(x.url) === tweet.id)
+      if (target) {
+        const autoTitle = !target.title || target.title === target.url || target.title === '新しいブックマーク'
+        dispatch({ type: 'UPDATE_RESEARCH', payload: { ...target, url: tweet.url, tweet, title: autoTitle ? r.title : target.title } })
+        setSelectedId(target.id)
+      } else {
+        const item: ResearchItem = {
+          id: generateId(), masterProjectId: active, title: r.title, url: tweet.url,
+          description: '', category: '', tags: [], createdAt: new Date().toISOString(), tweet,
+          ...(selected?.folderId ? { folderId: selected.folderId } : {}),
+        }
+        dispatch({ type: 'ADD_RESEARCH', payload: item })
+        setSelectedId(item.id)
+      }
+      setTweetView(true)
+      if (r.warnings.length) await alertDialog(r.warnings.join('\n'))
+    } finally {
+      setTweetBusy(false)
+    }
+  }
+
+  // ツイート内のリンク先をリサーチに追加 (同じフォルダへ)。
+  function saveTweetLink(url: string, display: string) {
+    if (!active || !selected) return
+    if (allItems.some(r => !r.archivedAt && normalizeUrl(r.url) === normalizeUrl(url))) {
+      setTweetFlash('登録済みのリンクです')
+      return
+    }
+    const item: ResearchItem = {
+      id: generateId(), masterProjectId: active, title: display || url, url,
+      description: `出典ツイート: ${selected.url}`, category: '', tags: [...selected.tags],
+      createdAt: new Date().toISOString(),
+      ...(selected.folderId ? { folderId: selected.folderId } : {}),
+    }
+    dispatch({ type: 'ADD_RESEARCH', payload: item })
+    setTweetFlash(`「${item.title}」をリサーチに追加しました`)
+  }
+
+  // ツイート内のリンクはホーム (アプリ内ブラウザ) で開く — 気に入れば「このページを保存」できる
+  function openTweetLink(url: string) {
+    if (UNSAFE_SCHEME.test(url)) return
+    setSelectedId(null)
+    setBrowseUrl(url)
+    setUrlDraft(url)
+  }
+
+  async function tweetToNote() {
+    const t = selected?.tweet
+    if (!t || !active) return
+    const md = tweetToMarkdown(t)
+    const choice = await chooseDialog('ツイートを Markdown にしました。どうしますか？', [
+      { label: 'ノートを作成', value: 'note' },
+      { label: 'クリップボードにコピー', value: 'copy' },
+    ])
+    if (choice === 'copy') {
+      const copy = (window as unknown as { api?: { copyText?: (t: string) => Promise<void> } }).api?.copyText
+      try { if (copy) await copy(md); else await navigator.clipboard.writeText(md) } catch { await alertDialog('クリップボードへのコピーに失敗しました。') }
+      return
+    }
+    if (choice !== 'note') return
+    const now = new Date().toISOString()
+    const note: Note = {
+      id: generateId(), masterProjectId: active, title: selected!.title || `@${t.authorHandle} のツイート`,
+      content: md + '\n', tags: ['ツイート'], createdAt: now, updatedAt: now,
+    }
+    dispatch({ type: 'ADD_NOTE', payload: note })
+    if (await confirmDialog('ノートを作成しました。開きますか？', { confirmLabel: '開く', danger: false })) {
+      navigate('/', { state: { focusNoteId: note.id } })
+    }
+  }
+
   // Save whatever the webview is currently displaying as a new bookmark.
   // Works in both home mode (no selection) and within an existing bookmark
   // when the user has navigated away from its URL.
@@ -605,6 +710,10 @@ export default function ResearchPage() {
   const clipActive = !!(clipSupported && selected?.clip && clipMode)
   const effectiveUrl = clipActive ? (clipUrl ?? 'about:blank') : liveEffectiveUrl
   const effectiveTitle = selected ? (selected.title || 'Web page') : 'ホーム'
+  const tweetActive = !!(selected?.tweet && tweetView && !clipActive)
+  // 表示中 (または選択中) の URL がツイートなら取り込みボタンを出す
+  const liveTweetUrl = liveUrl && tweetIdFromUrl(liveUrl) ? liveUrl : null
+  const selectedIsTweet = !!(selected && tweetIdFromUrl(selected.url))
 
   // Recursive sidebar folder render. Closure-captures selectedId/openFolders/etc.
   function renderFolderNode(folder: ResearchFolder, depth: number) {
@@ -1021,7 +1130,52 @@ export default function ResearchPage() {
               </button>
             </div>
           )}
+          {tweetSupported && selectedIsTweet && (
+            <button
+              onClick={() => selected && importTweet(selected.url, selected.id)}
+              disabled={tweetBusy}
+              title={selected?.tweet ? 'ツイートを取り込み直す（本文・画像・動画を最新に）' : 'ツイートの本文・画像・動画を取り込んで保存'}
+              className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-300 bg-white text-[10px] text-slate-600 hover:text-sky-700 hover:border-sky-300 disabled:opacity-50"
+            >
+              {tweetBusy ? <Loader2 size={10} className="animate-spin" /> : <MessageSquareQuote size={10} />}
+              {selected?.tweet ? '再取り込み' : 'ツイートを取り込む'}
+            </button>
+          )}
+          {selected?.tweet && !clipActive && (
+            <div className="flex items-center rounded overflow-hidden border border-slate-300 shrink-0">
+              <button
+                onClick={() => setTweetView(true)}
+                title="取り込んだツイートを表示（オフライン可）"
+                className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors ${tweetView ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-100'}`}
+              >
+                <MessageSquareQuote size={10} /> ツイート
+              </button>
+              <button
+                onClick={() => setTweetView(false)}
+                title="X のページをライブ表示"
+                className={`flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors ${!tweetView ? 'bg-sky-500 text-white' : 'bg-white text-slate-500 hover:bg-slate-100'}`}
+              >
+                <Globe size={10} /> ライブ
+              </button>
+            </div>
+          )}
         </div>
+
+        {tweetActive && selected?.tweet && (
+          <div className="flex items-center gap-2 px-3 py-1 border-b border-slate-200 bg-slate-50 text-[11px] shrink-0">
+            <MessageSquareQuote size={11} className="text-slate-600 shrink-0" />
+            <span className="text-slate-600 flex-1 truncate">
+              {tweetFlash ?? `取り込んだツイートを表示中（${new Date(selected.tweet.capturedAt).toLocaleString()}）— 画像・動画も保存済みでオフラインでも見られます`}
+            </span>
+            <button
+              onClick={tweetToNote}
+              title="ツイートを Markdown にしてノート化 / コピー"
+              className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 text-[11px] transition-colors"
+            >
+              <Copy size={11} /> ノート化
+            </button>
+          </div>
+        )}
 
         {clipActive && selected?.clip && (
           <div className="flex items-center gap-2 px-3 py-1 border-b border-slate-200 bg-emerald-50/60 text-[11px] shrink-0">
@@ -1060,10 +1214,22 @@ export default function ResearchPage() {
             >
               <BookmarkPlus size={11} /> このページを保存
             </button>
+            {tweetSupported && liveTweetUrl && (
+              <button
+                onClick={() => importTweet(liveTweetUrl)}
+                disabled={tweetBusy}
+                title="このツイートの本文・画像・動画を取り込んで保存"
+                className="shrink-0 flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-900 text-white text-[11px] disabled:opacity-50"
+              >
+                {tweetBusy ? <Loader2 size={11} className="animate-spin" /> : <MessageSquareQuote size={11} />} ツイートとして保存
+              </button>
+            )}
           </div>
         )}
 
-        {effectiveUrl ? (
+        {tweetActive && selected?.tweet ? (
+          <TweetView tweet={selected.tweet} onOpenLink={openTweetLink} onSaveLink={saveTweetLink} />
+        ) : effectiveUrl ? (
           <WebFrame
             ref={webFrameRef}
             key={(selected?.id ?? 'home') + '|' + effectiveUrl}
@@ -1112,6 +1278,9 @@ function BookmarkRow({ item, active, onSelect, onDelete, onDragStart, onDragEnd 
       <div className="pr-6">
         <p className="text-sm font-medium text-slate-800 truncate flex items-center gap-1">
           <span className="truncate">{item.title || '無題'}</span>
+          {item.tweet && (
+            <span title={`取り込み済みツイート（@${item.tweet.authorHandle}）`} className="shrink-0 inline-flex text-[10px] font-bold leading-none text-slate-700">𝕏</span>
+          )}
           {item.clip && (
             <span title="オフラインクリップあり" className="shrink-0 inline-flex">
               <HardDriveDownload size={10} className="text-emerald-500" />

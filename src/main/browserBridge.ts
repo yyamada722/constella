@@ -13,6 +13,7 @@ import { cp, mkdir, readFile, rename, unlink, writeFile } from 'fs/promises'
 import { createServer, IncomingMessage, ServerResponse } from 'http'
 import { randomBytes, timingSafeEqual } from 'crypto'
 import { forwardToRenderer } from './cliServer'
+import { canonicalTweetUrl, clipTweet, parseTweetUrl, tweetTitle, type PageTweet } from './tweetClip'
 
 // 拡張はこの範囲を順に探す (browser-extension/lib.js の PORTS と揃える)。
 const PORTS = [38947, 38948, 38949, 38950]
@@ -87,9 +88,9 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
 
   const clipsDir = (): string => join(app.getPath('userData'), 'clips')
 
-  const ask = async (res: ServerResponse, req: { method: string; params: unknown }): Promise<{ ok: boolean; [k: string]: unknown } | null> => {
+  const ask = async (res: ServerResponse, req: { method: string; params: unknown }, timeoutMs?: number): Promise<{ ok: boolean; [k: string]: unknown } | null> => {
     const win = ensureWindow()
-    const answer = win && !win.isDestroyed() ? await forwardToRenderer(win, req) : null
+    const answer = win && !win.isDestroyed() ? await forwardToRenderer(win, req, timeoutMs) : null
     if (!answer) { send(res, 503, { ok: false, error: 'starting', retry: true }); return null }
     return answer
   }
@@ -99,6 +100,28 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
     if (!parts) return send(res, 400, { ok: false, error: '不正なリクエストです' })
     const { params, clip } = parts
     if (clip && !looksLikeMhtml(clip)) return send(res, 400, { ok: false, error: 'MHTML ではありません' })
+
+    // ツイートは本文・画像・動画を取り込む (キューから再送されたものも、ここで取り直す)。
+    const warnings: string[] = []
+    const tw = typeof params.url === 'string' ? parseTweetUrl(params.url) : null
+    const pageTweet = params.tweetPage && typeof params.tweetPage === 'object' ? params.tweetPage as PageTweet : null
+    delete params.tweetPage
+    if (tw) {
+      const got = await clipTweet(params.url as string, pageTweet)
+      if (got) {
+        const t = String(params.title ?? '').trim()
+        // 題名が未入力・URL のまま (右クリック保存・キュー) なら「名前: 本文…」にする
+        if (!t || t === params.url || params.autoTitle) params.title = tweetTitle(got.tweet)
+        params.url = got.tweet.url
+        params.tweet = got.tweet
+        params.tweetMedia = got.media
+        warnings.push(...got.warnings)
+      } else {
+        params.url = canonicalTweetUrl(tw.id, tw.handle)
+        warnings.push('ツイートの内容を取得できなかったため、リンクだけ保存しました')
+      }
+    }
+    delete params.autoTitle
 
     // ファイルを先に正しい場所へ置いてから DB を更新する。逆順だと、置けなかったときに
     // 「クリップあり」の項目だけが残る。DB 側が失敗したら、ファイルを元の状態へ戻す。
@@ -134,12 +157,12 @@ export function startBrowserBridge(ensureWindow: EnsureWindow, clipPath: ClipPat
         await rename(tmp, dest)
         installed = true
       }
-      const answer = await ask(res, { method: 'research.add', params: { ...params, id: updateId ? undefined : clipId ?? undefined, clip: clip ? { size: clip.length } : undefined } })
+      const answer = await ask(res, { method: 'research.add', params: { ...params, id: updateId ? undefined : clipId ?? undefined, clip: clip ? { size: clip.length } : undefined } }, params.tweetMedia ? 180000 : undefined) // メディアの IndexedDB 保存を待つ
       if (!answer) return await rollback()
       if (!answer.ok) { await rollback(); return send(res, answer.retry ? 503 : 400, answer) }
       if ((answer.result as { existed?: boolean }).existed) await rollback() // 登録済みで何も変えなかった
       else if (backedUp) await unlink(old).catch(() => { /* ignore */ })
-      send(res, 200, answer)
+      send(res, 200, warnings.length ? { ...answer, result: { ...(answer.result as object), warnings } } : answer)
     } catch (e) {
       await rollback()
       throw e

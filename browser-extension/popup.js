@@ -1,4 +1,5 @@
 import { BridgeError, checkCode, getStored, rpc, setStored } from './lib.js'
+import { readTweetFromPage, tweetIdOf, tweetTitleOf } from './tweet.js'
 
 const $ = (id) => document.getElementById(id)
 const VIEWS = ['view-loading', 'view-blocked', 'view-setup', 'view-form', 'view-done']
@@ -14,6 +15,10 @@ let matches = []
 let prefilledId = null
 let selectedTags = []
 let memory = { lastMaster: undefined, lastFolder: {}, recentTags: [] }
+// ツイートのページなら、ページから読んだ内容 (アプリの取得が失敗したときの代わり)
+let isTweet = false
+let tweetPage = null
+let autoTitleValue = ''
 
 function fail(el, message) {
   el.textContent = message
@@ -142,11 +147,17 @@ async function renderForm() {
     $('favicon').src = tab.favIconUrl
     $('favicon').onload = () => { $('favicon').hidden = false }
   }
-  $('title').value = tab.title || tab.url
-  $('description').value = await readPageSummary(tab.id)
+  isTweet = !!tweetIdOf(tab.url)
+  tweetPage = isTweet ? await readTweetFromPage(tab.id, tab.url) : null
+  autoTitleValue = (isTweet && tweetTitleOf(tweetPage)) || tab.title || tab.url
+  $('title').value = autoTitleValue
+  // ツイートの本文はアプリが取り込むので、メモは空から
+  $('description').value = isTweet ? '' : await readPageSummary(tab.id)
   $('clip').checked = !!stored.clip
   $('offline').hidden = online
-  $('clip-row').hidden = !online // 未送信キューにはクリップを積まない
+  $('tweet-note').hidden = !isTweet
+  // 未送信キューにはクリップを積まない。ツイートは MHTML より取り込みのほうが確実なので出さない
+  $('clip-row').hidden = !online || isTweet
   document.querySelectorAll('.row-target').forEach((el) => { el.hidden = !targets })
 
   if (targets) {
@@ -175,11 +186,13 @@ async function save(forceNew) {
     master,
     folderId,
     updateId: hit?.id,
+    // 題名を触っていなければ、アプリが取得したツイートから付け直させる
+    ...(isTweet ? { autoTitle: $('title').value === autoTitleValue, ...(tweetPage ? { tweetPage } : {}) } : {}),
   }
-  const clip = online && $('clip').checked
+  const clip = online && !isTweet && $('clip').checked
   $('save').disabled = true
   $('add-anyway').disabled = true
-  $('save').textContent = clip ? 'クリップ中' : '保存中'
+  $('save').textContent = clip ? 'クリップ中' : isTweet ? '取り込み中' : '保存中'
 
   const r = await chrome.runtime.sendMessage({ type: 'save', meta, tabId: tab.id, clip })
   if (r.status === 'error') {
@@ -198,8 +211,8 @@ async function save(forceNew) {
   })
 
   const text = $('done-text')
-  text.textContent = r.status === 'queued' ? '次の起動時に登録します' : r.status === 'updated' ? '上書きしました' : '保存しました'
-  if (r.warning) text.append(document.createElement('br'), r.warning)
+  text.textContent = r.status === 'queued' ? '次の起動時に登録します' : r.status === 'updated' ? '上書きしました' : r.status === 'existed' ? '登録済みです' : isTweet ? 'ツイートを取り込みました' : '保存しました'
+  for (const w of String(r.warning || '').split('\n').filter(Boolean)) text.append(document.createElement('br'), w)
   show('view-done')
   setTimeout(() => window.close(), r.warning ? 2500 : 800)
 }

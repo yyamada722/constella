@@ -61,18 +61,18 @@ ipcMain.on('cli:ready', (e) => {
 })
 const watched = new Set<number>()
 
-function askRenderer(win: BrowserWindow, req: unknown): Promise<Answer> {
+function askRenderer(win: BrowserWindow, req: unknown, timeoutMs = RENDERER_TIMEOUT_MS): Promise<Answer> {
   return new Promise((resolve) => {
     const reqId = `${Date.now().toString(36)}-${randomBytes(6).toString('hex')}`
-    const timer = setTimeout(() => { waiters.delete(reqId); resolve({ ok: false, error: 'アプリが応答しません (タイムアウト)', retry: true }) }, RENDERER_TIMEOUT_MS)
+    const timer = setTimeout(() => { waiters.delete(reqId); resolve({ ok: false, error: 'アプリが応答しません (タイムアウト)', retry: true }) }, timeoutMs)
     waiters.set(reqId, (a) => { clearTimeout(timer); resolve(a) })
     win.webContents.send('cli:request', reqId, req)
   })
 }
 
 // ブラウザ連携サーバーからの転送用。レンダラーの受付前 (起動直後・リロード中) は null。
-export function forwardToRenderer(win: BrowserWindow, req: unknown): Promise<Answer> | null {
-  return readyContentsId === win.webContents.id ? askRenderer(win, req) : null
+export function forwardToRenderer(win: BrowserWindow, req: unknown, timeoutMs?: number): Promise<Answer> | null {
+  return readyContentsId === win.webContents.id ? askRenderer(win, req, timeoutMs) : null
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
